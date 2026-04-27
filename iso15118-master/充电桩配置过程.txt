@@ -1,0 +1,34 @@
+1、配置环境
+cd iso15118-master
+# 安装 Poetry
+pip3 install poetry -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 安装依赖
+poetry install
+# 生成证书
+cd iso15118/shared/pki/
+./create_certs.sh -v iso-2
+./create_certs.sh -v iso-20
+cd ../../..
+
+# 配置环境
+cp .env.dev.local .env
+
+
+# 查看服务器网卡名和 IPv6 地址
+ip -6 addr show
+
+# 假设网卡名是 eth0，IPv6 link-local 是 fe80::xxxx:xxxx:xxxx:xxxx
+
+# 编辑 .env：
+NETWORK_INTERFACE=eth0                    # 服务器实际网卡名
+SECC_ENFORCE_TLS=False                   # TestEnv 不支持 TLS，必须关闭
+LOG_LEVEL=INFO
+PROTOCOLS=DIN_SPEC_70121,ISO_15118_2
+AUTH_MODES=EIM                           # TestEnv 只支持 EIM
+USE_CPO_BACKEND=False
+ENABLE_TLS_1_3=False
+
+2、启动SECC
+poetry run python iso15118/secc/main.py
+
+记下输出的 IPv6 link-local 地址（fe80::xxxx:xxxx:xxxx:xxxx%eth0），这是 TestUI 需要填入的地址。
