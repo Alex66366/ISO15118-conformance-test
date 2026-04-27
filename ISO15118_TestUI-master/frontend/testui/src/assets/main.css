@@ -1,0 +1,136 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --el-color-primary: #00d4aa;
+  --el-color-primary-light-3: #33ddbb;
+  --el-color-primary-light-5: #66e5cc;
+  --el-color-primary-light-7: #99eedd;
+  --el-color-primary-light-9: #ccf6ee;
+  --el-color-primary-dark-2: #00a888;
+  --el-bg-color: #0a0a0f;
+  --el-bg-color-overlay: #1a1a24;
+  --el-bg-color-page: #0a0a0f;
+  --el-text-color-primary: #e5e7eb;
+  --el-text-color-regular: #9ca3af;
+  --el-text-color-secondary: #6b7280;
+  --el-text-color-placeholder: #4b5563;
+  --el-border-color: #2a2a3a;
+  --el-border-color-light: #22222e;
+  --el-border-color-lighter: #1a1a24;
+  --el-fill-color: #12121a;
+  --el-fill-color-light: #1a1a24;
+  --el-fill-color-lighter: #22222e;
+  --el-fill-color-blank: #0a0a0f;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #12121a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2a3a;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a4a;
+}
+
+/* Element Plus dark mode overrides */
+.dark {
+  --el-bg-color: #0a0a0f;
+  --el-bg-color-overlay: #1a1a24;
+  --el-text-color-primary: #e5e7eb;
+  --el-text-color-regular: #9ca3af;
+  --el-border-color: #2a2a3a;
+}
+
+.el-button--primary {
+  --el-button-bg-color: #00d4aa;
+  --el-button-border-color: #00d4aa;
+  --el-button-hover-bg-color: #33ddbb;
+  --el-button-hover-border-color: #33ddbb;
+  --el-button-active-bg-color: #00a888;
+  --el-button-active-border-color: #00a888;
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  background-color: #12121a !important;
+  box-shadow: 0 0 0 1px #2a2a3a inset !important;
+}
+
+.el-input__wrapper:hover,
+.el-textarea__inner:hover,
+.el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px #3a3a4a inset !important;
+}
+
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus,
+.el-select__wrapper.is-focus {
+  box-shadow: 0 0 0 1px #00d4aa inset !important;
+}
+
+.el-table {
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: #12121a;
+  --el-table-row-hover-bg-color: #1a1a24;
+  --el-table-border-color: #2a2a3a;
+}
+
+.el-card {
+  --el-card-bg-color: #1a1a24;
+  --el-card-border-color: #2a2a3a;
+}
+
+.el-dialog {
+  --el-dialog-bg-color: #1a1a24;
+  --el-dialog-border-radius: 12px;
+}
+
+.el-menu {
+  --el-menu-bg-color: transparent;
+  --el-menu-hover-bg-color: #1a1a24;
+  --el-menu-active-color: #00d4aa;
+  --el-menu-text-color: #9ca3af;
+  --el-menu-hover-text-color: #e5e7eb;
+  --el-menu-border-color: transparent;
+}
+
+/* Animation utilities */
+@layer utilities {
+  .animate-delay-100 {
+    animation-delay: 100ms;
+  }
+  .animate-delay-200 {
+    animation-delay: 200ms;
+  }
+  .animate-delay-300 {
+    animation-delay: 300ms;
+  }
+  .animate-delay-400 {
+    animation-delay: 400ms;
+  }
+  .animate-delay-500 {
+    animation-delay: 500ms;
+  }
+}
