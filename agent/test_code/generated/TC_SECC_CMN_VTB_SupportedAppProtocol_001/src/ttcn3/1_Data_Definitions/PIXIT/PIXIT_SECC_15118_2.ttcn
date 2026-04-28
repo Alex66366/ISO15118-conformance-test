@@ -1,0 +1,99 @@
+/**
+ * @desc    Protocol Implementation eXtra Information for Testing (PIXIT) for
+ *          SECC ISO 15118-2 conformance tests.
+ *
+ *          Values here are defaults; override via titan_runtime.cfg [MODULE_PARAMETERS].
+ *          Reference: ISO 15118-2:2014 Annex C (PIXIT proforma).
+ */
+module SECC_PIXIT {
+
+    import from SECC_TestSystem all;
+    import from SECC_Types      all;
+
+    // =========================================================================
+    // Network / Addressing
+    // =========================================================================
+
+    /** IP address of the SECC SUT.  Override in titan_runtime.cfg for HIL mode. */
+    modulepar charstring PIXIT_SECC_CMN_SUT_IP_Address := "ff02::01";
+
+    /** TCP port used by SECC (fixed by ISO 15118-2). */
+    modulepar integer PIXIT_SECC_CMN_SUT_TCP_Port := 15118;
+
+    /** SDP multicast group used for EVCC→SECC discovery. */
+    modulepar charstring PIXIT_SECC_CMN_SDP_Multicast_Group := "ff02::01";
+
+    // =========================================================================
+    // Timing parameters (seconds)
+    // =========================================================================
+
+    /**
+     * Default message response timeout.
+     * Value: timer_value_ms / 1000.0 = 2000 / 1000.0 = 2.0 s
+     */
+    modulepar float PIXIT_SECC_CMN_Message_Timeout := 2.0;
+
+    /** Timeout for SupportedAppProtocol response specifically. */
+    modulepar float par_V2G_SECC_Msg_Timeout_SupportedAppProtocolReq := 2.0;
+
+    /** SDP response timeout. */
+    modulepar float PIXIT_SECC_CMN_SDP_Timeout := 1.0;
+
+    /** TCP/TLS connection setup timeout. */
+    modulepar float PIXIT_SECC_CMN_Connection_Timeout := 3.0;
+
+    /** Overall session timeout guard (2× message timeout). */
+    modulepar float PIXIT_SECC_CMN_Session_Timeout := 4.0;
+
+    // =========================================================================
+    // TLS / Certificate parameters
+    // =========================================================================
+
+    /** Path to SECC certificate (PEM). */
+    modulepar charstring PIXIT_SECC_CMN_TLS_CertPath := "certs/secc_cert.pem";
+
+    /** Path to SECC private key (PEM). */
+    modulepar charstring PIXIT_SECC_CMN_TLS_KeyPath := "certs/secc_key.pem";
+
+    /** Path to V2G root CA certificate (PEM). */
+    modulepar charstring PIXIT_SECC_CMN_TLS_CAPath := "certs/v2g_ca.pem";
+
+    // =========================================================================
+    // Test execution mode
+    // =========================================================================
+
+    /**
+     * Combined testing mode flag.
+     * false = SIL (Software-in-the-Loop, mock SUT)
+     * true  = HIL (Hardware-in-the-Loop, real SUT)
+     */
+    modulepar boolean PIXIT_SECC_CMN_Combined_Testing_Mode := false;
+
+    // =========================================================================
+    // SupportedAppProtocol PIXIT
+    // =========================================================================
+
+    /** Protocol namespace URI sent in SupportedAppProtocolReq. */
+    modulepar charstring PIXIT_SECC_CMN_SAP_ProtocolNamespace :=
+        "urn:iso:15118:2:2013:MsgDef";
+
+    /** Major version number sent in SupportedAppProtocolReq. */
+    modulepar integer PIXIT_SECC_CMN_SAP_VersionMajor := 2;
+
+    /** Minor version number sent in SupportedAppProtocolReq. */
+    modulepar integer PIXIT_SECC_CMN_SAP_VersionMinor := 0;
+
+    /** SchemaID proposed in SupportedAppProtocolReq. */
+    modulepar integer PIXIT_SECC_CMN_SAP_SchemaID := 10;
+
+    /** Priority value in SupportedAppProtocolReq (1 = highest). */
+    modulepar integer PIXIT_SECC_CMN_SAP_Priority := 2;
+
+    // =========================================================================
+    // Logging / Debug
+    // =========================================================================
+
+    /** Enable verbose test-step logging. */
+    modulepar boolean PIXIT_SECC_CMN_VerboseLogging := true;
+
+} // end module SECC_PIXIT

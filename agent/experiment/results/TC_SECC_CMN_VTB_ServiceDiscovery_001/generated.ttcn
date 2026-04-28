@@ -1,0 +1,124 @@
+/**
+ * @desc    GoodCase: Tests that SECC correctly processes a valid ServiceDiscoveryReq
+ *          and responds with ServiceDiscoveryRes containing ResponseCode=OK,
+ *          a ChargeService element, and a PaymentOptionList.
+ * @reference ISO 15118-2:2014, Section 8.4.3
+ * @requirement V2G2-266, V2G2-274, V2G2-275, V2G2-276, V2G2-277, V2G2-278, V2G2-279, V2G2-282, V2G2-283, V2G2-284
+ */
+module TC_SECC_CMN_VTB_ServiceDiscovery_001 {
+
+  // === Imports ===
+  import from ISO15118_2_DataTypes all;
+  import from ISO15118_2_Templates all;
+  import from ISO15118_2_Functions all;
+  import from ISO15118_2_Components all;
+  import from ISO15118_2_PICS all;
+  import from ISO15118_2_PIXIT all;
+  import from ISO15118_2_Timers all;
+
+  // === Send Template ===
+  template ServiceDiscoveryReqType md_CMN_ServiceDiscoveryReq_001(
+    template ServiceCategoryType p_serviceCategory) := {
+      serviceScope    := omit,
+      serviceCategory := p_serviceCategory
+  }
+
+  // === Receive Template ===
+  template ServiceDiscoveryResType mdw_SECC_ServiceDiscoveryRes_001(
+    template ResponseCodeType p_responseCode) := {
+      responseCode      := p_responseCode,
+      paymentOptionList := ?,
+      chargeService     := ?,
+      serviceList       := *
+  }
+
+  // === Test Behavior Function ===
+  function f_SECC_CMN_TB_VTB_ServiceDiscovery_001()
+    runs on SECCTester
+    return verdicttype
+  {
+    // 1. Start message timeout timer
+    tc_V2G_EVCC_Msg_Timer.start(par_V2G_EVCC_Msg_Timeout_ServiceDiscoveryReq);
+
+    // 2. Send ServiceDiscoveryReq with no specific scope or category filter
+    pt_V2G_TCP_TLS_ALM_SECC_Port.send(
+      md_CMN_V2GTP_Message_001(
+        md_CMN_V2GTP_Header_001('01'H, 'FE'H, '8001'H, omit),
+        md_CMN_V2GTP_Payload_001(
+          md_CMN_V2GMessage_001(
+            md_CMN_MessageHeader_001(vc_SessionID),
+            md_CMN_BodyType_001(
+              md_CMN_ServiceDiscoveryReq_001(omit)
+            )
+          )
+        )
+      )
+    );
+
+    // 3. Alt block to handle response
+    alt {
+      // Expected: Valid ServiceDiscoveryRes with ResponseCode=OK,
+      // ChargeService present, PaymentOptionList present
+      [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(
+        md_CMN_V2GTP_Message_001(
+          md_CMN_V2GTP_Header_001('01'H, 'FE'H, '8001'H, ?),
+          md_CMN_V2GTP_Payload_001(
+            md_CMN_V2GMessage_001(
+              ?,
+              md_CMN_BodyType_001(
+                mdw_SECC_ServiceDiscoveryRes_001(oK)
+              )
+            )
+          )
+        )
+      ) {
+        tc_V2G_EVCC_Msg_Timer.stop;
+        log("PASS: Valid ServiceDiscoveryRes received with ResponseCode=OK, ChargeService and PaymentOptionList present");
+        setverdict(pass);
+      }
+
+      // Unexpected: Wrong ResponseCode, missing mandatory fields, or malformed response
+      [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {
+        tc_V2G_EVCC_Msg_Timer.stop;
+        log("FAIL: Unexpected or non-conformant ServiceDiscoveryRes received");
+        setverdict(fail);
+      }
+
+      // Timeout: No response within expected time
+      [] tc_V2G_EVCC_Msg_Timer.timeout {
+        log("INCONC: Timeout waiting for ServiceDiscoveryRes");
+        setverdict(inconc);
+      }
+    }
+
+    // 4. Return verdict
+    return getverdict;
+  }
+
+  // === Testcase ===
+  testcase TC_SECC_CMN_VTB_ServiceDiscovery_001()
+    runs on SECCTester system SystemSECC
+  {
+    var HAL_61851_Listener v_HAL_61851_Listener;
+    var verdicttype preConVerdict;
+
+    // -- Phase A + B: Pre Conditions --
+    f_SECC_CMN_PR_InitConfiguration_001(v_HAL_61851_Listener, system);
+    preConVerdict := f_SECC_CMN_PR_SupportedAppProtocol_001(v_HAL_61851_Listener);
+
+    if (preConVerdict == pass) {
+      preConVerdict := f_SECC_CMN_PR_SessionSetup_001(v_HAL_61851_Listener);
+    }
+
+    // -- Phase C: Test Behavior --
+    if (preConVerdict == pass) {
+      f_SECC_CMN_TB_VTB_ServiceDiscovery_001();
+    } else {
+      log("PreCondition verdict is not pass");
+      setverdict(inconc);
+    }
+
+    // -- Phase D: Post Conditions --
+    f_SECC_CMN_PO_InitConfiguration_001(v_HAL_61851_Listener);
+  }
+}

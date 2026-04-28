@@ -1,0 +1,152 @@
+/**
+ * @desc    GoodCase: Verify that the SECC correctly processes a V2GTP message
+ *          with a valid header structure (protocolVersion='01'H,
+ *          invProtocolVersion='FE'H, payloadType='8001'H) and returns a valid
+ *          V2GTP response with proper header fields.
+ * @reference ISO 15118-2:2014, Section 8.7.2
+ * @requirement [V2G2-082]
+ */
+module TC_SECC_CMN_VTB_V2GTPHeader_001 {
+
+  // === Imports ===
+  import from ISO15118_2_DataTypes all;
+  import from ISO15118_2_Templates all;
+  import from ISO15118_2_Functions all;
+  import from ISO15118_2_Components all;
+  import from ISO15118_2_PICS all;
+  import from ISO15118_2_PIXIT all;
+  import from ISO15118_2_Timers all;
+
+  // === Templates ===
+
+  /**
+   * @desc    Send template for V2GTP Header with valid fields
+   *          used as stimulus to verify SECC header processing
+   */
+  template V2GTP_Header md_CMN_V2GTPHeader_001(
+    template Oct1 p_protocolVersion,
+    template Oct1 p_invProtocolVersion,
+    template Oct2 p_payloadType,
+    template UInt32 p_payloadLength) := {
+      protocolVersion    := p_protocolVersion,
+      invProtocolVersion := p_invProtocolVersion,
+      payloadType        := p_payloadType,
+      payloadLength      := p_payloadLength
+  }
+
+  /**
+   * @desc    Receive/matching template for V2GTP Header in SECC response
+   *          Verifies protocolVersion, invProtocolVersion, and payloadType
+   *          are correct; payloadLength is wildcard-matched
+   */
+  template V2GTP_Header mdw_SECC_V2GTPHeader_001(
+    template Oct1 p_protocolVersion,
+    template Oct1 p_invProtocolVersion,
+    template Oct2 p_payloadType) := {
+      protocolVersion    := p_protocolVersion,
+      invProtocolVersion := p_invProtocolVersion,
+      payloadType        := p_payloadType,
+      payloadLength      := ?
+  }
+
+  // === Test Behavior Function ===
+
+  /**
+   * @desc    Test behavior function for V2GTP header validation (GoodCase).
+   *          Sends a V2GTP message with valid header fields and verifies
+   *          that the SECC responds with a properly structured V2GTP header.
+   * @reference ISO 15118-2:2014, Section 8.7.2
+   * @requirement [V2G2-082]
+   */
+  function f_SECC_CMN_TB_VTB_V2GTPHeader_001()
+    runs on SECCTester
+    return verdicttype
+  {
+    // 1. Start message timeout timer
+    tc_V2G_EVCC_Msg_Timer.start(par_V2G_EVCC_Msg_Timeout_SupportedAppProtocolReq);
+
+    // 2. Send V2GTP message with valid header structure
+    pt_V2G_TCP_TLS_ALM_SECC_Port.send(
+      md_CMN_V2GTP_Message_001(
+        md_CMN_V2GTP_Header_001('01'H, 'FE'H, '8001'H, omit),
+        md_CMN_V2GTP_Payload_001(
+          md_CMN_V2GMessage_001(
+            md_CMN_MessageHeader_001(vc_SessionID),
+            md_CMN_BodyType_001(
+              md_CMN_SessionSetupReq_001(vc_eVCCID)
+            )
+          )
+        )
+      )
+    );
+
+    // 3. Alt block: handle response alternatives
+    alt {
+      // Expected: Valid V2GTP response with correct header fields
+      [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(
+        md_CMN_V2GTP_Message_001(
+          mdw_SECC_V2GTPHeader_001('01'H, 'FE'H, '8001'H),
+          ?
+        )
+      ) {
+        tc_V2G_EVCC_Msg_Timer.stop;
+        log("PASS: Valid V2GTP response received with correct header structure " &
+            "(protocolVersion='01'H, invProtocolVersion='FE'H, payloadType='8001'H)");
+        setverdict(pass);
+      }
+
+      // Unexpected: Malformed or invalid V2GTP header in response
+      [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {
+        tc_V2G_EVCC_Msg_Timer.stop;
+        log("FAIL: Unexpected or malformed V2GTP response received - " &
+            "header fields do not match expected values");
+        setverdict(fail);
+      }
+
+      // Timeout: No response within configured timeout period
+      [] tc_V2G_EVCC_Msg_Timer.timeout {
+        log("INCONC: Timeout waiting for V2GTP response " &
+            "(exceeded par_V2G_EVCC_Msg_Timeout_SupportedAppProtocolReq)");
+        setverdict(inconc);
+      }
+    }
+
+    // 4. Return verdict
+    return getverdict;
+  }
+
+  // === Testcase ===
+
+  /**
+   * @desc    GoodCase testcase: Verify SECC correctly processes V2GTP message
+   *          with valid header and returns a response with proper V2GTP header
+   *          structure as required by [V2G2-082].
+   * @reference ISO 15118-2:2014, Section 8.7.2
+   * @requirement [V2G2-082]
+   */
+  testcase TC_SECC_CMN_VTB_V2GTPHeader_001()
+    runs on SECCTester system SystemSECC
+  {
+    var HAL_61851_Listener v_HAL_61851_Listener;
+    var verdicttype preConVerdict;
+
+    // -- Phase A + B: Pre Conditions --
+    // Phase A: Initialize test configuration (create PTC, map ports)
+    f_SECC_CMN_PR_InitConfiguration_001(v_HAL_61851_Listener, system);
+
+    // Phase B: Complete SupportedAppProtocol handshake to bring SUT to known state
+    preConVerdict := f_SECC_CMN_PR_SupportedAppProtocol_001(v_HAL_61851_Listener);
+
+    // -- Phase C: Test behavior --
+    if (preConVerdict == pass) {
+      f_SECC_CMN_TB_VTB_V2GTPHeader_001();
+    } else {
+      log("PreCondition verdict is not pass");
+      setverdict(inconc);
+    }
+
+    // -- Phase D: Post Conditions --
+    f_SECC_CMN_PO_InitConfiguration_001(v_HAL_61851_Listener);
+  }
+
+}

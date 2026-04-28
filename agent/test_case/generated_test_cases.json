@@ -1,0 +1,108 @@
+{
+  "generation_metadata": {
+    "model": "gpt-4",
+    "total_requirements": 2,
+    "successful": 2,
+    "failed": 0
+  },
+  "test_cases": [
+    {
+      "Test_Case": {
+        "TC_Id": "TC_V2GTP_BR_V2GTPHeader_001",
+        "Test_Objective": "Verify that the V2GTP entity correctly uses the header structure as defined in the ISO 15118-2 standard",
+        "Test_Description": "The Test System sends a V2GTP message with a header structure as defined in the ISO 15118-2 standard. The header structure includes 'protocolVersion' equal to '0x01'H, 'invProtocolVersion' equal to '0xFE'H, 'payloadType' equal to '0x8001'H, and 'payloadLength' equal to a valid length. The Test System then checks that the SUT correctly processes the V2GTP message with the specified header structure.",
+        "Document_Reference": {
+          "Document": "ISO:15118-2:2014:IS",
+          "Section": "15118-2:7.8.3.1",
+          "Requirements": [
+            "[V2G2-082]"
+          ]
+        },
+        "Config_Id": "CF_01_001",
+        "PICS_Selection": {
+          "PICS_V2GTP_HeaderStructure": true
+        },
+        "PIXIT_Selection": "",
+        "PreCondition": "f_V2GTP_BR_PR_V2GTPSessionSetup_001",
+        "Test_Sequence": [
+          {
+            "Step": 1,
+            "Name": "V2GTP Header Setup",
+            "Instruction": "Set protocolVersion=0x01, invProtocolVersion=0xFE, payloadType=0x8001, payloadLength=valid length"
+          },
+          {
+            "Step": 2,
+            "Name": "Send V2GTP Message",
+            "Instruction": "Transmit V2GTP message with the specified header structure"
+          },
+          {
+            "Step": 3,
+            "Name": "Receive and Validate V2GTP Message",
+            "Instruction": "Receive and validate the V2GTP message from the SUT"
+          }
+        ],
+        "Expected_Behavior": "The SUT correctly processes the V2GTP message with the specified header structure",
+        "Test_Result": "PENDING",
+        "parameters": {
+          "protocolVersion": "0x01",
+          "invProtocolVersion": "0xFE",
+          "payloadType": "0x8001",
+          "payloadLength": 100,
+          "timeout_ms": 30000
+        }
+      }
+    },
+    {
+      "Test_Case": {
+        "TC_Id": "TC_SECC_CMN_VTB_SupportedAppProtocol_001",
+        "Test_Objective": "Verify that the SECC correctly handles a valid SupportedAppProtocolReq message and responds with a valid SupportedAppProtocolRes containing a successful negotiation response code.",
+        "Test_Description": "The Test System sends a valid SupportedAppProtocolReq message containing the ISO 15118-2 protocol namespace, version numbers, schema ID and priority. The Test System then verifies that the SUT responds with a SupportedAppProtocolRes message containing responseCode oK_SuccessfulNegotiation or oK_SuccessfulNegotiationWithMinorDeviation.",
+        "Document_Reference": {
+          "Document": "ISO:15118-4:2018",
+          "Section": "Annex E - E.1.1.1",
+          "Requirements": [
+            "[V2G2-082]"
+          ]
+        },
+        "Config_Id": "CF_01_001",
+        "PICS_Selection": {
+          "PICS_CMN_CMN_IdentificationMode": "pnC or (eIM and TLS)"
+        },
+        "PIXIT_Selection": "",
+        "PreCondition": "f_SECC_CMN_PR_InitConfiguration_001, f_SECC_CMN_PR_Binding_001, f_SECC_CMN_PR_InitConfiguration_002",
+        "Test_Sequence": [
+          {
+            "Step": 1,
+            "Name": "Initialize Configuration",
+            "Instruction": "Create PTC for HAL_61851_Listener, map ports, initialize component variables"
+          },
+          {
+            "Step": 2,
+            "Name": "Establish Binding",
+            "Instruction": "Perform SDP discovery and establish TCP/TLS connection to SUT"
+          },
+          {
+            "Step": 3,
+            "Name": "Send SupportedAppProtocolReq",
+            "Instruction": "Send SupportedAppProtocolReq with ISO namespace, version major/minor, schemaID=10, priority=2"
+          },
+          {
+            "Step": 4,
+            "Name": "Verify SupportedAppProtocolRes",
+            "Instruction": "Verify SUT responds with SupportedAppProtocolRes containing oK_SuccessfulNegotiation or oK_SuccessfulNegotiationWithMinorDeviation"
+          }
+        ],
+        "Expected_Behavior": "SUT responds with SupportedAppProtocolRes with responseCode oK_SuccessfulNegotiation (pass) or oK_SuccessfulNegotiationWithMinorDeviation (pass)",
+        "Test_Result": "PENDING",
+        "parameters": {
+          "protocolNamespace": "urn:iso:15118:2:2013:MsgDef",
+          "versionNumberMajor": 2,
+          "versionNumberMinor": 0,
+          "schemaID": 10,
+          "priority": 2,
+          "timeout_ms": 2000
+        }
+      }
+    }
+  ]
+}

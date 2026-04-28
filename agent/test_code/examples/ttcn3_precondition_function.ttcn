@@ -1,0 +1,87 @@
+/**
+ * @desc    Precondition function examples from ISO 15118-4
+ *
+ * InitConfiguration: Phase A - creates PTC, maps ports
+ * SupportedAppProtocol: Phase B - brings SUT to known state
+ *                       by completing the SupportedAppProtocol handshake
+ */
+
+// Phase A: Initialize test configuration
+function f_SECC_CMN_PR_InitConfiguration_001(
+  out HAL_61851_Listener v_HAL_61851_Listener)
+  runs on SECCTester
+{
+  var timer tc_V2G_EVCC_Msg_Timer := floattoint(PIXIT_CMN_Message_Timeout);
+  var timer tc_CMN_TCP_Connection_Termination_Timer := floattoint(PIXIT_CMN_TCP_Connection_Timeout);
+
+  // Map MTC ports to system ports
+  if (PICS_CMN_CMN_CombinedTesting) {
+    map(mtc:pt_SLAC_Port, system:pt_SLAC_Port);
+  }
+  map(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
+  map(mtc:pt_V2G_TCP_TLS_Port, system:pt_V2G_TCP_TLS_Port);
+
+  // Create and connect PTC for IEC 61851 monitoring
+  v_HAL_61851_Listener := HAL_61851_Listener.create("IEC 61851 Listener") alive;
+  map(mtc:pt_HAL_61851_Port, system:pt_HAL_61851_Port);
+  map(v_HAL_61851_Listener:pt_HAL_61851_Listener_Port,
+      system:pt_HAL_61851_Listener_Port);
+
+  // Start HAL listener
+  v_HAL_61851_Listener.start(f_HAL_61851_Listener());
+
+  // Initialize component variables
+  vc_SessionID := '0000000000000000'O;
+  vc_eVCCID := PIXIT_CMN_Test_eVCCID;
+}
+
+// Phase B: Complete SupportedAppProtocol handshake
+function f_SECC_CMN_PR_SupportedAppProtocol_001(
+  HAL_61851_Listener v_HAL_61851_Listener)
+  runs on SECCTester
+  return verdicttype
+{
+  var timer tc_V2G_EVCC_Msg_Timer := floattoint(PIXIT_CMN_Message_Timeout);
+  var timer tc_CMN_TCP_Connection_Termination_Timer := floattoint(PIXIT_CMN_TCP_Connection_Timeout);
+
+  // Wait for SDP response (SECC discovery)
+  f_SECC_CMN_PR_SDPDiscovery_001();
+
+  // Establish TCP/TLS connection
+  f_SECC_CMN_PR_TCPConnection_001();
+
+  // Send SupportedAppProtocolReq and verify response
+  tc_V2G_EVCC_Msg_Timer.start(PIXIT_CMN_Message_Timeout);
+
+  pt_V2G_TCP_TLS_Port.send(
+    md_CMN_V2GTP_Message_001(
+      md_CMN_V2GTP_Header_001('01'O, 'FE'O, '8001'O, omit),
+      md_CMN_V2GTP_Payload_001(
+        md_CMN_SupportedAppProtocolReq_001()
+      )
+    )
+  );
+
+  alt {
+    [] pt_V2G_TCP_TLS_Port.receive(
+      mw_CMN_V2GTP_Message_001(
+        mw_CMN_V2GTP_Header_001('01'O, 'FE'O, '8002'O, ?),
+        mw_CMN_V2GTP_Payload_001(
+          mw_CMN_SupportedAppProtocolRes_001(?)
+        )
+      )
+    ) {
+      tc_V2G_EVCC_Msg_Timer.stop;
+      setverdict(pass);
+    }
+    [] pt_V2G_TCP_TLS_Port.receive(?) {
+      tc_V2G_EVCC_Msg_Timer.stop;
+      setverdict(fail);
+    }
+    [] tc_V2G_EVCC_Msg_Timer.timeout {
+      setverdict(inconc);
+    }
+  }
+
+  return getverdict;
+}

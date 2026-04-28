@@ -1,0 +1,11 @@
+module SECC_CommonFunctions {
+
+    import from SECC_TestSystem all;
+
+    function f_CMN_wSleep(in float p_duration) {
+        timer t_sleep;
+        t_sleep.start(p_duration);
+        t_sleep.timeout;
+    }
+
+} // end of module

@@ -1,0 +1,30 @@
+module PreConditions_InitConfig {
+    import from SECC_TestSystem all;
+
+    function f_do_init() runs on SECCTester {
+        // SDP Discovery: Send SDP request via UDP multicast to discover SECC
+        // This will trigger SECC to start its TCP server
+
+        // SDP Request payload (V2GTP header + SDP request body)
+        // V2GTP Header: version=1, inv_version=254, payload_type=0x3200, payload_length=4
+        // SDP Request body: security=0, transport=0 (TCP)
+        var octetstring sdp_request := '01FE32000000040000'O;
+
+        // Send SDP request via UDP
+        pt_V2G_UDP_SDP_Port.send(sdp_request);
+
+        // Wait for SDP response
+        timer t_sdp;
+        t_sdp.start(5.0);
+
+        alt {
+            [] pt_V2G_UDP_SDP_Port.receive {
+                t_sdp.stop;
+                log("SDP discovery completed, SECC TCP server should be ready");
+            }
+            [] t_sdp.timeout {
+                log("SDP timeout, proceeding anyway...");
+            }
+        }
+    }
+}

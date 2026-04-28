@@ -1,0 +1,4 @@
+Table 49 — Semantics and type definition for MeteringReceiptRes
+
+
+<table><tr><td>Element Name</td><td>Type</td><td>Semantics</td></tr><tr><td>ResponseCode</td><td>simpleType:responseCodeTypeenumerationrefer to Annex C.6 for the type definition</td><td>ResponseCode indicating the acknowledgment status of any of the V2G messages received by the SECC.</td></tr><tr><td>ACEVSEStatus</td><td>complexType:AC_EVSEStatusTypesubstitutes abstract typeEVSEStatusTyperefer to subclause 8.5.3.1</td><td>This element is used by the SECC for indicating the EVSE status and for signalling an event the SECC expects the EVCC to react to.</td></tr><tr><td>DCEVSEStatus</td><td>complexType:DC_EVSEStatusTypesubstitutes abstract typeEVSEStatusTyperefer to subclause 8.5.4.1</td><td>This element is used by the SECC for indicating the EVSE status and for signalling an event the SECC expects the EVCC to react to.</td></tr></table>

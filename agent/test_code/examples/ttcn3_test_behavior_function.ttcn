@@ -1,0 +1,73 @@
+/**
+ * @desc    Test behavior function example from ISO 15118-4
+ *          Implements the core test logic: send stimulus, start timer,
+ *          use alt to handle response alternatives, set verdict.
+ *
+ * Pattern:
+ *   1. Start timer
+ *   2. Send message via port (using templates)
+ *   3. alt block to handle:
+ *      - Expected response -> pass
+ *      - Unexpected response -> fail
+ *      - Timeout -> inconc
+ */
+function f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001()
+  runs on SECCTester
+  return verdicttype
+{
+  var timer tc_V2G_EVCC_Msg_Timer := floattoint(PIXIT_CMN_Message_Timeout);
+
+  // Start message timeout timer
+  tc_V2G_EVCC_Msg_Timer.start(PIXIT_CMN_Message_Timeout);
+
+  // Send V2GTP message with valid header
+  pt_V2G_TCP_TLS_Port.send(
+    md_CMN_V2GTP_Message_001(
+      md_CMN_V2GTP_Header_001('01'O, 'FE'O, '8003'O, omit),
+      md_CMN_V2GTP_Payload_001(
+        md_CMN_V2GMessage_001(
+          md_CMN_MessageHeader_001(vc_SessionID),
+          md_CMN_BodyType_001(
+            md_CMN_SessionSetupReq_001(vc_eVCCID)
+          )
+        )
+      )
+    )
+  );
+
+  alt {
+    // Expected: Valid SessionSetupRes with correct V2GTP header
+    [] pt_V2G_TCP_TLS_Port.receive(
+      mw_CMN_V2GTP_Message_001(
+        mw_CMN_V2GTP_Header_001('01'O, 'FE'O, '8004'O, ?),
+        mw_CMN_V2GTP_Payload_001(
+          mw_CMN_V2GMessage_001(
+            mw_CMN_MessageHeader_001(?),
+            mw_CMN_BodyType_001(
+              mw_CMN_SessionSetupRes_001(?)
+            )
+          )
+        )
+      )
+    ) {
+      tc_V2G_EVCC_Msg_Timer.stop;
+      log("PASS: Valid SessionSetupRes received with correct V2GTP header");
+      setverdict(pass);
+    }
+
+    // Unexpected: Wrong payload type or invalid header
+    [] pt_V2G_TCP_TLS_Port.receive(?) {
+      tc_V2G_EVCC_Msg_Timer.stop;
+      log("FAIL: Unexpected message received");
+      setverdict(fail);
+    }
+
+    // Timeout: No response within expected time
+    [] tc_V2G_EVCC_Msg_Timer.timeout {
+      log("INCONC: Timeout waiting for SessionSetupRes");
+      setverdict(inconc);
+    }
+  }
+
+  return getverdict;
+}

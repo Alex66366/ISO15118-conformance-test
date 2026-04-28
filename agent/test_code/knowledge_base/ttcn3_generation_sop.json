@@ -1,0 +1,773 @@
+{
+  "sop_name": "ISO 15118-2 TTCN-3 Test Code Generation SOP",
+  "version": "1.1",
+  "description": "Standard Operating Procedures for generating TTCN-3 conformance test code from ISO 15118-2 test cases. Uses a 5-Agent architecture (Orchestrator, Summarizer, Core Agent, Fault Corrector, Infrastructure Agent) with iterative validation, cross-platform build/run, and dual-track runtime analysis.",
+  "_changelog": {
+    "1.0_to_1.1": [
+      "Upgraded from 4-Agent to 5-Agent architecture (added Summarizer, Infrastructure Agent)",
+      "Replaced 6-step flow with accurate 9-step pipeline",
+      "Added three-phase Fault Corrector documentation (static/compile/runtime)",
+      "Added iteration loops (small static loop, large compile loop, large runtime loop)",
+      "Added Infrastructure Agent section (TITAN project generation, 26-28 files)",
+      "Added Build & Run section (cross-platform, optional PCAP capture)",
+      "Expanded precondition_chains with 7 missing message types",
+      "Added compile error classifier patterns to common_errors",
+      "Added timer naming rules and timer_param naming rules",
+      "Added module naming rule and output structure section",
+      "Updated naming convention for receive_template pattern"
+    ]
+  },
+
+  "overview": {
+    "input": "Structured test case JSON (from test_case_generator.py, Phase 1)",
+    "output": "Complete TTCN-3 code module + optional TITAN project structure",
+    "core_engine": "Claude Code CLI (via subprocess claude -p)",
+    "total_agents": 5,
+    "agents": {
+      "orchestrator": "Intent decomposition: test case JSON to TTCN-3 generation plan",
+      "summarizer": "Knowledge retrieval: select most relevant TTCN-3 code from knowledge base",
+      "core_agent": "TTCN-3 code generation: generate complete module",
+      "fault_corrector": "Validation and repair: static/compile/runtime three-phase correction",
+      "infrastructure_agent": "Project scaffolding: generate complete TITAN project structure"
+    },
+    "phase_summary": {
+      "generation": "Orchestrator → Summarizer → Core Agent → Fault Corrector (static, small loop)",
+      "infrastructure": "Infrastructure Agent → Build & Run (cross-platform)",
+      "runtime": "Fault Corrector (compile) → Fault Corrector (runtime) → Self-Repair (large loops)"
+    }
+  },
+
+  "steps": [
+    {
+      "step_id": 1,
+      "name": "Intent Decomposition (Orchestrator)",
+      "description": "Analyze the test case JSON and decompose it into a structured TTCN-3 generation plan",
+      "agent": "orchestrator",
+      "inputs": ["test_case_json", "requirement_context", "sop_naming_rules", "sop_precondition_chains"],
+      "outputs": ["generation_plan_json"],
+      "details": [
+        "Identify SUT type (SECC or EVCC) from test case",
+        "Determine message type and protocol layer (V2GTP, SDP, V2G Application)",
+        "Identify test type (GoodCase or BadCase)",
+        "Determine required precondition chain from SOP",
+        "List required templates (send and receive)",
+        "Identify timer parameters from message type",
+        "Determine expected verdict logic",
+        "Extract naming convention from SOP"
+      ],
+      "output_fields": [
+        "tc_id", "sut_type", "category", "message_type", "test_type",
+        "protocol_layer", "precondition_chain", "timer_param", "port_name",
+        "send_template_name", "receive_template_name", "requirements_traced",
+        "test_behavior_func_name", "postcondition_chain"
+      ]
+    },
+    {
+      "step_id": 2,
+      "name": "Knowledge Retrieval (Summarizer)",
+      "description": "Retrieve the most relevant TTCN-3 reference code from the knowledge base",
+      "agent": "summarizer",
+      "inputs": ["generation_plan", "kb_search_results"],
+      "outputs": ["selected_references"],
+      "details": [
+        "Use pre-filtered results from local search by message_type and sut_type",
+        "Select reference testcase matching tc_id pattern",
+        "Select reference test behavior function",
+        "Select relevant send/receive templates",
+        "Select relevant precondition/postcondition functions",
+        "Provide additional context about protocol-specific patterns"
+      ],
+      "output_fields": [
+        "reference_testcase", "reference_test_behavior",
+        "reference_templates", "reference_preconditions",
+        "reference_postconditions", "additional_context"
+      ]
+    },
+    {
+      "step_id": 3,
+      "name": "TTCN-3 Code Generation (Core Agent)",
+      "description": "Generate the complete TTCN-3 module code",
+      "agent": "core_agent",
+      "inputs": ["generation_plan", "selected_references", "few_shot_examples", "sop", "error_feedback"],
+      "outputs": ["ttcn3_module_code"],
+      "details": [
+        "Function signature: f_{SUT}_{Category}_TB_VTB_{MessageType}_{SeqNo}",
+        "Generate send template (md_CMN_*) for request message",
+        "Generate receive/matching template (mdw_SECC_* or mdw_EVCC_*) for response",
+        "Use correct field types from ISO 15118-2 schema",
+        "Start appropriate timer",
+        "Implement alt block with alternatives: expected response (pass), unexpected response (fail), connection status change (for BadCase), timer timeout (inconc)",
+        "Stop timer in each non-timeout alternative",
+        "Set verdict with descriptive message",
+        "Return getverdict",
+        "Testcase signature: TC_{SUT}_{Category}_VTB_{MessageType}_{SeqNo}",
+        "Phase A+B: Call precondition function chain",
+        "Phase C: Check precondition verdict, call test behavior function",
+        "Phase D: Call postcondition function",
+        "Add @desc/@reference/@requirement documentation comments"
+      ]
+    },
+    {
+      "step_id": 4,
+      "name": "Static Validation (Fault Corrector, phase=static)",
+      "description": "Validate generated code with 8-item static checks; iterate up to 3 times",
+      "agent": "fault_corrector",
+      "inputs": ["ttcn3_code", "generation_plan", "sop"],
+      "outputs": ["validated_code", "issues_found"],
+      "phase": "static",
+      "iteration_type": "small_loop",
+      "max_iterations": 3,
+      "details": [
+        "Check naming convention compliance (TC_*, f_*_TB_VTB_*, md_*, mdw_*)",
+        "Verify template parameter types match ISO 15118-2 schema",
+        "Ensure all alt branches set verdict",
+        "Verify timer start/stop pairs",
+        "Check port names match component definitions (pt_V2G_TCP_TLS_ALM_SECC_Port / pt_V2G_TCP_TLS_ALM_EVCC_Port)",
+        "Validate import statements",
+        "Verify runs on component type matches SUT (SECCTester / EVCCTester)",
+        "Check all alt branches stop timer (except timeout branch)",
+        "Fix common TTCN-3 syntax issues"
+      ],
+      "8_static_checks": [
+        "syntax_check: Brace/bracket matching, semicolons, keywords",
+        "naming_convention: TC_ID/function/template naming per ISO 15118-4",
+        "component_port: runs on / system / port name matches SUT type",
+        "timer_handling: Start/stop pairs, timeout branch does not call stop",
+        "verdict_logic: GoodCase/BadCase verdict conditions are correct",
+        "4_phase_model: Phase A/B/C/D complete in testcase",
+        "template_fields: send/receive template fields are correct",
+        "documentation: @desc/@reference/@requirement annotations present"
+      ]
+    },
+    {
+      "step_id": 5,
+      "name": "Infrastructure Generation (Infrastructure Agent)",
+      "description": "Generate complete TITAN project structure (config, cpp_adapters, TTCN-3 skeleton, build script)",
+      "agent": "infrastructure_agent",
+      "inputs": ["generation_plan", "ttcn3_code", "tc_id", "sut_ip", "demo_reference_files"],
+      "outputs": ["project_files"],
+      "platform_support": ["windows", "linux"],
+      "details": [
+        "Generate config/titan_runtime.cfg with SUT IP configuration",
+        "Generate config/hardware_env.json",
+        "Generate src/cpp_adapters/ with TCI, TRI, EXI, Hardware adapters",
+        "Generate src/ttcn3/ skeleton modules (Types, Templates, PICS, PIXIT, Components, PreConditions, PostConditions)",
+        "Generate build.sh (Linux) and build.bat (Windows)",
+        "Place generated .ttcn in src/ttcn3/4_TestCases/",
+        "Create logs/ directory structure"
+      ],
+      "output_files": [
+        "config/titan_runtime.cfg",
+        "config/hardware_env.json",
+        "src/cpp_adapters/common/Common.hh",
+        "src/cpp_adapters/common/Common.cc",
+        "src/cpp_adapters/TCI/TitanTci.hh",
+        "src/cpp_adapters/TCI/TitanTci.cc",
+        "src/cpp_adapters/TRI/TitanTri.hh",
+        "src/cpp_adapters/TRI/TitanTri.cc",
+        "src/cpp_adapters/EXI/ExiCodecAdapter.hh",
+        "src/cpp_adapters/EXI/ExiCodecAdapter.cc",
+        "src/cpp_adapters/Hardware/HAL61851Adapter.hh",
+        "src/cpp_adapters/Hardware/HAL61851Adapter.cc",
+        "src/cpp_adapters/Hardware/TCPTLSPortAdapter.hh",
+        "src/cpp_adapters/Hardware/TCPTLSPortAdapter.cc",
+        "src/ttcn3/1_Data_Definitions/Types/Types_*.ttcn",
+        "src/ttcn3/1_Data_Definitions/Templates/*.ttcn",
+        "src/ttcn3/1_Data_Definitions/PICS/*.ttcn",
+        "src/ttcn3/1_Data_Definitions/PIXIT/*.ttcn",
+        "src/ttcn3/2_Architecture/ComponentsAndPorts.ttcn",
+        "src/ttcn3/3_Behavior_Steps/PreConditions/*.ttcn",
+        "src/ttcn3/3_Behavior_Steps/PostConditions/*.ttcn",
+        "src/ttcn3/4_TestCases/TC_*.ttcn",
+        "build.sh / build.bat",
+        "logs/system_logs/",
+        "logs/titan_traces/"
+      ]
+    },
+    {
+      "step_id": 6,
+      "name": "Build & Run (Pipeline)",
+      "description": "Compile and execute the TITAN test project; optionally capture PCAP during execution",
+      "agent": "pipeline",
+      "inputs": ["project_dir", "tc_id", "sut_ip", "pcap_output"],
+      "outputs": ["build_result", "test_result", "pcap_file"],
+      "platform_detection": "auto (Windows: cmd /c build.bat, Linux: bash build.sh)",
+      "details": [
+        "Step 0: Check TITAN toolchain (makefilegen, ttcn3_compiler, ttcn3_executor)",
+        "Step 1: Detect platform and select build script",
+        "Step 2: Start optional PCAP sniffer (scapy-based, V2G_Sniffer)",
+        "Step 3: Execute build script, capture stdout/stderr",
+        "Step 4: Parse and classify compile errors",
+        "Step 5: If compile succeeds, run TestExecution with titan_runtime.cfg",
+        "Step 6: Stop sniffer, save capture.pcap",
+        "Save build.log to logs/system_logs/",
+        "Read TestExecution.log from logs/titan_traces/"
+      ]
+    },
+    {
+      "step_id": 7,
+      "name": "Compile Error Repair (Fault Corrector, phase=compile)",
+      "description": "Analyze TITAN compilation errors using knowledge base; fix and re-compile",
+      "agent": "fault_corrector",
+      "inputs": ["ttcn3_code", "generation_plan", "compile_errors"],
+      "outputs": ["fixed_code", "repairs"],
+      "phase": "compile",
+      "iteration_type": "large_loop",
+      "max_iterations": "unlimited",
+      "details": [
+        "Parse raw compiler output into structured error list",
+        "Classify each error using CompileErrorClassifier",
+        "Classify by pattern: port_undefined, import_missing, type_mismatch, runs_on_mismatch, timer_error, ttcn_syntax, cpp_link",
+        "Look up fix suggestion from titan_troubleshooting_db.json",
+        "Generate corrected code using LLM",
+        "Write fixed code to .ttcn file",
+        "Re-run build",
+        "Loop until compilation succeeds or max iterations reached"
+      ],
+      "error_classifier_patterns": [
+        {"type": "port_undefined", "severity": "critical", "fix": "Define port type in ComponentsAndPorts.ttcn; match port name exactly"},
+        {"type": "import_missing", "severity": "critical", "fix": "Add import from <module_name> all; at module top"},
+        {"type": "type_mismatch", "severity": "warning", "fix": "Check template parameter types and function signatures"},
+        {"type": "runs_on_mismatch", "severity": "critical", "fix": "Ensure runs on component type matches caller; called function must use same or parent type"},
+        {"type": "timer_error", "severity": "warning", "fix": "Ensure tc_X.start() is called before referencing timeout"},
+        {"type": "ttcn_syntax", "severity": "critical", "fix": "Check TTCN-3 syntax: braces, semicolons, keywords; see TITAN ReferenceGuide Ch.3"},
+        {"type": "cpp_link", "severity": "critical", "fix": "Check C++ adapters in cpp_adapters/ for missing method implementations"}
+      ]
+    },
+    {
+      "step_id": 8,
+      "name": "Runtime Analysis (Fault Corrector, phase=runtime)",
+      "description": "Dual-track root cause analysis using TTCN-3 log and PCAP capture",
+      "agent": "fault_corrector",
+      "inputs": ["ttcn3_code", "generation_plan", "titan_log", "pcap_file"],
+      "outputs": ["fault_type", "evidence", "repairs"],
+      "phase": "runtime",
+      "iteration_type": "large_loop",
+      "max_self_repair_iterations": 2,
+      "details": [
+        "Track 1: Parse TTCN-3 TestExecution.log, extract verdict sequence, identify first failure",
+        "Track 2: Parse PCAP capture, reconstruct V2GTP message sequence",
+        "Cross-validate: Align TTCN-3 send events with PCAP packets, report divergence points",
+        "Correlate TTCN-3 timestamps with PCAP timestamps",
+        "Classify fault into 6 types: verdict_mismatch, timeout, protocol_error, timer_issue, assertion_failure, unknown",
+        "Generate repair suggestions using RepairEngine",
+        "Update titan_troubleshooting_db.json with new patterns (self-learning)"
+      ],
+      "fault_types": [
+        "verdict_mismatch",
+        "timeout",
+        "protocol_error",
+        "timer_issue",
+        "assertion_failure",
+        "unknown"
+      ],
+      "repair_types": {
+        "auto_fix": "Automatically apply suggested code replacement to source",
+        "manual_review": "Provide fix suggestion but do not auto-apply (complex semantic changes)"
+      }
+    },
+    {
+      "step_id": 9,
+      "name": "Self-Repair (Pipeline)",
+      "description": "Automatically apply auto_fix repairs from Fault Corrector runtime phase; re-compile and validate",
+      "agent": "pipeline",
+      "inputs": ["ttcn3_code", "fault_result", "tc_project_dir"],
+      "outputs": ["applied_repairs", "build_status", "kb_updates"],
+      "details": [
+        "Filter repairs by type == 'auto_fix' with both current_code and suggested_code",
+        "Apply code replacements to ttcn3_code",
+        "Write updated code to both output path and project src/ttcn3/ path",
+        "Re-run build (Step 6)",
+        "If build succeeds: record repairs to knowledge base (learn_from_repair)",
+        "If build fails: rollback to original code, report repair failure",
+        "Max self-repair iterations: 2"
+      ]
+    }
+  ],
+
+  "iteration_loops": {
+    "description": "The pipeline uses three distinct iteration loops at different stages",
+    "small_loop": {
+      "name": "Static Validation Loop",
+      "location": "Steps 3-4 (Core Agent + Fault Corrector static)",
+      "max_iterations": 3,
+      "flow": "Core Agent generates code → Fault Corrector (static) validates → If fail: feedback to Core Agent → Repeat",
+      "exit_condition": "Fault Corrector status == 'pass' or max iterations reached"
+    },
+    "large_loop_compile": {
+      "name": "Compile Error Repair Loop",
+      "location": "Steps 6-7 (Build + Fault Corrector compile)",
+      "max_iterations": "unlimited",
+      "flow": "Build fails → Fault Corrector (compile) analyzes → Core Agent fixes → Re-build → Repeat",
+      "exit_condition": "Compilation succeeds"
+    },
+    "large_loop_runtime": {
+      "name": "Runtime Self-Repair Loop",
+      "location": "Steps 8-9 (Fault Corrector runtime + Self-Repair)",
+      "max_self_repair_iterations": 2,
+      "flow": "Test executes with failure → Fault Corrector (runtime) dual-track analysis → Self-Repair applies fixes → Re-build+run → Repeat",
+      "exit_condition": "Test passes, max iterations reached, or fault type requires manual review"
+    }
+  },
+
+  "fault_corrector": {
+    "description": "Unified Fault Corrector covering three phases with a single entry point",
+    "entry_point": "run_fault_corrector(ttcn3_code, generation_plan, sop, phase='static'|'compile'|'runtime', ...)",
+    "phases": {
+      "static": {
+        "trigger": "After Core Agent generates code (no log files available)",
+        "method": "Pure LLM static validation",
+        "checks": 8,
+        "output": {"status": "pass|fail", "issues_found": [], "corrected_code": ""},
+        "dynamic_references": [
+          "COMPILE_ERROR_URLS: TITAN reference guide URLs from doc_urls.json",
+          "COMPILE_TIME_CHECKLIST: TITAN compile-time rules (6 items)",
+          "RUNTIME_ERROR_REFERENCE: Common runtime errors"
+        ]
+      },
+      "compile": {
+        "trigger": "TITAN compilation failed (raw error output available)",
+        "method": "LLM + CompileErrorClassifier + titan_troubleshooting_db.json",
+        "output": {"status": "pass|fail", "repairs": [], "corrected_code": ""},
+        "classifiers": ["port_undefined", "import_missing", "type_mismatch", "runs_on_mismatch", "timer_error", "ttcn_syntax", "cpp_link"]
+      },
+      "runtime": {
+        "trigger": "TITAN test execution completed (log + optional PCAP available)",
+        "method": "Dual-track analysis: TTCN-3 log + PCAP + Python correlator + LLM reasoning",
+        "output": {"status": "completed|skipped", "fault_type": "", "repairs": [], "corrected_code": ""},
+        "python_analysis": ["Correlator.align()", "FaultClassifier.classify()", "RepairEngine.generate_repairs()"],
+        "python_components": {
+          "correlator": "Align TTCN-3 log events with PCAP packets by timestamp",
+          "fault_classifier": "Classify fault into 6 types with confidence score",
+          "repair_engine": "Generate repairs from classified fault + source code",
+          "sniffer": "scapy-based V2GTP packet capture",
+          "titan_log_parser": "Parse TestExecution.log into structured events",
+          "pcap_parser": "Parse PCAP into V2GTP packets"
+        }
+      }
+    },
+    "knowledge_base_file": "titan_troubleshooting_db.json",
+    "doc_urls_file": "doc_urls.json",
+    "titan_reference_urls": {
+      "tips_troubleshooting": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/12-tips_&_troubleshooting.adoc",
+      "language_extensions": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/4-ttcn3_language_extensions.adoc",
+      "chapter8_alt": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/8-t_alt_blocks_and_timers.adoc"
+    }
+  },
+
+  "naming_rules": {
+    "module": {
+      "pattern": "TC_{SUT}_{Category}_VTB_{MessageType}_{SeqNo}",
+      "note": "Same as testcase name; module name must match the testcase ID"
+    },
+    "testcase": {
+      "pattern": "TC_{SUT}_{Category}_VTB_{MessageType}_{SeqNo}",
+      "SUT": ["SECC", "EVCC"],
+      "Category": ["CMN", "AC", "DC"],
+      "SeqNo": "3-digit zero-padded number, 001=GoodCase, 002+=BadCase"
+    },
+    "test_behavior_function": {
+      "pattern": "f_{SUT}_{Category}_TB_VTB_{MessageType}_{SeqNo}",
+      "note": "Same SUT/Category/MessageType/SeqNo as testcase"
+    },
+    "precondition_function": {
+      "pattern": "f_{SUT}_{Category}_PR_{Name}_{SeqNo}"
+    },
+    "postcondition_function": {
+      "pattern": "f_{SUT}_{Category}_PO_{Name}_{SeqNo}"
+    },
+    "send_template": {
+      "pattern": "md_CMN_{MessageType}Req_{SeqNo}",
+      "note": "Common templates used by both SECC and EVCC tests"
+    },
+    "receive_template": {
+      "pattern": "mdw_{SUT}_{MessageType}Res_{SeqNo}",
+      "note": "SUT-specific matching templates"
+    },
+    "timer": {
+      "pattern": "tc_V2G_{SUT}_Msg_Timer",
+      "note": "Single timer instance per test behavior function"
+    },
+    "timer_param": {
+      "pattern": "par_V2G_{SUT}_Msg_Timeout_{MessageType}{Req|Res}",
+      "example": "par_V2G_EVCC_Msg_Timeout_SupportedAppProtocolReq"
+    },
+    "altstep": {
+      "pattern": "a_{SUT}_{Name}"
+    },
+    "component_var": {
+      "pattern": "vc_{Name}"
+    }
+  },
+
+  "protocol_constants": {
+    "v2gtp_header": {
+      "protocolVersion": "'01'H",
+      "invProtocolVersion": "'FE'H",
+      "payloadType": "'8001'H"
+    },
+    "note": "这些常量在 core_agent_prompt.txt、sop.json common_errors、repair_engine.py AUTO_FIX_RULES 中引用时请使用此处的定义"
+  },
+
+  "common_errors": [
+    {
+      "error": "Missing timer stop in alt branch",
+      "fix": "Add tc_*.stop before setverdict in every non-timeout alt branch"
+    },
+    {
+      "error": "Wrong port name for SUT type",
+      "fix": "SECC tests use pt_V2G_TCP_TLS_ALM_SECC_Port, EVCC tests use pt_V2G_TCP_TLS_ALM_EVCC_Port"
+    },
+    {
+      "error": "Missing return getverdict in test behavior function",
+      "fix": "Always end test behavior function with 'return getverdict;'"
+    },
+    {
+      "error": "Using 'omit' in receive template where '?' is needed",
+      "fix": "'omit' means field must be absent; '?' means any value; '*' means optional (present or absent)"
+    },
+    {
+      "error": "Wrong component type in runs on clause",
+      "fix": "SECC tests: runs on SECCTester system SystemSECC; EVCC tests: runs on EVCCTester system SystemEVCC"
+    },
+    {
+      "error": "Incorrect precondition chain",
+      "fix": "V2GTP tests need SupportedAppProtocol precondition; V2G message tests need the full chain up to the target message"
+    },
+    {
+      "error": "Port type not defined in ComponentsAndPorts.ttcn",
+      "fix": "Ensure port name used matches exactly with the declaration in ComponentsAndPorts.ttcn. Port must be defined as: type port <Name> message { out ...; in ...; }",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "Module not imported",
+      "fix": "Add 'import from <module_name> all;' at the top of the module. Common imports: ISO15118_2_DataTypes, ISO15118_2_Templates",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "runs on clause mismatch between testcase and function/altstep",
+      "fix": "All called functions and altsteps must use the same runs on component type as the testcase. If testcase runs on SECCTester, all functions must runs on SECCTester",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "Timer referenced before start() is called",
+      "fix": "Ensure tc_X.start() is called before any timeout branch is reachable. Timer must be started before it can timeout",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "C++ adapter method not implemented (undefined reference in linking)",
+      "fix": "Implement the corresponding method in the C++ adapter .cc file under src/cpp_adapters/. Check for duplicate definitions across multiple .cc files",
+      "category": "cpp_link"
+    },
+    {
+      "error": "Template type mismatch (parameter count or type)",
+      "fix": "Ensure the template instantiation matches the template declaration exactly: same number of parameters, correct parameter types, matching optional/omit fields",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "Alt block does not handle all port operations",
+      "fix": "Every send/receive/check operation on a port must be covered by a corresponding alt branch. TITAN flags incomplete alt blocks at compile time",
+      "category": "ttcn_compile"
+    }
+  ],
+
+  "precondition_chains": {
+    "description": "Precondition chain for each V2G message type. Each chain must be completed in order before testing the target message.",
+    "V2GTP": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001"
+    ],
+    "SDP": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001"
+    ],
+    "SupportedAppProtocol": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+    ],
+    "SessionSetup": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+    ],
+    "ServiceDiscovery": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001"
+    ],
+    "ServiceDetail": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001"
+    ],
+    "PaymentServiceSelection": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001"
+    ],
+    "PaymentDetails": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001"
+    ],
+    "Authorization": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001"
+    ],
+    "ChargeParameterDiscovery": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001"
+    ],
+    "PowerDelivery": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001"
+    ],
+    "ChargingStatus": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001"
+    ],
+    "CableCheck": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001"
+    ],
+    "PreCharge": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001"
+    ],
+    "MeteringReceipt": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001",
+      "f_{SUT}_CMN_PR_ChargingStatus_001"
+    ],
+    "CurrentDemand": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001",
+      "f_{SUT}_CMN_PR_ChargingStatus_001"
+    ],
+    "WeldingDetection": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001",
+      "f_{SUT}_CMN_PR_ChargingStatus_001",
+      "f_{SUT}_CMN_PR_CurrentDemand_001"
+    ],
+    "CertificateUpdate": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_PaymentDetails_001",
+      "f_{SUT}_CMN_PR_Authorization_001"
+    ],
+    "CertificateInstallation": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_PaymentDetails_001",
+      "f_{SUT}_CMN_PR_CertificateUpdate_001"
+    ],
+    "SessionStop": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001"
+    ]
+  },
+
+  "_missing_precondition_chains": {
+    "description": "Message types that are not standard V2G application layer messages but may appear in test cases. These do not require full precondition chains.",
+    "V2GTPHeader": {
+      "description": "V2GTP header structure tests - no protocol handshake needed",
+      "chain": [],
+      "note": "V2GTP Header tests verify the V2GTP layer header format without requiring SupportedAppProtocol or SessionSetup"
+    },
+    "V2GTP_BR": {
+      "description": "V2GTP Basic Requirements tests - similar to V2GTPHeader",
+      "chain": [],
+      "note": "V2GTP_BR tests the V2GTP entity behavior without full protocol sequence"
+    },
+    "V2GTP": {
+      "description": "V2GTP layer tests - only InitConfiguration needed",
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001"
+      ]
+    },
+    "SDP": {
+      "description": "Service Discovery Protocol tests - only InitConfiguration needed",
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001"
+      ]
+    },
+    "SDPProvider": {
+      "description": "SDP Provider tests - only InitConfiguration needed",
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001"
+      ]
+    },
+    "TCP": {
+      "description": "TCP connection tests - no precondition needed",
+      "chain": [],
+      "note": "TCP connection tests verify basic TCP transport without V2GTP"
+    },
+    "TLSHandshake": {
+      "description": "TLS handshake tests - no precondition needed",
+      "chain": [],
+      "note": "TLS handshake tests verify TLS establishment without V2GTP"
+    },
+    "EVCCMessage": {
+      "description": "Generic EVCC message tests - fallback to SupportedAppProtocol",
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    "SECCMessage": {
+      "description": "Generic SECC message tests - fallback to SupportedAppProtocol",
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    }
+  },
+
+  "build_and_run": {
+    "description": "Cross-platform TITAN build and test execution",
+    "platform_detection": {
+      "windows": "os.name == 'nt' -> build.bat (cmd /c)",
+      "linux": "otherwise -> build.sh (bash)"
+    },
+    "titan_toolchain_required": ["makefilegen", "ttcn3_compiler", "ttcn3_executor"],
+    "ttcn3_inc_detection": [
+      "Environment variable TTCN3_INC",
+      "Fallback paths: C:/Program Files/TITAN/include, C:/titan/include, /usr/include/titan, /usr/local/include/titan"
+    ],
+    "sniffer": {
+      "enabled": "via --with-infrastructure with pcap_output parameter",
+      "engine": "V2G_Sniffer (scapy-based)",
+      "output": "capture.pcap in logs/ directory",
+      "captures": "V2GTP messages on relevant network interface"
+    },
+    "build_timeout_seconds": 300,
+    "runtime_timeout_seconds": 60,
+    "outputs": {
+      "build_log": "logs/system_logs/build.log",
+      "test_execution_log": "logs/titan_traces/TestExecution.log",
+      "pcap_capture": "logs/capture.pcap"
+    },
+    "build_statuses": {
+      "completed": "Build succeeded and test execution finished",
+      "build_failed": "TITAN compilation failed",
+      "build_success_no_executable": "Compilation succeeded but TestExecutable not found",
+      "timeout": "Build or execution exceeded timeout",
+      "error": "Toolchain not found or unexpected error"
+    }
+  },
+
+  "output_structure": {
+    "description": "Generated files and directories",
+    "base_dir": "test_code/generated/",
+    "files": {
+      "{tc_id}.ttcn": "Pure TTCN-3 module code (testcase + templates + functions)",
+      "{tc_id}_plan.json": "Generation plan JSON from Orchestrator",
+      "{tc_id}_fault_analysis.json": "Runtime fault analysis result (if runtime phase was executed)"
+    },
+    "project_dir": {
+      "description": "Full TITAN project (generated when --with-infrastructure is used)",
+      "dir": "test_code/generated/{tc_id}/",
+      "subdirs": {
+        "config/": "TITAN runtime configuration (titan_runtime.cfg, hardware_env.json)",
+        "src/cpp_adapters/": "C++ adapter implementations (TCI, TRI, EXI, Hardware)",
+        "src/ttcn3/": "TTCN-3 source modules (Types, Templates, Components, Pre/PostConditions, TestCases)",
+        "build/": "Build artifacts (bin/TestExecutable, object files)",
+        "logs/system_logs/": "Build logs",
+        "logs/titan_traces/": "TITAN execution logs",
+        "logs/": "PCAP capture output"
+      }
+    }
+  },
+
+  "timer_default_values": {
+    "par_CMN_Transmission_Delay": 0.25,
+    "par_CMN_HAL_Timeout": 2.0,
+    "par_V2G_SECC_Sequence_Timeout": 60.0,
+    "par_V2G_EVCC_Msg_Timeout_SupportedAppProtocolReq": 2.0,
+    "par_V2G_EVCC_Msg_Timeout_SessionSetupReq": 2.0,
+    "par_V2G_EVCC_Msg_Timeout_ServiceDiscoveryReq": 2.0,
+    "par_V2G_EVCC_Msg_Timeout_ServiceDetailReq": 5.0,
+    "par_V2G_EVCC_Msg_Timeout_PaymentServiceSelectionReq": 2.0,
+    "par_V2G_EVCC_Msg_Timeout_PaymentDetailsReq": 2.0,
+    "par_V2G_EVCC_Msg_Timeout_CertificateInstallationReq": 5.0,
+    "par_V2G_EVCC_Msg_Timeout_CertificateUpdateReq": 5.0,
+    "par_V2G_EVCC_Msg_Timeout_AuthorizationReq": 2.0,
+    "par_V2G_EVCC_Msg_Timeout_ChargeParameterDiscoveryReq": 2.0,
+    "par_V2G_EVCC_Msg_Timeout_PowerDeliveryReq": 5.0,
+    "par_V2G_EVCC_Msg_Timeout_ChargingStatusReq": 2.0,
+    "par_V2G_EVCC_Msg_Timeout_CurrentDemandReq": 0.25,
+    "par_V2G_EVCC_Msg_Timeout_MeteringReceiptReq": 2.0,
+    "par_V2G_EVCC_Msg_Timeout_CableCheckReq": 40.0,
+    "par_V2G_EVCC_Msg_Timeout_PreChargeReq": 7.0,
+    "par_V2G_EVCC_Msg_Timeout_WeldingDetectionReq": 2.0,
+    "par_V2G_EVCC_Msg_Timeout_SessionStopReq": 2.0,
+    "par_V2G_EVCC_Ongoing_Timeout": 60.0,
+    "par_V2G_EVCC_CommunicationSetup_Timeout": 20.0,
+    "par_V2G_EVCC_CableCheck_Timeout": 40.0,
+    "par_V2G_EVCC_PreCharge_Timeout": 7.0,
+    "par_EVCC_SDP_Timeout": 0.25,
+    "par_CMN_TCP_Connection_Termination_Timeout": 5.0
+  }
+}

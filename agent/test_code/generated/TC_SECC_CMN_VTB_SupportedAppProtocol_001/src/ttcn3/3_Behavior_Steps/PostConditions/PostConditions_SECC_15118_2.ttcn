@@ -1,0 +1,5 @@
+module PostConditions_SECC_15118_2 {
+    import from SECC_TestSystem all;
+    import from f_SECC_CMN_PO_InitialState_001 all;
+    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
+}

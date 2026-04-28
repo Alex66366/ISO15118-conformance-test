@@ -1,0 +1,82 @@
+{
+  "total": 3,
+  "success": 2,
+  "failed": 1,
+  "avg_score": 79.93333333333334,
+  "elapsed_time": 235.3029589653015,
+  "results": [
+    {
+      "tc_id": "TC_SECC_CMN_VTB_SupportedAppProtocol_001",
+      "success": true,
+      "steps": {
+        "code_generation": {
+          "success": true,
+          "output_path": "/data/cdy/code/v2g2_082/iso15118/agent/test_code/generated/TC_SECC_CMN_VTB_V2GTPHeader_001.ttcn",
+          "message": "生成成功，使用最近文件 (234.0s)"
+        },
+        "standard_extraction": {
+          "success": true,
+          "message": "提取成功（耗时 0.5s）"
+        },
+        "code_comparison": {
+          "success": true,
+          "score": 83.2,
+          "diffs_count": 1
+        },
+        "report_generation": {
+          "success": true,
+          "outputs": {
+            "text_report": "results/TC_SECC_CMN_VTB_SupportedAppProtocol_001/comparison_report.txt",
+            "json_summary": "results/TC_SECC_CMN_VTB_SupportedAppProtocol_001/summary.json"
+          }
+        }
+      },
+      "output_dir": "results/TC_SECC_CMN_VTB_SupportedAppProtocol_001",
+      "error": null,
+      "elapsed_time": 234.53895735740662
+    },
+    {
+      "tc_id": "TC_SECC_CMN_VTB_SessionSetup_001",
+      "success": false,
+      "steps": {
+        "code_generation": {
+          "success": false,
+          "output_path": null,
+          "message": "未找到测试用例: TC_SECC_CMN_VTB_SessionSetup_001"
+        }
+      },
+      "output_dir": "results/TC_SECC_CMN_VTB_SessionSetup_001",
+      "error": "代码生成失败: 未找到测试用例: TC_SECC_CMN_VTB_SessionSetup_001"
+    },
+    {
+      "tc_id": "TC_SECC_CMN_VTB_ServiceDiscovery_001",
+      "success": true,
+      "steps": {
+        "code_generation": {
+          "success": true,
+          "output_path": "/data/cdy/code/v2g2_082/iso15118/agent/test_code/generated/TC_SECC_CMN_VTB_ServiceDiscovery_001.ttcn",
+          "message": "使用缓存"
+        },
+        "standard_extraction": {
+          "success": true,
+          "message": "提取成功（耗时 0.5s）"
+        },
+        "code_comparison": {
+          "success": true,
+          "score": 76.66666666666667,
+          "diffs_count": 2
+        },
+        "report_generation": {
+          "success": true,
+          "outputs": {
+            "text_report": "results/TC_SECC_CMN_VTB_ServiceDiscovery_001/comparison_report.txt",
+            "json_summary": "results/TC_SECC_CMN_VTB_ServiceDiscovery_001/summary.json"
+          }
+        }
+      },
+      "output_dir": "results/TC_SECC_CMN_VTB_ServiceDiscovery_001",
+      "error": null,
+      "elapsed_time": 0.6289215087890625
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+/**
+ * @desc    BadCase testcase example from ISO 15118-4
+ *          Tests that SUT correctly handles invalid V2GTP header
+ *          (wrong protocol version).
+ *
+ * Pattern: Same 4-phase model, but test behavior sends invalid data
+ *          and expects SUT to reject/handle gracefully.
+ */
+testcase TC_SECC_CMN_VTB_V2GTPSessionSetup_002()
+  runs on SECCTester system SystemSECC
+{
+  var HAL_61851_Listener v_HAL_61851_Listener;
+  var verdicttype preConVerdict;
+  var timer tc_V2G_EVCC_Msg_Timer := floattoint(PIXIT_CMN_Message_Timeout);
+  var timer tc_CMN_TCP_Connection_Termination_Timer := floattoint(PIXIT_CMN_TCP_Connection_Timeout);
+
+  // -- Pre Conditions --
+  f_SECC_CMN_PR_InitConfiguration_001(v_HAL_61851_Listener);
+  preConVerdict := f_SECC_CMN_PR_SupportedAppProtocol_001(v_HAL_61851_Listener);
+
+  // -- Test behavior --
+  if (preConVerdict == pass) {
+    f_SECC_CMN_TB_VTB_V2GTPSessionSetup_002();
+  } else {
+    log("PreCondition verdict is not pass");
+    setverdict(inconc);
+  }
+
+  // -- Post Conditions --
+  f_SECC_CMN_PO_InitConfiguration_001(v_HAL_61851_Listener);
+}

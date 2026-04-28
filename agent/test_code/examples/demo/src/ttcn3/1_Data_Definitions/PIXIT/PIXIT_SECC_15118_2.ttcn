@@ -1,0 +1,131 @@
+module SECC_PIXIT {
+
+    import from SECC_Types all;
+
+    // ==========================================
+    // PIXIT - Protocol Implementation eXtra Information for Testing
+    // Additional test parameters and environment-specific configuration
+    // ==========================================
+
+    // ==========================================
+    // Section 1: TLS/TLS Configuration
+    // ==========================================
+    modulepar boolean PIXIT_SECC_CMN_TLS := true;
+    modulepar boolean PIXIT_SECC_CMN_TLS_Required := true;
+
+    // ==========================================
+    // Section 2: SUT (System Under Test) Configuration
+    // ==========================================
+
+    // SUT IP Address
+    modulepar charstring PIXIT_SECC_CMN_SUT_IP_Address := "192.168.1.100";
+
+    // SUT Port
+    modulepar integer PIXIT_SECC_CMN_SUT_Port := 15118;
+
+    // SUT IPv6 Multicast Address
+    modulepar charstring PIXIT_SECC_CMN_SUT_IPv6_Multicast := "ff02::01";
+
+    // Expected EVSE ID from SUT
+    modulepar charstring PIXIT_SECC_CMN_Expected_EVSE_ID := "DE*IPG*E12345*1";
+
+    // ==========================================
+    // Section 3: Network Configuration
+    // ==========================================
+
+    // Network Interface
+    modulepar charstring PIXIT_SECC_CMN_Network_Interface := "eth0";
+
+    // VLAN ID (0 = no VLAN)
+    modulepar integer PIXIT_SECC_CMN_VLAN_ID := 0;
+
+    // MTU Size
+    modulepar integer PIXIT_SECC_CMN_MTU_Size := 1500;
+
+    // ==========================================
+    // Section 4: Timeout Configuration
+    // ==========================================
+
+    // V2G Message Timeout
+    modulepar float PIXIT_SECC_CMN_Message_Timeout := 2.0;
+
+    // Sequence Timeout
+    modulepar float PIXIT_SECC_CMN_Sequence_Timeout := 2.0;
+
+    // Communication Setup Timeout
+    modulepar float PIXIT_SECC_CMN_CommunicationSetup_Timeout := 10.0;
+
+    // TCP Connection Timeout
+    modulepar float PIXIT_SECC_CMN_TCP_Connection_Timeout := 5.0;
+
+    // TLS Handshake Timeout
+    modulepar float PIXIT_SECC_CMN_TLS_Handshake_Timeout := 10.0;
+
+    // ==========================================
+    // Section 5: Test Data Configuration
+    // ==========================================
+
+    // EVCCID for Testing
+    modulepar EvccIDType PIXIT_SECC_CMN_Test_eVCCID := '123456789ABC'O;
+
+    // Session ID for Testing
+    modulepar SessionIDType PIXIT_SECC_CMN_Test_SessionID := '0000000000000000'O;
+
+    // Certificate Configuration
+    modulepar charstring PIXIT_SECC_CMN_Test_Root_CA := "V2G_ROOT_CA";
+    modulepar charstring PIXIT_SECC_CMN_Test_Contract_Cert := "CONTRACT_CERT";
+
+    // ==========================================
+    // Section 6: Hardware Configuration
+    // ==========================================
+
+    // Hardware Device Path (for HIL testing)
+    modulepar charstring PIXIT_SECC_CMN_Hardware_Device_Path := "/dev/ttyUSB0";
+
+    // Hardware Baudrate
+    modulepar integer PIXIT_SECC_CMN_Hardware_Baudrate := 115200;
+
+    // ==========================================
+    // Section 7: Test Mode Configuration
+    // ==========================================
+
+    // Combined Testing Mode (HIL vs SIL)
+    modulepar boolean PIXIT_SECC_CMN_Combined_Testing_Mode := false;
+
+    // SLAC Required
+    modulepar boolean PIXIT_SECC_CMN_SLAC_Required := false;
+
+    // ==========================================
+    // Section 8: SDP Configuration
+    // ==========================================
+
+    // SDP Response Timeout
+    modulepar float PIXIT_SECC_CMN_SDP_Response_Timeout := 1.0;
+
+    // SDP Maximum Retries
+    modulepar integer PIXIT_SECC_CMN_SDP_Max_Retries := 3;
+
+    // ==========================================
+    // Section 9: Logging Configuration
+    // ==========================================
+
+    // Enable Detailed Logging
+    modulepar boolean PIXIT_SECC_CMN_Enable_Detailed_Logging := true;
+
+    // Log File Path
+    modulepar charstring PIXIT_SECC_CMN_Log_File_Path := "../logs/titan_traces/";
+
+    // ==========================================
+    // Section 10: Certificate Validation
+    // ==========================================
+
+    // Validate Certificate Chain
+    modulepar boolean PIXIT_SECC_CMN_Validate_Cert_Chain := true;
+
+    // Accept Expired Certificates (for testing only)
+    modulepar boolean PIXIT_SECC_CMN_Accept_Expired_Certs := false;
+
+    // Accept Self-Signed Certificates (for testing only)
+    modulepar boolean PIXIT_SECC_CMN_Accept_Self_Signed_Certs := false;
+
+} // end of module SECC_PIXIT

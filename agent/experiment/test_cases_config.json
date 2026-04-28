@@ -1,0 +1,108 @@
+{
+  "_schema_version": "1.0",
+  "_description": "ISO 15118-4 TTCN-3 代码生成实验配置文件",
+  "experiment_config": {
+    "name": "TC_SECC_CMN_VTB_SupportedAppProtocol_001_对比实验",
+    "description": "针对 SupportedAppProtocol 消息的代码生成质量评估实验",
+    "author": "Code Agent Team",
+    "date": "2026-04-10"
+  },
+  "single_test": {
+    "enabled": true,
+    "test_case": {
+      "tc_id": "TC_SECC_CMN_VTB_SupportedAppProtocol_001",
+      "tc_name": "SECC SupportedAppProtocol GoodCase Test",
+      "test_type": "GoodCase",
+      "sut_type": "SECC",
+      "category": "CMN",
+      "message_type": "SupportedAppProtocol",
+      "sequence_number": "001",
+      "requirement_ids": ["V2G2-082"],
+      "description": "验证 SECC 能正确处理 SupportedAppProtocolReq 消息",
+      "expected_behavior": "EVCC 发送 SupportedAppProtocolReq，SECC 应答 SupportedAppProtocolRes"
+    }
+  },
+  "batch_test": {
+    "enabled": false,
+    "test_cases": [
+      {
+        "tc_id": "TC_SECC_CMN_VTB_SupportedAppProtocol_001",
+        "description": "SECC SupportedAppProtocol GoodCase",
+        "requirement_ids": [
+          "V2G2-728",
+          "V2G2-025",
+          "V2G2-026",
+          "V2G2-168",
+          "V2G2-027",
+          "V2G2-029",
+          "V2G2-723",
+          "V2G2-030",
+          "V2G2-032",
+          "V2G2-033",
+          "V2G2-034",
+          "V2G2-729",
+          "V2G2-068",
+          "V2G2-082",
+          "V2G2-086",
+          "V2G2-087"
+        ]
+      },
+      {
+        "tc_id": "TC_SECC_CMN_VTB_SessionSetup_001",
+        "description": "SECC SessionSetup GoodCase",
+        "requirement_ids": ["V2G2-462","V2G2-634"]
+      },
+      {
+        "tc_id": "TC_SECC_CMN_VTB_ServiceDiscovery_001",
+        "description": "SECC ServiceDiscovery GoodCase",
+        "requirement_ids": [
+          "V2G2-266",
+          "V2G2-274",
+          "V2G2-275",
+          "V2G2-276",
+          "V2G2-277",
+          "V2G2-278",
+          "V2G2-279",
+          "V2G2-282",
+          "V2G2-283",
+          "V2G2-284"
+        ]
+      }
+    ]
+  },
+  "pipeline_config": {
+    "steps": {
+      "code_generation": {
+        "enabled": true,
+        "pipeline_path": "../test_code/ttcn3_generation_pipeline.py",
+        "use_cache": true,
+        "overwrite_existing": false
+      },
+      "standard_extraction": {
+        "enabled": true,
+        "extractor_path": "./standard_extractor.py",
+        "knowledge_base_path": "../document/iso15118_4_ttcn_knowledge_base.json",
+        "use_cache": true,
+        "overwrite_existing": false
+      },
+      "code_comparison": {
+        "enabled": true,
+        "comparison_levels": [
+          "structure",
+          "naming",
+          "syntax",
+          "completeness"
+        ],
+        "strict_naming": false
+      },
+      "report_generation": {
+        "enabled": true,
+        "output_format": ["text", "json"],
+        "include_snippets": true,
+        "max_snippet_lines": 20
+      }
+    },
+    "results_dir": "./results",
+    "log_level": "INFO"
+  }
+}

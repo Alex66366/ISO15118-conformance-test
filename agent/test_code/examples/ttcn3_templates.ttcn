@@ -1,0 +1,198 @@
+/**
+ * @desc    Template examples from ISO 15118-4
+ *
+ * Naming conventions (matching demo/CmnTemplates.ttcn):
+ *   md_CMN_*   : Common send templates (used by both SECC and EVCC tests)
+ *   mw_CMN_*   : Common receive/matching templates (wildcard matching)
+ *
+ * Templates define message structures for sending and matching.
+ * Use 'omit' for optional fields, '?' for wildcard matching.
+ */
+
+// ==========================================
+// V2GTP Layer Templates
+// ==========================================
+
+// V2GTP Header template (send)
+template V2GTP_Header md_CMN_V2GTP_Header_001(
+  template Oct1 p_protocolVersion,
+  template Oct1 p_invProtocolVersion,
+  template Oct2 p_payloadType,
+  template UInt32 p_payloadLength) := {
+    protocolVersion    := p_protocolVersion,
+    invProtocolVersion := p_invProtocolVersion,
+    payloadType        := p_payloadType,
+    payloadLength      := p_payloadLength
+}
+
+// V2GTP Header matching template (receive)
+template V2GTP_Header mw_CMN_V2GTP_Header_001(
+  template Oct1 p_protocolVersion,
+  template Oct1 p_invProtocolVersion,
+  template Oct2 p_payloadType,
+  template UInt32 p_payloadLength) := {
+    protocolVersion    := p_protocolVersion,
+    invProtocolVersion := p_invProtocolVersion,
+    payloadType        := p_payloadType,
+    payloadLength      := p_payloadLength
+}
+
+// V2GTP Payload template (send)
+template V2GTP_Payload md_CMN_V2GTP_Payload_001(
+  template BodyBaseType p_bodyElement) := {
+    bodyElement := p_bodyElement
+}
+
+// V2GTP Payload matching template (receive)
+template V2GTP_Payload mw_CMN_V2GTP_Payload_001(
+  template BodyBaseType p_bodyElement) := {
+    bodyElement := p_bodyElement
+}
+
+// V2GTP Message template (send)
+template V2GTP_Message md_CMN_V2GTP_Message_001(
+  template V2GTP_Header p_header,
+  template V2GTP_Payload p_payload) := {
+    header  := p_header,
+    payload := p_payload
+}
+
+// V2GTP Message matching template (receive)
+template V2GTP_Message mw_CMN_V2GTP_Message_001(
+  template V2GTP_Header p_header,
+  template V2GTP_Payload p_payload) := {
+    header  := p_header,
+    payload := p_payload
+}
+
+// ==========================================
+// V2G Message Layer Templates
+// ==========================================
+
+// V2G Message template (send)
+template V2G_Message md_CMN_V2GMessage_001(
+  template MessageHeaderType p_header,
+  template BodyType p_body) := {
+    header := p_header,
+    body   := p_body
+}
+
+// V2G Message matching template (receive)
+template V2G_Message mw_CMN_V2GMessage_001(
+  template MessageHeaderType p_header,
+  template BodyType p_body) := {
+    header := p_header,
+    body   := p_body
+}
+
+// V2G Message Header template (send)
+template MessageHeaderType md_CMN_MessageHeader_001(
+  template SessionIDType p_sessionID) := {
+    sessionID   := p_sessionID,
+    notification := omit,
+    signature   := omit
+}
+
+// V2G Message Header matching template (receive)
+template MessageHeaderType mw_CMN_MessageHeader_001(
+  template SessionIDType p_sessionID) := {
+    sessionID   := p_sessionID,
+    notification := omit,
+    signature   := omit
+}
+
+// Body type template (send)
+template BodyType md_CMN_BodyType_001(
+  template BodyBaseType p_bodyElement) := {
+    bodyElement := p_bodyElement
+}
+
+// Body type matching template (receive)
+template BodyType mw_CMN_BodyType_001(
+  template BodyBaseType p_bodyElement) := {
+    bodyElement := p_bodyElement
+}
+
+// ==========================================
+// V2G Body Element Templates (Send)
+// ==========================================
+
+// SessionSetupReq template (send)
+template SessionSetupReqType md_CMN_SessionSetupReq_001(
+  template EvccIDType p_eVCCID) := {
+    eVCCID := p_eVCCID
+}
+
+// SupportedAppProtocolReq template (send)
+template SupportedAppProtocolReqType md_CMN_SupportedAppProtocolReq_001() := {
+    protocolNamespace := omit,
+    supportedAppProtocol := ?
+}
+
+// ServiceDiscoveryReq template (send)
+template ServiceDiscoveryReqType md_CMN_ServiceDiscoveryReq_001(
+  template ServiceCategoryType p_serviceCategory) := {
+    serviceScope    := omit,
+    serviceCategory := p_serviceCategory
+}
+
+// ChargeParameterDiscoveryReq template (send, AC)
+template ChargeParameterDiscoveryReqType md_CMN_ChargeParameterDiscoveryReq_001(
+  template EnergyTransferModeType p_requestedEnergyTransferMode,
+  template AC_EVChargeParameterType p_acEVChargeParameter) := {
+    maxEntriesSAScheduleTuple    := omit,
+    requestedEnergyTransferMode := p_requestedEnergyTransferMode,
+    eVChargeParameter          := p_acEVChargeParameter
+}
+
+// PowerDeliveryReq template (send)
+template PowerDeliveryReqType md_CMN_PowerDeliveryReq_001(
+  template ChargeProgressType p_chargeProgress,
+  template SAScheduleTupleIDType p_saScheduleTupleID) := {
+    chargeProgress              := p_chargeProgress,
+    saScheduleTupleID          := p_saScheduleTupleID,
+    chargingProfile            := omit,
+    eVPowerDeliveryParameter   := omit
+}
+
+// ==========================================
+// V2G Body Element Templates (Receive/Match)
+// ==========================================
+
+// SessionSetupRes matching template (receive)
+template SessionSetupResType mw_CMN_SessionSetupRes_001(
+  template ResponseCodeType p_responseCode) := {
+    responseCode    := p_responseCode,
+    eVSEID         := ?,
+    eVSETimeStamp  := *
+}
+
+// SupportedAppProtocolRes matching template (receive)
+template SupportedAppProtocolResType mw_CMN_SupportedAppProtocolRes_001(
+  template ResponseCodeType p_responseCode) := {
+    responseCode := p_responseCode,
+    schemaID     := ?
+}
+
+// ServiceDiscoveryRes matching template (receive)
+template ServiceDiscoveryResType mw_CMN_ServiceDiscoveryRes_001(
+  template ResponseCodeType p_responseCode) := {
+    responseCode     := p_responseCode,
+    paymentOptionList := ?,
+    chargeService    := ?,
+    serviceList      := *
+}
+
+// ==========================================
+// TCP Control Message Templates
+// ==========================================
+
+// TCP Close request template (send)
+template TCPControlMessage md_CMN_TCPControlMessage_Close() := {
+    command := '00'O
+}
+
+// TCP Close response matching template (receive)
+template TCPControlMessage mw_CMN_TCPControlMessage_Closed() := {
+    command := '00'O
+}

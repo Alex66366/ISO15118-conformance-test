@@ -1,0 +1,49 @@
+/**
+ * @desc    Postcondition function example from ISO 15118-4
+ *          Phase D: Cleanup - unmap ports, stop PTC, restore initial state
+ */
+
+function f_SECC_CMN_PO_InitConfiguration_001(
+  HAL_61851_Listener v_HAL_61851_Listener)
+  runs on SECCTester
+{
+  var timer tc_CMN_TCP_Connection_Termination_Timer := floattoint(PIXIT_CMN_TCP_Connection_Timeout);
+
+  // Stop HAL listener PTC
+  v_HAL_61851_Listener.stop;
+
+  // Unmap all ports
+  unmap(mtc:pt_V2G_TCP_TLS_Port, system:pt_V2G_TCP_TLS_Port);
+  unmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
+  unmap(mtc:pt_HAL_61851_Port, system:pt_HAL_61851_Port);
+  unmap(v_HAL_61851_Listener:pt_HAL_61851_Listener_Port,
+        system:pt_HAL_61851_Listener_Port);
+
+  if (PICS_CMN_CMN_CombinedTesting) {
+    unmap(mtc:pt_SLAC_Port, system:pt_SLAC_Port);
+  }
+
+  // Disconnect and cleanup TCP/TLS connection
+  f_SECC_CMN_PO_TCPConnection_001();
+}
+
+function f_SECC_CMN_PO_TCPConnection_001()
+  runs on SECCTester
+{
+  var timer tc_CMN_TCP_Connection_Termination_Timer := floattoint(PIXIT_CMN_TCP_Connection_Timeout);
+
+  // Close TCP/TLS connection gracefully
+  tc_CMN_TCP_Connection_Termination_Timer.start(PIXIT_CMN_TCP_Connection_Timeout);
+
+  pt_V2G_TCP_TLS_Port.send(md_CMN_TCPControlMessage_Close());
+
+  alt {
+    [] pt_V2G_TCP_TLS_Port.receive(mw_CMN_TCPControlMessage_Closed()) {
+      tc_CMN_TCP_Connection_Termination_Timer.stop;
+      log("TCP connection closed successfully");
+    }
+    [] tc_CMN_TCP_Connection_Termination_Timer.timeout {
+      log("WARNING: TCP connection termination timeout");
+    }
+  }
+}

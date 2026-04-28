@@ -1,0 +1,264 @@
+/**
+ * @desc    Standard reference code for TC_SECC_CMN_VTB_ServiceDiscovery_001
+ * @source  ISO 15118-4:2018 (OCR-extracted from knowledge base)
+ * @requirements V2G2-266, V2G2-274, V2G2-275, V2G2-276, V2G2-277, V2G2-278, V2G2-279, V2G2-282, V2G2-283, V2G2-284
+ */
+
+// ============ Templates ============
+
+// [receive_templates] mdw_SECC_CMN_ServiceDiscoveryRes_001
+template BodyElement_group mdw_SECC_CMN_ServiceDiscoveryRes_001(
+template (present) ResponseDataType p_responseCode) := {
+serviceDiscoveryRes := {
+responseCode := p_responseCode,
+paymentOptionList := ?
+chargeService := ?
+serviceList := omit
+}
+}
+
+// [template] md_CMN_CMN_ServiceDiscoveryReq_002
+template BodyElement_group md_CMN_CMN_ServiceDiscoveryReq_002(
+template ServiceCategoryType pserviceCategory) := {
+serviceDiscoveryReq := {
+serviceCategory := p.serviceCategory
+}
+}
+
+// [template] md_CMN_CMN_ServiceDiscoveryReq_003
+template BodyElement_group md_CMN_CMN_ServiceDiscoveryReq_003(
+template ServiceScopeType p.serviceScope,
+template ServiceCategoryType p.serviceCategory) := {
+serviceDiscoveryReq := {
+serviceScope := p.serviceScope,
+serviceCategory := p.serviceCategory
+}
+}
+
+// [template] md_CMN_CMN_ServiceDiscoveryRes_001
+template BodyElement_group md_CMN_CMN_ServiceDiscoveryRes_001(
+template (present) PaymentOptionType p-paymentOption,
+template (present) ServiceIDType p(serviceID,
+template (present)服务体系Type p服务体系List) := {
+serviceDiscoveryRes := {
+responseCode := oK,
+paymentOptionList := {
+paymentOption_list := {
+p-paymentOption
+}
+},
+chargeService := {
+serviceID := p.serviceID,
+serviceName := omit,
+serviceCategory := eVCharging,
+serviceScope := omit,
+freeService := true,
+supportedEnergyTransferMode := {
+energyTransferMode_list := {
+aC_single_phase_core, aC_three_phase_core,
+dC combo_core, dC_core, dC_EXTENDED, dC_unique
+}
+},
+serviceList := p.serviceList
+}
+}
+template TemplateListType m_CMN_CMN_ServiceList_001() := {
+service_list := {
+serviceType := {
+serviceID := 2,
+serviceName := "Certificate",
+serviceCategory := contractCertificate,
+serviceScope := omit,
+freeService := true
+}
+}
+}
+
+template ServiceListType m_CMN_CMN_ServiceList_002() := {
+service_list := {
+serviceType := {
+serviceID := 3,
+serviceName := "InternetAccess",
+服务体系Category := internet,
+serviceScope := omit,
+freeService := false
+}
+}
+}
+
+000 000 1000 1000<|box_end|><|ref_start|>code<|ref_end|><|rotate_up|>
+
+M.1.2.3 CMN templates for Authorization
+
+module Templates_CMN_Authorization {
+import from XSDAUX language "XSD" all;
+import from urn(iso_15118_2_2013 MsgBody language "XSD" all;
+import from urn(iso_15118_2_2013 MsgDataTypes language "XSD" all;
+// V2G Body for AuthorizationReq EIM
+template BodyElement_group m_CMN_CMN_AuthorizationReq_001() := {
+authorizationReq := {
+genChallenge := omit,
+id := omit
+}
+}
+// V2G Body for AuthorizationReq PnC
+template BodyElement_group md_CMN_CMN_AuthorizationReq_002(
+template XSDAUX.ID p_id,
+template GenChallengeType p_genChallenge) := {
+authorizationReq := {
+id := p_id,
+genChallenge := p_genChallenge
+}
+}
+} // V2G Body for AuthorizationReq EIM/PnC
+template BodyElement_group mw_CMN_CMN_AuthorizationReq_003() := {
+authorizationReq := {
+id := *,
+genChallenge := *
+}
+}
+
+}
+
+// [template] md_SECC_CMN_ServiceDiscoveryRes_002
+template BodyElement_group md_SECC_CMN_ServiceDiscoveryRes_002(
+template (present) ResponseDataType p_responseCode,
+template (present) PaymentOptionelistType p-paymentOptions,
+template (present) ChargeServiceType p chargeService,
+template ServiceelistType p_SERVICEList) := {
+serviceDiscoveryRes := {
+responseCode := p_responseCode,
+paymentOptionList := p-paymentOptions,
+chargeService := p chargeService,
+serviceList := p_serviceList
+}
+}
+
+// [template] m_CMN_CMN_ServiceDiscoveryReq_001
+template BodyElement_group m_CMN_CMN_ServiceDiscoveryReq_001 := {
+serviceDiscoveryReq := {}
+}
+
+// ============ Test Behavior Function ============
+
+function f_SECC_CMN_TB_VTB_ServiceDiscovery_001(in verdicttype v_vct)
+runs on SECCTester
+return verdicttype {
+var V2G_Message v_responseMessage;
+
+var charstring v_message;
+tc_V2GEVCC Msg_Timer.start(par_V2GEVCC Msg_Timeout_ServiceDiscoveryReq);
+pt_V2G_TCP_TLS_ALM_SECC_Port.send(md_CMN_V2G_Message_001( md_CMN_MessageType_001(vc-sessionID), md_CMN BODYType_001( md_CMN信息服务DiscoveryReq_002(omit)))));
+alt { []pt_V2G_TCP_TLS_ALM_SECC_Port.receive(md_CMN_V2G_Message_001( md_CMN_MessageHeaderType_001(vc-sessionID), md_CMN BODYType_001( md_SECC_CMN_ServiceDiscoveryRes_002(oK,?,?,*)))) -> value v_responseMessage{ tc_V2GEVCC Msg_Timer.stop; vcSupportedEnergyTransferMode := v_responseMessage.body.bodyElement. serviceDiscoveryRes.chargeService. supportedEnergyTransferMode; vc-paymentOptionList := v_responseMessage.body.bodyElement. serviceDiscoveryRes paymentOptionList; var boolean v_isSelected := false; for (var integer i := 0; i < sizeof(vc_paymentOptionListpaymentOption_list); i := i + 1) { if(PICS_CMN_CMN_IdentificationMode == pnC) { if(vc PaymentOptionList paymentOption_list[i] == contract) { vc选定PaymentOption := vc PaymentOptionList paymentOption_list[i]; v_isSelected := true; } else { if(vc PaymentOptionList paymentOption_list[i] == externalPayment) { vc选定PaymentOption := vc paymentOptionList paymentOption_list[i]; v_isSelected := true; } } if(not v_isSelected){ setverdict(v_vct,"Invalid payment option was offered by the SUT.") ; else{ vc_serviceList := v_responseMessage.body.bodyElement. serviceDiscoveryRes.serviceList; vcChargeService := v_responseMessage.body.bodyElement. serviceDiscoveryRes.chargeService; setverdict(pass,"ServiceDiscoveryRes message was correct.") ; } [] a_SECC.tcpConnection_Status Listener(v_vct, "TCP connection was misleadingly " & "terminated by the SUT.") ; [] a_SECC_Unexpected_V2G_Message(v_vct, "Unexpected V2G message was received.", {serviceDiscoveryRes := ?}); [ isError() ] a_SECC_Unexpected_Message(v_vct, "SupportedAppProtocolRes received, " & "but V2G_Message was expected.") ; [] a_SECC_Unexpected_Message_Content(v_vct, "Received ServiceDiscoveryRes message, " & "but with invalid data content.") ; [] a_SECC Timeout(v_vct); } return get verdict;
+}
+function f_SECC_CMN_TB_VTB_ServiceDiscovery_002() runs on SECCTester return verdicttype{ var charstring v_message; var boolean isShutdownOSC := false; f_SECC_setIsConfirmationFlagDC(); f_SECC_changeValidFrequencyRange(0,0); f_SECC_changeValidDutyCycleRange(100,100); deactivate(vc(Default_IEC_61851 ListenerBehavior); tc_V2GEVCC Msg_Timer.start(par_V2GEVCC Msg_Timeout_ServiceDiscoveryReq); pt_V2G_TCP_TLS_ALM_SECC_Port.send(md_CMN_V2G_Message_001( md_CMN_MessageHeaderType_001(vc SessionID), md_CMN.BodyType_001(m_CMN_CMN_AuthorizationReq_001)))); alt {
+
+[] a_CMN_shutdownOscillator(pt_HAL_61851/Internal_Port){ isShutdownOSC := true; repeat; } []pt_V2G_TCPTLS_ALM_SECC_Port.receive (md_CMN_V2G_Message_001( md_CMN_MessageHeaderType_001(vc_SessionID), md_CMN_BodyType_001( md_CMN_CMN_AuthorizationRes_001( fAILED_SequenceError, ?)))) { tc_V2G_EVCC Msg发布时间; set verdict (pass, "AuthorizationRes with responseCode" & "'fAILED_SequenceError' is successful.)); pt_V2G_TCPTLS_ALM_SECC_Port.send (md_CMN_CMN.tcpTlsStatusReq_001( e_getPortStatus)) to "local"; tc_CMNSPORT_Connection_TerminationJNIter start( par_CMNSPORT_ConnectionTerminationTimeout); alt{ [isShutdownOSC == false] a_CMN_shutdownOscillator(pt_HAL_61851/Internal_Port){ isShutdownOSC := true; repeat; } [] a_SECC_TCPConnection_Status_Listener(pass, "TCP connection was " & "terminated by the SUT.") { if(isShutdownOSC == false) { logWarn("SECC oscillator was not shut down before the " & "TCP connection was terminated.}); } [] a_SECC_Unexpected_Message_Content(fail, "Received any message, " & "but TCP connection was " & >>NOT<< terminated by the SUT"); [] a_SECC_TCPC_ConnectionTerminationTimeout(); } [] a_SECC_TCPConnection_Status_Listener(fail, "TCP connection was misleadingly " & "terminated by the SUT."); [] a_SECC_Unexpected_V2G_Message fail, "Unexpected V2G message was received.", {authorizationRes := ?}); [ isError() ] a_SECC_Unexpected_Message fail, "SupportedAppProtocolRes received, " & "but V2G_Message was expected."); [] a_SECC_Unexpected_Message_Content(fail, "Received ServiceDiscoveryRes message, " & "but with invalid data content."); [] a_SECC_Timeout(fail); } return getverdict; } function f_SECC_CMN_TB_VTB_ServiceDiscovery_003() runs on SECCTester return verdicttype { var charstring v_message; var boolean isShutdownOSC := false; f_SECC_setIsConfirmationFlagDC(); f_SECC_changeValidFrequencyRange(0,0); f_SECC_changeValidDutyCycleRange(100,100); deactivate(vs(Default_IEC_61851 ListenerBehavior); tc_V2G_EVCC Msg发布时间(par_V2G_EVCC_Msg_Timeout_ServiceDiscoveryReq); pt_V2G_TCPTLS_ALM_SECC_Port.send (md_CMN_V2G_Message_001( md_CMN_MessageHeaderType_001( f_rnd_SessionID(1,429496)), md_CMN_BodyType_001( m_CMN_CMN_ServiceDiscoveryReq_001)); alt{ [] a_CMN_shutdownOscillator(pt_HAL_61851/Internal_Port){ isShutdownOSC := true; repeat; } []pt_V2G_TCPTLS_ALM_SECC_Port.receive (md_CMN_V2G_Message_001( md_CMN_MessageHeaderType_001(?), md_CMN_BodyType_001( md_SECC_CMN_ServiceDiscoveryRes_002(
+
+fAILED_UnknownSession,?,?,omit)))} tc_V2G_EVCC_Msg_Timer.stop; setverdict(pass,"ServiceDiscoveryRes with responseCode" & "fAILED_UnknownSession' is successful.); pt_V2G_TCP_TLS_ALM_SECC_Port.send (md_CMN_CMN.tcpTlsStatusReq_001( e_getPortStatus)) to "local"; tc_CMN.tcp_Connection_Termination_Timer.start( par_CMN.tcp_Connection_Termination_Timeout); alt{ [isShutdownOSC == false] a_CMN_shutdownOscillator(pt_HAL_61851/Internal_Port){ isShutdownOSC := true; repeat; } [] a_SECC.tcpConnection_Status Listener(pass, "TCP connection was " & "terminated by the SUT.") { if(isShutdownOSC == false) { logWarn("SECC oscillator was not shut down before the " & "TCP connection was terminated.") } pt_HAL_61851/Internal_Port.clear; } [] a_SECC_Unexpected_Message_Content(fail, "Received any message, " & "but TCP connection was " & >>NOT<< terminated by the SUT"); ] a_SECC.tcp_Connection_Termination_Timeout(); } } [] a_SECC.tcpConnection_Status Listener(fail, "TCP connection was misleadingly " & "terminated by the SUT.") ; [] a_SECC_Unexpected_V2G_Message(fail, "Unexpected V2G message was received.", {serviceDiscoveryRes := ?}); [isError()] a_SECC_Unexpected_Message(fail, "SupportedAppProtocolRes received, " & "but V2G_Message was expected.") ; [] a_SECC_Unexpected_Message_Content(fail, "Received ServiceDiscoveryRes message, " & "but with invalid data content.") ; ] a_SECC_Timeout(fail); } return get verdict;
+}
+function f_SECC_CMN_TB_VTB_ServiceDiscovery_004() runs on SECCTester return verdicttype { timer t_wait; var boolean isShutdownOSC := false; // Wait until sequence timeout in SUT should expire t_wait.start(par_V2G_SECC_Sequence_Timeout - par_CMN_Transmission_Delay); pt_V2G_TCP_TLS_ALM_SECC_Port.send (md_CMN_CMN.tcpTlsStatusReq_001( e_getPortStatus)) to "local"; alt{ [] t_wait.timeout; } f_SECC_setIsConfirmationFlagDC(); f_SECC_changeValidFrequencyRange(0,0); f_SECC_changeValidDutyCycleRange(100,100); deactivate(vs 默认的 IEC_61851 ListenerBehavior); tc_CMN.tcp_Connection_Termination_Timer.start( par_CMN.tcp_Connection_Termination_Timeout); alt{ [] a_CMN_shutdownOscillator(pt_HAL_61851/Internal_Port){ isShutdownOSC := true; repeat; } [] a_SECC.tcpConnection_Status Listener(pass, "TCP connection was " & "terminated by the SUT.") { if(isShutdownOSC == false) { logWarn("SECC oscillator was not shut down before the " & "TCP connection was terminated.") } pt_HAL_61851/Internal_Port.clear; } ] a_SECC_Unexpected_Message_Content fail, "Received any message, " & "but TCP connection was " &
+
+>> NOT << terminated by the SUT");
+}
+}
+return get verdict;
+}
+function f_SECC_CMN_TB_VTB_ServiceDiscovery_005(in verdicttype v_vct)
+runs on SECCTester
+return verdicttype {
+var V2G_Message v_responseMessage;
+var charstring v_message;
+tc_V2G_EVCC_Msg_Timer.start(par_V2G_EVCC_Msg_Timeout_ServiceDiscoveryReq);
+pt_V2G_TCP_TLS_ALM_SECC_Port.send(md_CMN_V2G_Message_001(
+md_CMN_MessageHeaderType_001(vc-sessionID),
+md_CMN BODYType_001(
+md_CMN_ServiceDiscoveryReq_002(omit)))
+);
+alt {
+[]pt_V2G_TCP_TLS_ALM_SECC_Port.receive(md_CMN_V2G_Message_001(
+md_CMN_MessageHeaderType_001(vc-sessionID),
+md_CMN.BodyType_001(
+md_SECC_CMN_ServiceDiscoveryRes_002(oK,?,vc_chargeService,*)))
+-> value v_responseMessage{
+tc_V2G_EVCC_Msg_Timer.stop;
+vcSupportedEnergyTransferMode := v_responseMessage.body.elementElement.serviceDiscoveryRes.serviceDiscoveryRes和支持edEnergyTransferMode;
+vc会选择PaymentOption := v_responseMessage.bodyLEMENT.serviceDiscoveryRes paymentOptionList-paymentOption_list[0];
+if(PICS_CMN_CMN_IdentificationMode == pnC) {
+if(vc会选择PaymentOption != contract) {
+setverdict(v_vct, "Invalid payment option was chosen by the SUT.");
+}
+else {
+if(vc会选择PaymentOption != externalPayment) {
+setverdict(v_vct, "Invalid payment option was chosen by the SUT.");
+}
+} else {
+vc服务体系 := v_responseMessage.bodyLEMENT.serviceDiscoveryRes.serviceList;
+} else {
+a_SECC_TCPConnection_Status_Listener(v_vct, "TCP connection was misleadingly & terminated by the SUT.");
+} a_SECC_Unexpected_V2G_Message(v_vct, "Unexpected V2G message was received.", {serviceDiscoveryRes := ?});
+[isError()] a_SECC_Unexpected_Message(v_vct, "SupportedAppProtocolRes received, & but V2G_Message was expected.");
+] a_SECC_Unexpected_Message_Content(v_vct, "Received ServiceDiscoveryRes message, & but with invalid data content.");
+} a_SECC Timeout(v_vct);
+}
+return get verdict;
+}
+
+# I.1.2.3 SECC functions for ServiceDetail
+
+import TestBehavior_SECC_ServiceDetail {
+import from Timer_15118_2 all;
+import from urn(iso_15118_2_2013_DataTypes language "XSD" all;
+import from ComponentsAndPorts all;
+import from TestBehavior_SECC/CommonBehavior all;
+import from Templates_SECC_ServiceDetail all;
+import from Templates_CMN_ServiceDiscovery all;
+import from Templates_SECC_ServiceDiscovery
+import from Templates_CMN_V2GMessage all;
+import from urn(iso_15118_2_2013_MSGDef all;
+import from TLibrary Logging all;
+
+import from Pics_15118 all;
+import from Services_HAL_61851 all;
+import from TestBehaviorEVCC_ServiceDiscovery all;
+import from Templates_CMN_V2GTcpTlsPortControl all;
+import from TLibraryLogging all;
+import from Pixit_15118_2 all;
+import from Timer_15118 all;
+function f_SECC_CMN_TB_VTB_ServiceDetail_001(in verdicttype v_vct) runs on SECCTester return verdicttype{ var integer counter := 0; var charstring v_message; var V2G_Message v_responseMessage; var boolean v_result := true; if(ispresent(vc_serviceList)){ if(PICKIT_SECC_CMNINTERNetAccess == internetAccess){ v_result := f_checkServiceCategory(internet,vc_serviceList); } if(v_result){ while (counter $<$ sizeof(vc_serviceList.service_list)){ var ServiceType v_service := vc_serviceList.service_list[counter]. serviceType; f_checkServiceType(v_service,v_vct); if(get verdict := pass){ tc_V2G_EVCC_MSG_Timer.start(par_V2G_EVCC_MSG_Timeout_ServiceDetailReq); pt_V2G_TCP_TLS_ALM_SECC_Port.send(md_CMN_V2G_Message_001( md_CMN_MessageHeaderType_001( vc SessionID), md_CMN BODYType_001( md_SECC_CMN_ServiceDetailReq_001( v的服务.serviceID)))); alt{ []pt_V2G_TCP_TLS_ALM_SECC_Port.receive(md_CMN_V2G_Message_001( md_CMN_MessageHeaderType_001( vc SessionID), md_CMN BODYType_001( mdw_SECC_CMN_ServiceDetailRes_001( v.service.serviceID)))) ->valuev_responseMessage{ tc_V2G_EVCC_Msg_Timer.stop; var ServiceParameterListType vserviceParameterList := v_responseMessage.body.bodyElement.serviceDetailRes. serviceParameterList; f_checkServiceParameterList(vserviceParameterList, v-service,v_vct); if(get verdict := pass){ set verdict(pass,"ServiceDetailRes message was correct.); } counter := counter +1; }[]a_SECC_TCPConnection_Status_Listener(v_vct,"TCP connection was "& "misleadingly"& terminated by"& "the SUT."){ counter := sizeof(vc_serviceList) + 1; break; }[]a_SECC_Unexpected_V2G_Message(v_vct,"Unexpected V2G message& "was received.," {serviceDetailRes := ?}){ counter := sizeof(vc_serviceList) + 1; break; } [isError()] a_SECC_Unexpected_Message(v_vct,"SupportedAppProtocolRes"& "received,but"& "V2G_Message"& "was expected.){ counter := sizeof(vc_serviceList) + 1; break; }[]a_SECC_Unexpected_MessageContent(v_vct,"Received ServiceDetailRes"
+
+&
+
+&
+
+"message, but with invalid " "data content.") { counter := sizeof(vc_serviceList) + 1; break; } } a_SECC_Timeout(v_vct) { counter := sizeof(vc_serviceList) + 1; break; } } else { counter := sizeof(vc_serviceList) + 1; } } } else { set verdictic(inconc,"A serviceList is not available.));} return getverdict;
+function f_SECC_CMN_TB_VTB_ServiceDetail_002() runs on SECCTester return verdicttype { var integer counter := 0; var charstring v_message; var boolean isShutdownOSC := false; f_SECC_setIsConfirmationFlagDC(); f_SECC_changeValidFrequencyRange(0,0); f_SECC_changeValidDutyCycleRange(100,100); deactivate(vc 默认的 IEC 61851 ListenerBehavior); if (ispresent(vc.serviceList)) { tc_V2GEVCC Msg_Timer.start(par_V2G_EVCC Msg_Dutetime_ServiceDetailReq); pt_V2G_TCP_TLS_ALM_SECC_Port.send(md_CMN_V2G_Message_001( md_CMN_MessageHeaderType_001(vc SessionID), md_CMN_BodtyType_001( md_CMN_CMN_ServiceDiscoveryReq_002(omit)))) alt{ [] a_CMN_shutdownOscillator(pt_HAL_61851/Internal_Port){ isShutdownOSC := true; repeat; } [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(md_CMN_V2G_Message_001( md_CMN_MessageHeaderType_001(vc SessionID), md_CMN_BodtyType_001( mdw_SECC_CMN_ServiceDiscoveryRes_001( failed_SequenceError))) { tc_V2G_EVCC_Msg_Timer.stop; setverdict(pass,"ServiceDetailRes with responseCode & ''fFAILED_SequenceError' is successful.)); pt_V2G_TCP_TLS_ALM_SECC_Port.send(md_CMN_CMN.tcpTlsStatusReq_001( e_getPortStatus)) to "local"; tc_CMN.tcp_Connection_Termination_Timer.start( par_CMN.tcp_Connection_Termination_Termination); alt{ [ isShutdownOSC == false] a_CMN_shutdownOscillator(pt_HAL_61851/Internal_Port){ isShutdownOSC := true; repeat; } [] a_SECC_TCPConnection_Status_Listener(pass, "TCP connection was " & "terminated by the SUT.") { if(isShutdownOSC == false) { logWarn("SECC oscillator was not shut down before the " & "TCP connection was terminated.));} pt_HAL_61851/Internal_Port.clear; } [] a_SECC_UnexpectedMessage_Content fail, "Received any message, " & "but TCP connection was " & >>NOT<< terminated by the SUT"); [] a_SECC_TCPC_Connection_Termination_TerminationTimeout(); } [] a_SECC_TCPConnection_Status_Listener(fail, "TCP connection was misleadingly " & "terminated by the SUT.");
+
+[] a_SECC_Unexp
+
+// ============ Precondition Functions ============
+
+// f_SECC_CMN_PR_ServiceDiscovery_001
+function f_SECC_CMN_PR_ServiceDiscovery_001(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HALEL 61851,(out HALEL 61851,(out HALEL 6
+
+function f_SECC_CMN_PR_PaymentDetails_001(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL 2000
+var verdicttype verdict; if(PICKIT_SECC_CMN_CertificateHandling == certUpdate and PICS_CMN_IDentificationMode == pnC){ verdict := f_SECC_CMN_PR_CertificateUpdate_001(v_HAL_61851 ,(Listener); }
+
+// ============ Testcase ============
+
+testcase TC_SECC_CMN_VTB_ServiceDiscovery_001() runs on SECCTester system SystemSECC {
+var HAL_61851_Listener v_HAL_61851_Listener;
+var verdicttype preConVerdict;
+// ________________ Pre Conditions__
+f_SECC_CMN_PR_InitConfiguration_001(v_HAL_61851_Listener,system);
+preConVerdict := f_SECC_CMN_PR_ServiceSetup_001(v_HAL_61851_Listener);
+// ________________ Test behavior__
+if(preConVerdict == pass) {
+f_SECC_CMN_TB_VTB_ServiceDiscovery_001(fail);
+}else {
+log("PreCondition was unsuccessful.")
+}
+// ________________ Post Conditions__
+f_SECC_CMN_PO_InitialState_001(v_HAL_61851_Listener);
+f_SECC_CMN_PO_ShutdownConfiguration_001(v_HAL_61851_Listener,system);
+}

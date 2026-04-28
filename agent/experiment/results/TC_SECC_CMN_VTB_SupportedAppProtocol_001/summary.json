@@ -1,0 +1,33 @@
+{
+  "tc_id": "TC_SECC_CMN_VTB_SupportedAppProtocol_001",
+  "success": false,
+  "score": 83.2,
+  "structure_score": 44.00000000000001,
+  "naming_score": 100.0,
+  "syntax_score": 100.0,
+  "completeness_score": 100.0,
+  "diffs": [
+    {
+      "level": "warning",
+      "category": "missing_component",
+      "description": "缺失 functions: f_SECC_CMN_PR_PaymentDetails_001, f_SECC_CMN_PR, f_SECC_CMN_PR_ServiceDiscovery_001...",
+      "generated_snippet": null,
+      "standard_snippet": null,
+      "location": null,
+      "suggestion": null
+    }
+  ],
+  "generated_lines": 164,
+  "standard_lines": 82,
+  "generated_elements": {},
+  "standard_elements": {},
+  "missing_elements": [],
+  "extra_elements": [],
+  "comparison_levels": [
+    "structure",
+    "naming",
+    "syntax",
+    "completeness"
+  ],
+  "timestamp": "2026-04-10 09:50:02"
+}

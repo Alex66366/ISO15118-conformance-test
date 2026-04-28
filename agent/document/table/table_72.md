@@ -1,0 +1,4 @@
+Table 72 —Semantics and type definition for ProfileEntryType
+
+
+<table><tr><td>Element Name</td><td>Type</td><td>Semantics</td></tr><tr><td>ChargingProfileEntryStart</td><td>simpleType unsignedInt refer to Annex C.6 for the type definition</td><td>Time when chargingProfileEntry starts to be valid. Offset in seconds from NOW.</td></tr><tr><td>ChargingProfileEntryMaxPower</td><td>complexType: PhysicalValueType refer to subclause 8.5.2.7</td><td>Maximum power in Watt consumed by the EV within the current charging profile entry (beginning from ChargingProfileEntryStart)</td></tr><tr><td>ChargingProfileEntryMaxNumberOfPhasesInUse</td><td>simpleType byte (min value: 1 max value: 3) refer to Annex C.6 for the type definition</td><td>Optional: This element is used by the EV to indicate the maximum number of phases it intends to use during the time interval defined by ChargingProfileEntryStart of this ProfileEntry.</td></tr></table>

@@ -1,0 +1,223 @@
+{
+  "_schema_version": "1.0",
+  "_description": "TITAN Troubleshooting Knowledge Base. Managed by Fault Agent. Each entry represents a known error pattern, its fix, and metadata.",
+  "_last_updated": "2026-04-23",
+  "entries": [
+    {
+      "id": "port_undefined",
+      "error_type": "port_undefined",
+      "severity": "critical",
+      "patterns": [
+        "port type '.+?' has no associated port definition",
+        "unknown port '.+?'",
+        "port '.+?' is not a message port"
+      ],
+      "category": "ttcn_compile",
+      "affected_file": "ComponentsAndPorts.ttcn",
+      "fix": "Define the correct port type: type port <Name> message { out ...; in ...; }",
+      "fix_en": "Define the correct port type in ComponentsAndPorts.ttcn. Ensure the port name used in the testcase matches the declaration exactly.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "import_missing",
+      "error_type": "import_missing",
+      "severity": "critical",
+      "patterns": [
+        "module '.+?' has not been imported",
+        "cannot find definition of type '.+?'",
+        "symbol '.+?' is not visible here"
+      ],
+      "category": "ttcn_compile",
+      "affected_file": "testcase's .ttcn file",
+      "fix": "Add import statement at the top of the module: import from <module_name> all;",
+      "fix_en": "Add missing import statement at the top of the module. Use 'import from <module_name> all;' to import all definitions from the target module.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "runs_on_mismatch",
+      "error_type": "runs_on_mismatch",
+      "severity": "critical",
+      "patterns": [
+        "runs on clause mismatch",
+        "function '.+?' cannot be invoked from a component of type '.+?'",
+        "altstep '.+?' is not accessible from component '.+?'"
+      ],
+      "category": "ttcn_compile",
+      "affected_file": "function/altstep definition's .ttcn file",
+      "fix": "Ensure function/altstep runs on component type matches the caller. The called function's runs on must be the same as or a parent type of the caller's component.",
+      "fix_en": "Ensure all function and altstep declarations use the same runs on component type as the testcase. E.g., if testcase runs on SECCTester, all functions must run on SECCTester.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "type_mismatch",
+      "error_type": "type_mismatch",
+      "severity": "warning",
+      "patterns": [
+        "type '.+?' and '.+?' are not compatible",
+        "template type mismatch",
+        "incompatible types in assignment",
+        "parameter type mismatch in template"
+      ],
+      "category": "ttcn_compile",
+      "affected_file": "test_behavior_function's .ttcn file",
+      "fix": "Check template parameter types match function signatures. Ensure the number and types of template parameters are consistent.",
+      "fix_en": "Check that template parameter types match the function signature. Ensure the number and types of template parameters are consistent throughout the code.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "timer_error",
+      "error_type": "timer_error",
+      "severity": "warning",
+      "patterns": [
+        "timer '.+?' has not been started",
+        "timer '.+?' is already running",
+        "timer '.+?' is not running"
+      ],
+      "category": "ttcn_runtime",
+      "affected_file": "test_behavior_function's .ttcn file",
+      "fix": "Ensure timer.start() is called before the timeout branch, timer.stop() is called in every alt branch that receives a message, and stop() is NOT called in the timeout branch.",
+      "fix_en": "Call timer.start() before using timeout. Call timer.stop() in all alt branches that receive messages. Do NOT call stop() in the timeout branch.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "ttcn_syntax",
+      "error_type": "ttcn_syntax",
+      "severity": "critical",
+      "patterns": [
+        "syntax error, unexpected '.+?'",
+        "expected '.+?' before '.+?'",
+        "missing semicolon",
+        "unmatched closing delimiter"
+      ],
+      "category": "ttcn_compile",
+      "affected_file": "error location's .ttcn file",
+      "fix": "Check TTCN-3 syntax: matching parentheses/braces/brackets, semicolons after statements, correct keyword spelling. Refer to TITAN ReferenceGuide Ch.3.",
+      "fix_en": "Check TTCN-3 syntax: ensure all parentheses, braces, and brackets are matched; statements end with semicolons; keywords are spelled correctly.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "cpp_link",
+      "error_type": "cpp_link",
+      "severity": "critical",
+      "patterns": [
+        "undefined reference to '.+?'",
+        "ld returned \\d+ exit status",
+        "multiple definition of '.+?'",
+        "undefined reference to `vtable for .+?`"
+      ],
+      "category": "cpp_link",
+      "affected_file": "cpp_adapters/ .cc files",
+      "fix": "Check that the corresponding .cc file in cpp_adapters/ implements all required methods. For 'undefined reference', add the missing method. For 'multiple definition', use static/inline or namespace to limit scope.",
+      "fix_en": "For 'undefined reference': implement the missing method in the corresponding .cc file. For 'multiple definition': use static/inline or namespace to limit scope.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "port_mapping_conflict",
+      "error_type": "port_mapping_conflict",
+      "severity": "warning",
+      "patterns": [
+        "port already mapped",
+        "port '.+?' cannot be mapped to multiple system ports"
+      ],
+      "category": "ttcn_runtime",
+      "affected_file": "test_behavior_function's .ttcn file",
+      "fix": "Ensure each port is only mapped once. Check that no port is mapped to multiple system ports.",
+      "fix_en": "Ensure each port is only mapped once. Verify no port is mapped to multiple system ports simultaneously.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "incomplete_alt_block",
+      "error_type": "incomplete_alt_block",
+      "severity": "warning",
+      "patterns": [
+        "incomplete alt block",
+        "port '.+?' has outgoing messages but no alt branch",
+        "no default altstep for port '.+?'"
+      ],
+      "category": "ttcn_compile",
+      "affected_file": "test_behavior_function's .ttcn file",
+      "fix": "Add receive branches in the alt block for all ports that have incoming messages. Add a default altstep or [] wildcard branch if needed.",
+      "fix_en": "Add receive branches in the alt block for all ports that have incoming messages. Include a default [] wildcard branch if not all ports are explicitly handled.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "verdict_not_set",
+      "error_type": "verdict_not_set",
+      "severity": "critical",
+      "patterns": [
+        "verdict not set",
+        "control part finished without verdict",
+        "testcase interrupted"
+      ],
+      "category": "ttcn_runtime",
+      "affected_file": "test_behavior_function's .ttcn file",
+      "fix": "Ensure setverdict() is called before the testcase ends. In control parts, ensure at least one setverdict() call is reached. Increase tc_timeout in titan_runtime.cfg if needed.",
+      "fix_en": "Call setverdict(pass|fail|inconc) before the testcase ends. Ensure the control part reaches at least one setverdict() call. Increase tc_timeout if timeout occurs.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "port_not_mapped",
+      "error_type": "port_not_mapped",
+      "severity": "critical",
+      "patterns": [
+        "port not mapped",
+        "signal route not registered"
+      ],
+      "category": "ttcn_runtime",
+      "affected_file": "test_behavior_function's .ttcn file",
+      "fix": "Call map(mtc:port_name, system:port_name) before using a port. Ensure register_signal_route is called for signal-based test ports.",
+      "fix_en": "Call map(mtc:port_name, system:port_name) before using any port. For signal-based test ports, also ensure register_signal_route is called.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "v2gtp_header_error",
+      "error_type": "v2gtp_header_error",
+      "severity": "warning",
+      "patterns": [
+        "v2gtp header protocol version mismatch",
+        "invalid payload type in v2gtp header"
+      ],
+      "category": "template_error",
+      "affected_file": "template definition's .ttcn file",
+      "fix": "Fix V2GTP header: protocolVersion='01'H, invProtocolVersion='FE'H, payloadType='8001'H for V2G messages.",
+      "fix_en": "V2GTP header must use: protocolVersion='01'H, invProtocolVersion='FE'H, payloadType='8001'H. Refer to ISO 15118-2 for correct payloadType values per message type.",
+      "occurrences": 0,
+      "first_seen": "2026-04-23",
+      "last_seen": null,
+      "verified": false
+    }
+  ]
+}

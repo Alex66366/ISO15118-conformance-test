@@ -1,0 +1,30 @@
+{
+  "tc_id": "TC_SECC_CMN_VTB_ServiceDiscovery_001",
+  "success": true,
+  "steps": {
+    "code_generation": {
+      "success": true,
+      "output_path": "/data/cdy/code/v2g2_082/iso15118/agent/test_code/generated/TC_SECC_CMN_VTB_ServiceDiscovery_001.ttcn",
+      "message": "使用缓存"
+    },
+    "standard_extraction": {
+      "success": true,
+      "message": "提取成功（耗时 0.5s）"
+    },
+    "code_comparison": {
+      "success": true,
+      "score": 76.66666666666667,
+      "diffs_count": 2
+    },
+    "report_generation": {
+      "success": true,
+      "outputs": {
+        "text_report": "results/TC_SECC_CMN_VTB_ServiceDiscovery_001/comparison_report.txt",
+        "json_summary": "results/TC_SECC_CMN_VTB_ServiceDiscovery_001/summary.json"
+      }
+    }
+  },
+  "output_dir": "results/TC_SECC_CMN_VTB_ServiceDiscovery_001",
+  "error": null,
+  "elapsed_time": 0.6289215087890625
+}

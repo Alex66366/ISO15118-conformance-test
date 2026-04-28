@@ -1,0 +1,26 @@
+module f_SECC_CMN_PO_InitialState_001 {
+    import from SECC_TestSystem all;
+    import from ISO15118_2_PICS all;
+
+    /**
+     * @desc Phase D: Restore initial state.
+     *       Stops HAL listener PTC and unmaps all ports.
+     */
+    function f_SECC_CMN_PO_InitialState_001(
+        in HAL_61851_Listener v_HAL_61851_Listener
+    ) runs on SECCTester {
+        // Stop HAL listener PTC
+        v_HAL_61851_Listener.stop;
+
+        // Unmap all ports
+        unmap(mtc:pt_V2G_TCP_TLS_Port, system:pt_V2G_TCP_TLS_Port);
+        unmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
+        unmap(mtc:pt_HAL_61851_Port, system:pt_HAL_61851_Port);
+        unmap(v_HAL_61851_Listener:pt_HAL_61851_Listener_Port,
+              system:pt_HAL_61851_Listener_Port);
+
+        if (PICS_CMN_CMN_CombinedTesting) {
+            unmap(mtc:pt_SLAC_Port, system:pt_SLAC_Port);
+        }
+    }
+}

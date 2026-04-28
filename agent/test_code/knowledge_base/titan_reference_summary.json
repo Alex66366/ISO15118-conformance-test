@@ -1,0 +1,112 @@
+{
+  "compiler_check": [
+    "组件类型不匹配: testcase runs on A 但调用了 runs on B 的函数",
+    "alt 块不完整: 某端口有 send/receive/check 操作但 alt 块中未覆盖",
+    "timer 状态检查: timeout 前未调用 start()",
+    "模板类型不一致: 模板参数数量或类型与声明不匹配",
+    "端口映射冲突: 同一端口被 map 到多个 system port"
+  ],
+  "syntax_rules": [
+    "模板匹配符优先级: exact_value > pattern > wildcard(?) > anyvalue(*)",
+    "timer 启动前不必显式声明，但使用前应设置默认值",
+    "runs on 组件类型必须与测试用例的 runs on 子句一致",
+    "模块级定义默认 public，可显式声明 private/friend",
+    "C/C++ 转义序列在 charstring 字面量中有效 (\\n, \\t, \\\\ 等)",
+    "alt 块必须穷尽所有已映射端口的输入，否则编译警告",
+    "组件类型必须在使用前声明"
+  ],
+  "build_error_patterns": [
+    {
+      "pattern": "port type '.+?' has no associated port definition",
+      "category": "port_undefined",
+      "fix": "在 ComponentsAndPorts.ttcn 中正确定义 port type: type port <Name> message { out ...; in ...; }"
+    },
+    {
+      "pattern": "unknown port '.+?'",
+      "category": "port_undefined",
+      "fix": "检查 ComponentsAndPorts.ttcn 中是否正确定义了该端口。确保端口名称与 testcase 中使用的一致。"
+    },
+    {
+      "pattern": "module '.+?' has not been imported",
+      "category": "import_missing",
+      "fix": "在 module 顶部添加: import from <module_name> all;"
+    },
+    {
+      "pattern": "cannot find definition of type '.+?'",
+      "category": "import_missing",
+      "fix": "检查该类型所在的 module 是否被正确 import。"
+    },
+    {
+      "pattern": "undefined reference to '.+?'",
+      "category": "cpp_link",
+      "fix": "检查 cpp_adapters/ 中对应的 .cc 文件是否实现了该方法。确保方法签名与头文件中声明一致。"
+    },
+    {
+      "pattern": "syntax error, unexpected '.+?'",
+      "category": "ttcn_syntax",
+      "fix": "检查 TTCN-3 语法：括号/花括号匹配、分号、关键字拼写。"
+    },
+    {
+      "pattern": "type '.+?' and '.+?' are not compatible",
+      "category": "type_mismatch",
+      "fix": "检查模板参数类型与函数签名是否匹配。"
+    },
+    {
+      "pattern": "runs on clause mismatch",
+      "category": "runs_on_mismatch",
+      "fix": "确保函数/altstep 的 runs on 组件类型与调用方一致。"
+    },
+    {
+      "pattern": "template type mismatch",
+      "category": "type_mismatch",
+      "fix": "检查模板参数数量和类型是否与声明一致。"
+    },
+    {
+      "pattern": "multiple definition of '.+?'",
+      "category": "cpp_link",
+      "fix": "同一符号在多个 .cc 文件中定义。使用 static/inline 或 namespace 限定。"
+    },
+    {
+      "pattern": "ld returned .+ exit status",
+      "category": "cpp_link",
+      "fix": "链接失败，检查是否有 undefined reference 错误。"
+    },
+    {
+      "pattern": "expected '.+?' before '.+?'",
+      "category": "ttcn_syntax",
+      "fix": "语法错误，检查该位置的符号是否正确。"
+    }
+  ],
+  "v2gtp_header_constants": {
+    "protocolVersion": "'01'H",
+    "invProtocolVersion": "'FE'H",
+    "payloadTypes": {
+      "V2G_Message": "8001",
+      "SupportedAppProtocolReq": "8000",
+      "SupportedAppProtocolRes": "8002",
+      "SessionSetupReq": "8003",
+      "SessionSetupRes": "8004"
+    }
+  },
+  "port_naming": {
+    "SECC": {
+      "component": "SECCTester",
+      "system": "SystemSECC",
+      "tcp_tls_port": "pt_V2G_TCP_TLS_ALM_SECC_Port",
+      "udp_sdp_port": "pt_V2G_UDP_SDP_Port",
+      "hal_port": "pt_HAL_61851_Port"
+    },
+    "EVCC": {
+      "component": "EVCCTester",
+      "system": "SystemEVCC",
+      "tcp_tls_port": "pt_V2G_TCP_TLS_ALM_EVCC_Port",
+      "udp_sdp_port": "pt_V2G_UDP_SDP_Port",
+      "hal_port": "pt_HAL_61851_Port"
+    }
+  },
+  "timer_default_values_ms": {
+    "message_timeout": 3000,
+    "tcp_connection_timeout": 5000,
+    "sequence_timeout": 10000
+  }
+}

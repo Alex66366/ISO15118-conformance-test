@@ -1,0 +1,42 @@
+
+============================================================
+提取摘要: TC_SECC_CMN_VTB_SupportedAppProtocol_001
+============================================================
+
+组件统计:
+  - altstep: 5
+  - postcondition_function: 1
+  - precondition_function: 10
+  - template: 4
+  - test_behavior_function: 1
+  - testcase: 1
+
+参考信息:
+  - 测试类型: GoodCase
+  - SUT 类型: SECC
+  - 消息类型: SupportedAppProtocol
+  - 需求: V2G2-728, V2G2-025, V2G2-026, V2G2-168, V2G2-027...
+
+OCR 问题警告:
+  - TC_SECC_CMN_VTB_SupportedAppProtocol_001: 30 个问题
+  - f_SECC_CMN_TB_VTB_SupportedAppProtocol_001: 29 个问题
+  - md_CMN_CMN_SupportedAppProtocolReq_001: 12 个问题
+  - md_CMN_CMN_SupportedAppProtocolRes_001: 16 个问题
+  - md_CMN_CMN_SupportedAppProtocolRes_002: 13 个问题
+  - mw_EVCC_CMN_SupportedAppProtocolReq_001: 8 个问题
+  - f_SECC_CMN_PR_InitConfiguration_001: 28 个问题
+  - f_SECC_CMN_PR_InitConfiguration_002: 515 个问题
+  - f_SECC_CMN_PR_SetPowerFlowConfiguration_001: 4 个问题
+  - f_SECC_CMN_PR_PLCLinkStatusCombinedTesting_001: 13 个问题
+  - f_SECC_CMN_PR_StateA_001: 22 个问题
+  - f_SECC_CMN_PR_SetProximityPilot_001: 156 个问题
+  - f_SECC_CMN_PR_StateB_001: 80 个问题
+  - f_SECC_CMN_PR_Binding_001: 52 个问题
+  - f_SECC_CMN_PR_SupportedAppProtocol_001: 62 个问题
+  - f_SECC_CMN_PR_Authorization_001: 444 个问题
+  - f_SECC_CMN_PO_ShutdownConfiguration_001: 28 个问题
+  - a_SECC_Unexpected_Message: 2 个问题
+  - a_SECC_Unexpected_V2G_Message: 3 个问题
+  - a_SECC_Timeout: 1 个问题
+  - a_SECC_SDP_Timeout: 1 个问题
+  - a_SECC_CommunicationSetup_Timeout: 659 个问题

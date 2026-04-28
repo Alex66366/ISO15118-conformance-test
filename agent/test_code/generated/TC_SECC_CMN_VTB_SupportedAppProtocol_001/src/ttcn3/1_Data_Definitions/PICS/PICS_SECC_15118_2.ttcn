@@ -1,0 +1,72 @@
+/**
+ * @desc    Protocol Implementation Conformance Statement (PICS) for
+ *          SECC ISO 15118-2 conformance tests.
+ *
+ *          This module declares boolean PICS items that gate test execution.
+ *          Set items to false to skip tests that exercise optional features
+ *          not supported by the implementation under test.
+ *
+ *          Reference: ISO 15118-2:2014 Annex B (PICS proforma).
+ */
+module SECC_PICS {
+
+    import from SECC_TestSystem all;
+
+    // =========================================================================
+    // Mandatory protocol features
+    // =========================================================================
+
+    /** SECC supports SupportedAppProtocol handshake (mandatory). */
+    modulepar boolean PICS_SECC_SupportedAppProtocol := true;
+
+    /** SECC supports ServiceDiscovery (mandatory). */
+    modulepar boolean PICS_SECC_ServiceDiscovery := true;
+
+    /** SECC supports ServiceDetail (mandatory). */
+    modulepar boolean PICS_SECC_ServiceDetail := true;
+
+    /** SECC supports PaymentServiceSelection (mandatory). */
+    modulepar boolean PICS_SECC_PaymentServiceSelection := true;
+
+    /** SECC supports ChargeParameterDiscovery (mandatory). */
+    modulepar boolean PICS_SECC_ChargeParameterDiscovery := true;
+
+    /** SECC supports PowerDelivery (mandatory). */
+    modulepar boolean PICS_SECC_PowerDelivery := true;
+
+    /** SECC supports SessionStop (mandatory). */
+    modulepar boolean PICS_SECC_SessionStop := true;
+
+    // =========================================================================
+    // Optional protocol features
+    // =========================================================================
+
+    /** SECC supports TLS (optional but strongly recommended). */
+    modulepar boolean PICS_SECC_TLS := true;
+
+    /** SECC supports Contract-based authentication (PnC). */
+    modulepar boolean PICS_SECC_PnC := false;
+
+    /** SECC supports External Identification Means (EIM). */
+    modulepar boolean PICS_SECC_EIM := true;
+
+    /** SECC supports AC charging. */
+    modulepar boolean PICS_SECC_AC := true;
+
+    /** SECC supports DC charging. */
+    modulepar boolean PICS_SECC_DC := false;
+
+    /** SECC supports Metering (optional). */
+    modulepar boolean PICS_SECC_Metering := false;
+
+    /** SECC supports Internet access service (optional). */
+    modulepar boolean PICS_SECC_Internet := false;
+
+    // =========================================================================
+    // Timing PICs
+    // =========================================================================
+
+    /** SECC responds within V2G_EVCC_CommunicationSetupTimeout (20 s). */
+    modulepar boolean PICS_SECC_CommunicationSetupTimeout := true;
+
+} // end module SECC_PICS

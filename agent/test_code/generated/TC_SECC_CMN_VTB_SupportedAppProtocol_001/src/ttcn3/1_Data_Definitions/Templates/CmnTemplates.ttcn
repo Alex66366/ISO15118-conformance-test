@@ -1,0 +1,96 @@
+/**
+ * @desc    Common send/receive template stubs for SECC ISO 15118-2 conformance tests.
+ *          The generated test case references templates from ISO15118_2_Templates
+ *          (provided by the platform).  This module provides minimal stubs so
+ *          compilation succeeds before the full template library is linked.
+ */
+module SECC_CmnTemplates {
+
+    import from SECC_TestSystem all;
+    import from SECC_Types     all;
+
+    // =========================================================================
+    // V2GTP Header Templates
+    // =========================================================================
+
+    /**
+     * @desc Send template: V2GTP header.
+     * @param p_version        Protocol version byte.
+     * @param p_versionInv     Inverse version byte.
+     * @param p_payloadType    PayloadType field (2 bytes).
+     * @param p_payloadLength  Optional explicit payload length (omit = auto).
+     */
+    template octetstring md_CMN_V2GTP_Header_001(
+        octetstring p_version    := '01'O,
+        octetstring p_versionInv := 'FE'O,
+        octetstring p_payloadType,
+        octetstring p_payloadLength
+    ) := p_version & p_versionInv & p_payloadType & p_payloadLength;
+
+    /** @desc Receive wildcard template: any valid V2GTP header with matching payload type. */
+    template octetstring mw_CMN_V2GTP_Header_001(
+        octetstring p_version    := '01'O,
+        octetstring p_versionInv := 'FE'O,
+        octetstring p_payloadType,
+        template octetstring p_payloadLength := ?
+    ) modifies md_CMN_V2GTP_Header_001 := ?;
+
+    // =========================================================================
+    // V2GTP Payload Templates (raw octetstring wrappers)
+    // =========================================================================
+
+    /** @desc Send template: wraps an EXI-encoded payload. */
+    template octetstring md_CMN_V2GTP_Payload_001(
+        octetstring p_exiPayload
+    ) := p_exiPayload;
+
+    /** @desc Receive wildcard template: any EXI payload. */
+    template octetstring mw_CMN_V2GTP_Payload_001(
+        template octetstring p_exiPayload := ?
+    ) := ?;
+
+    // =========================================================================
+    // V2GTP Message (header + payload concatenation) Templates
+    // =========================================================================
+
+    /** @desc Send template: full V2GTP message. */
+    template octetstring md_CMN_V2GTP_Message_001(
+        octetstring p_header,
+        octetstring p_payload
+    ) := p_header & p_payload;
+
+    /** @desc Receive wildcard template: any V2GTP message. */
+    template octetstring mw_CMN_V2GTP_Message_001(
+        template octetstring p_header  := ?,
+        template octetstring p_payload := ?
+    ) := ?;
+
+    // =========================================================================
+    // SupportedAppProtocol Request Template
+    // =========================================================================
+
+    /**
+     * @desc Send template: SupportedAppProtocolReq (EXI-encoded, as octetstring).
+     *       In a real build the EXI encoding is performed by the codec adapter;
+     *       this stub encodes the mandatory fields symbolically so that the
+     *       TTCN-3 module compiles standalone.
+     */
+    template octetstring md_CMN_SupportedAppProtocolReq_001() :=
+        /* EXI-encoded SupportedAppProtocolReq placeholder */
+        '8000'O;
+
+    // =========================================================================
+    // SupportedAppProtocol Response Wildcard Template
+    // =========================================================================
+
+    /**
+     * @desc Receive wildcard template: SupportedAppProtocolRes (any octetstring).
+     *       The codec adapter decodes the received frame; this stub matches any
+     *       received octetstring so the alt block compiles.
+     * @param p_responseCode  Expected responseCode value(s) — matched symbolically.
+     */
+    template octetstring mdw_SECC_SupportedAppProtocolRes_001(
+        template responseCodeType p_responseCode := ?
+    ) := ?;
+
+} // end module SECC_CmnTemplates

@@ -1,0 +1,5 @@
+module SECC_CmnTemplates {
+    import from SECC_TestSystem all;
+
+    // Simplified templates
+}

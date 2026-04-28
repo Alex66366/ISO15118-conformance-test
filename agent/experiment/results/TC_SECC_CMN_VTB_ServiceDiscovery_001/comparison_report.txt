@@ -1,0 +1,27 @@
+======================================================================
+测试用例评估报告: TC_SECC_CMN_VTB_ServiceDiscovery_001
+状态: [WARNING] ⚠
+======================================================================
+
+综合相似度: 76.67%
+
+--- 指标得分 ---
+  structure                     : [████░░░░░░░░░░░░░░░░] 22.2% ✓
+  naming               
+           : [████████████████████] 100.0% ✓
+  syntax                        : [████████████████████] 100.0% ✓
+  completeness                  : [████████████████████] 100.0% ✓
+
+--- 统计信息 ---
+  generated_lines               : 124
+  reference_lines               : 265
+
+--- 问题列表 (2) ---
+  1. [INFO] ℹ 缺失 templates: m_CMN_CMN_ServiceDiscoveryReq_001
+  2. [INFO] ℹ 缺失 functions: f_SECC_CMN_PR_PaymentDetails_001, f_SECC_CMN_TB_VTB_ServiceDetail_002, f_SECC_CMN_PR_ServiceDiscovery_001...
+
+--- 文件信息 ---
+  生成的代码: results/TC_SECC_CMN_VTB_ServiceDiscovery_001/generated.ttcn
+  参考代码:   results/TC_SECC_CMN_VTB_ServiceDiscovery_001/standard.ttcn
+
+======================================================================

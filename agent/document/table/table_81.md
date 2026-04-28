@@ -1,0 +1,4 @@
+Table 81 — Semantics and type definition for CostType
+
+
+<table><tr><td>Element Name</td><td>Type</td><td>Semantics</td></tr><tr><td>amount</td><td>simpleTypeunsignedIntrefer to Annex C.6 for the type definition</td><td>The estimated or actual cost per kWh</td></tr><tr><td>amountMultiplier</td><td>simpleTypeunitMultiplierType(min value: -3; max value: 3)refer to Annex C.6</td><td>Optional:The amountMultiplier defines the exponent to base 10 (dec). The final value is determined by:amount * 10^ amountMultiplier</td></tr><tr><td>costKind</td><td>simpleType:CostKindTypeenumerationrefer to Annex C.6 for the type definition</td><td>The kind of cost referred to in the message element amount (refer to Table 82 for the semantics description of individual enumeration values defined for this type).</td></tr></table>

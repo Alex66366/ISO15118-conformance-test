@@ -1,0 +1,36 @@
+{
+  "_comment": "Eclipse TITAN Official Documentation URL Index. URLs point to raw .adoc files on GitLab, directly parseable by LLM agents.",
+  "urls": {
+    "user_guide": {
+      "title": "User Guide - Full Build Process",
+      "chapter3_compile": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/userguide/3-creating_executable_test_suites_from_the_command-l.adoc",
+      "chapter1_overview": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/userguide/1-overview.adoc",
+      "chapter2_ttcn3": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/userguide/2-a_crash_course_in_ttcn3.adoc"
+    },
+    "reference_guide": {
+      "title": "Reference Guide - Language Reference",
+      "tips_troubleshooting": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/12-tips_&_troubleshooting.adoc",
+      "language_extensions": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/4-ttcn3_language_extensions.adoc",
+      "test_ports": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/11-test_ports.adoc",
+      "chapter5_datatypes": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/5-t_data_types.adoc",
+      "chapter6_templates": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/6-t_templates_and_matching.adoc",
+      "chapter7_config": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/7-t_test_configuration_and_components.adoc",
+      "chapter8_alt": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/8-t_alt_blocks_and_timers.adoc",
+      "chapter9_communication": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/9-t_communication_with_test_ports.adoc",
+      "appendix_limitations": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/13-ttcn-3_limitations_and_known_problems.adoc"
+    },
+    "api_guide": {
+      "title": "API Guide - Custom Test Port Development",
+      "apiguide": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/apiguide/apiguide.adoc"
+    },
+    "installation_guide": {
+      "title": "Installation Guide - Environment Setup",
+      "installation": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/installationguide/installationguide.adoc"
+    }
+  },
+  "build_reference": {
+    "chapter3_userguide": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/userguide/3-creating_executable_test_suites_from_the_command-l.adoc",
+    "tips_troubleshooting": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/12-tips_&_troubleshooting.adoc",
+    "language_extensions": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/4-ttcn3_language_extensions.adoc"
+  }
+}

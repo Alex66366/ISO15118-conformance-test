@@ -1,0 +1,7 @@
+module f_SECC_CMN_PR_StateA_001 {
+    import from SECC_TestSystem all;
+
+    function f_SECC_CMN_PR_StateA_001() runs on SECCTester {
+        // Stub
+    }
+}

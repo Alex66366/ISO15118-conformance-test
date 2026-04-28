@@ -1,0 +1,4 @@
+Table 23 — Semantics and type definition for a V2G message
+
+
+<table><tr><td>Element Name</td><td>Type</td><td>Semantics</td></tr><tr><td>V2G_Message</td><td>complexType includes the message elements defined in this table</td><td>Root element that identifies this XML document as a V2G message. It contains two child elements, a Header and Body element.</td></tr><tr><td>Header</td><td>complexType: MessageHeaderType refer to subclause 8.3.3</td><td>This element contains the content of the message header. It includes generic information for protocol flow and is not directly related to the semantics of each particular message defined in 0.</td></tr><tr><td>Body</td><td>complexType: BodyType refer to subclause 8.3.4</td><td>This element contains the content of the message body. The message body provides the actual semantics of each message defined in subclause 0.</td></tr></table>

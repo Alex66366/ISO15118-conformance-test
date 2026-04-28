@@ -1,0 +1,33 @@
+module f_SECC_CMN_PO_ShutdownConfiguration_001 {
+    import from SECC_TestSystem all;
+    import from ISO15118_2_PIXIT all;
+    import from ISO15118_2_Templates all;
+
+    /**
+     * @desc Phase D: Graceful shutdown of TCP/TLS connection.
+     *       Sends TCP close request and waits for acknowledgement
+     *       or timeout before completing cleanup.
+     */
+    function f_SECC_CMN_PO_ShutdownConfiguration_001(
+        in HAL_61851_Listener v_HAL_61851_Listener,
+        in SystemSECC p_system
+    ) runs on SECCTester {
+        var timer tc_CMN_TCP_Connection_Termination_Timer;
+        tc_CMN_TCP_Connection_Termination_Timer.start(PIXIT_CMN_TCP_Connection_Timeout);
+
+        // Send TCP close request
+        pt_V2G_TCP_TLS_Port.send(md_CMN_TCPControlMessage_Close());
+
+        alt {
+            // TCP connection closed successfully
+            [] pt_V2G_TCP_TLS_Port.receive(mw_CMN_TCPControlMessage_Closed()) {
+                tc_CMN_TCP_Connection_Termination_Timer.stop;
+                log("TCP connection closed successfully");
+            }
+            // Timeout waiting for TCP close acknowledgement
+            [] tc_CMN_TCP_Connection_Termination_Timer.timeout {
+                log("WARNING: TCP connection termination timeout");
+            }
+        }
+    }
+}

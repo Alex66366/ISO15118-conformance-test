@@ -1,0 +1,4 @@
+module PostConditions_SECC_15118_2 {
+    import from SECC_TestSystem all;
+    // Simplified postconditions
+}

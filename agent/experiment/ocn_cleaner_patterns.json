@@ -1,0 +1,33 @@
+{
+  "_description": "OCR error replacement patterns for ISO 15118-4 TTCN-3 code extracted from PDF documents. Patterns are applied sequentially using regex substitution.",
+  "_last_updated": "2026-04-28",
+  "patterns": [
+    {"pattern": "v HAL_61851 Listener", "replacement": "v_HAL_61851_Listener", "category": "space_error", "description": "Missing underscore in HAL variable"},
+    {"pattern": "v_HAL_61851 Listener", "replacement": "v_HAL_61851_Listener", "category": "space_error", "description": "Space instead of underscore after HAL_61851"},
+    {"pattern": "HAL_61851 Listener", "replacement": "v_HAL_61851_Listener", "category": "space_error", "description": "Missing v_ prefix and underscore"},
+    {"pattern": "tc_V2G_EVCC Msg_Timer", "replacement": "tc_V2G_EVCC_Msg_Timer", "category": "space_error", "description": "Missing underscore in timer name"},
+    {"pattern": "tc_V2G_SECC Msg_Timer", "replacement": "tc_V2G_SECC_Msg_Timer", "category": "space_error", "description": "Missing underscore in SECC timer name"},
+    {"pattern": "par_V2G_EVCC Msg_Timeout", "replacement": "par_V2G_EVCC_Msg_Timeout", "category": "space_error", "description": "Missing underscore in timeout param"},
+    {"pattern": "par_V2G_SECC Msg_Timeout", "replacement": "par_V2G_SECC_Msg_Timeout", "category": "space_error", "description": "Missing underscore in SECC timeout param"},
+    {"pattern": "pt_V2G\\.tcpTLS_ALM_SECC_Port", "replacement": "pt_V2G_TCP_TLS_ALM_SECC_Port", "category": "name_corruption", "description": "Dot instead of underscores in port name"},
+    {"pattern": "pt_V2G\\.tcpTLS_ALM_EVCC_Port", "replacement": "pt_V2G_TCP_TLS_ALM_EVCC_Port", "category": "name_corruption", "description": "Dot instead of underscores in EVCC port name"},
+    {"pattern": "SECC Tester", "replacement": "SECCTester", "category": "name_corruption", "description": "Space in component name"},
+    {"pattern": "EVCC Tester", "replacement": "EVCCTester", "category": "name_corruption", "description": "Space in EVCC component name"},
+    {"pattern": "SECCTester ", "replacement": "SECCTester ", "category": "trailing_space", "description": "Trailing space in component name"},
+    {"pattern": "EVCCTester ", "replacement": "EVCCTester ", "category": "trailing_space", "description": "Trailing space in EVCC component name"},
+    {"pattern": "[ ]", "replacement": "[]", "category": "bracket_error", "description": "Space inside empty brackets"},
+    {"pattern": "\\$\\\\equiv\\$", "replacement": "==", "category": "latex_symbol", "description": "LaTeX equivalence symbol"},
+    {"pattern": "\\$= =\\$", "replacement": "==", "category": "latex_symbol", "description": "Malformed LaTeX equivalence"},
+    {"pattern": "\uff1d", "replacement": "=", "category": "punctuation", "description": "Chinese equals sign"},
+    {"pattern": "\uff09", "replacement": ")", "category": "punctuation", "description": "Chinese closing parenthesis"},
+    {"pattern": "\uff08", "replacement": "(", "category": "punctuation", "description": "Chinese opening parenthesis"},
+    {"pattern": "f_SECC_CMN_PO_IInitialState", "replacement": "f_SECC_CMN_PO_InitialState", "category": "name_corruption", "description": "Extraneous I prefix in postcondition"},
+    {"pattern": "f_EVCC_CMN_PO_IInitialState", "replacement": "f_EVCC_CMN_PO_InitialState", "category": "name_corruption", "description": "Extraneous I prefix in EVCC postcondition"}
+  ],
+  "_self_learning": {
+    "enabled": true,
+    "auto_add_new_patterns": true,
+    "min_confidence_to_add": 0.8,
+    "notes": "When code_comparator detects naming differences not in the patterns above, it should attempt to auto-learn and add new patterns here."
+  }
+}

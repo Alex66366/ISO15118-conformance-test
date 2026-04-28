@@ -1,0 +1,58 @@
+/**
+ * @desc    Timer and constant definitions for SECC ISO 15118-2 conformance tests.
+ *          Values are cross-referenced against PIXIT at runtime; this module
+ *          provides compile-time defaults so the test suite links without errors.
+ */
+module SECC_Constants {
+
+    import from SECC_TestSystem all;
+
+    // =========================================================================
+    // Timing constants (seconds)
+    // Source: ISO 15118-2:2014 Table 107 and PIXIT_SECC_CMN_Message_Timeout
+    // =========================================================================
+
+    /** Default message response timeout (PIXIT override applies at runtime). */
+    const float c_V2G_SECC_Msg_Timeout_Default := 2.0;
+
+    /** SDP discovery timeout. */
+    const float c_V2G_SECC_SDP_Timeout := 1.0;
+
+    /** TCP/TLS connection setup timeout. */
+    const float c_V2G_SECC_Connection_Timeout := 3.0;
+
+    /** Overall test campaign guard timer (2× message timeout). */
+    const float c_V2G_SECC_TC_Timeout := 4.0;
+
+    // =========================================================================
+    // Protocol constants
+    // =========================================================================
+
+    /** V2GTP Version byte (0x01). */
+    const octetstring c_V2GTP_Version := '01'O;
+
+    /** V2GTP Inverse version byte (0xFE). */
+    const octetstring c_V2GTP_VersionInv := 'FE'O;
+
+    /** V2GTP PayloadType: SupportedAppProtocol (0x8001). */
+    const octetstring c_V2GTP_PT_SAP_Req := '8001'O;
+
+    /** V2GTP PayloadType: SupportedAppProtocol response (0x8002). */
+    const octetstring c_V2GTP_PT_SAP_Res := '8002'O;
+
+    /** V2GTP PayloadType: EXI encoded V2G message (0x8001 general). */
+    const octetstring c_V2GTP_PT_EXI := '8001'O;
+
+    /** ISO 15118-2 protocol namespace URI. */
+    const charstring c_ISO15118_2_Namespace := "urn:iso:15118:2:2013:MsgDef";
+
+    /** Default SchemaID agreed upon SupportedAppProtocol handshake. */
+    const integer c_SAP_SchemaID_Default := 10;
+
+    /** SECC TCP port per ISO 15118-2. */
+    const integer c_V2G_Port := 15118;
+
+    /** SDP multicast group (link-local all-nodes). */
+    const charstring c_SDP_Multicast_Addr := "ff02::01";
+
+} // end module SECC_Constants

@@ -1,0 +1,22 @@
+module f_SECC_CMN_PR_InitConfiguration_002 {
+    import from SECC_TestSystem all;
+    import from ISO15118_2_PIXIT all;
+    import from ISO15118_2_Templates all;
+
+    /**
+     * @desc Phase B (continued): Additional configuration before test behavior.
+     *       Configures the SECC port adapter for the specific test case,
+     *       setting expected pass/fail verdicts for the adapter layer.
+     */
+    function f_SECC_CMN_PR_InitConfiguration_002(
+        in SystemSECC p_system,
+        in verdicttype p_passVerdict,
+        in verdicttype p_failVerdict
+    ) runs on SECCTester {
+        // Configure port adapter with expected verdict outcomes
+        // This prepares the ALM (Adapter Layer Module) SECC port
+        // for the upcoming test behavior phase
+        log("InitConfiguration_002: Configuring SECC port adapter with pass=",
+            p_passVerdict, " fail=", p_failVerdict);
+    }
+}

@@ -1,0 +1,56 @@
+/**
+ * @desc    Altstep examples from ISO 15118-4
+ *          Altsteps define common alternative behaviors that can be
+ *          activated as defaults during test execution.
+ *
+ * Common patterns:
+ *   - Unexpected message handling
+ *   - Connection loss detection
+ *   - Sequence timeout handling
+ */
+
+// Default altstep for unexpected SDP messages
+altstep a_SDP_Message()
+  runs on SECCTester
+{
+  var V2G_UDP_SDP_Message v_sdpMessage;
+
+  [] pt_V2G_UDP_SDP_Port.receive(?) -> value v_sdpMessage {
+    log("WARNING: Unexpected SDP message received: ", v_sdpMessage);
+    repeat;
+  }
+}
+
+// Default altstep for unexpected V2G TCP/TLS messages
+altstep a_V2G_TCP_TLS_Message()
+  runs on SECCTester
+{
+  var V2GTP_Message v_v2gMessage;
+
+  [] pt_V2G_TCP_TLS_Port.receive(?) -> value v_v2gMessage {
+    log("FAIL: Unexpected V2G message received");
+    setverdict(fail);
+  }
+}
+
+// Default altstep for sequence timeout (SECC)
+altstep a_SECC_SequenceTimeout()
+  runs on SECCTester
+{
+  var timer tc_V2G_SECC_Sequence_Timer := floattoint(PIXIT_CMN_Sequence_Timeout);
+
+  [] tc_V2G_SECC_Sequence_Timer.timeout {
+    log("FAIL: V2G SECC Sequence Timeout");
+    setverdict(fail);
+  }
+}
+
+// Default altstep for TCP connection loss
+altstep a_TCP_ConnectionLost()
+  runs on SECCTester
+{
+  [] pt_V2G_TCP_TLS_Port.receive(mw_CMN_TCPControlMessage_Closed()) {
+    log("FAIL: TCP connection lost unexpectedly");
+    setverdict(fail);
+  }
+}

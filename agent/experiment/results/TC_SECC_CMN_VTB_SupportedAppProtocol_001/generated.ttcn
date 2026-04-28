@@ -1,0 +1,163 @@
+/**
+ * @desc    GoodCase test for SupportedAppProtocol message.
+ *          Verifies that SECC correctly handles a valid SupportedAppProtocolReq
+ *          and responds with a successful negotiation response.
+ * @reference ISO 15118-4:2018, Annex E - E.1.1.1
+ * @requirement V2G2-728, V2G2-025, V2G2-026
+ */
+module TC_SECC_CMN_VTB_SupportedAppProtocol_001 {
+
+  // === Imports ===
+  import from ISO15118_2_DataTypes all;
+  import from ISO15118_2_Templates all;
+  import from ISO15118_2_Functions all;
+  import from ISO15118_2_Components all;
+  import from ISO15118_2_PICS all;
+  import from ISO15118_2_PIXIT all;
+  import from ISO15118_2_Timers all;
+
+  // === Templates ===
+
+  /**
+   * @desc    Send template for SupportedAppProtocolReq message.
+   */
+  template SupportedAppProtocolReq md_CMN_CMN_SupportedAppProtocolReq_001(
+    template (present) AppProtocolType p_protocolList
+  ) := {
+    appProtocol_list := { p_protocolList }
+  }
+
+  /**
+   * @desc    Send template for AppProtocolType.
+   */
+  template AppProtocolType md_CMN_CMN_APPProtocolType_001(
+    charstring p_protocolNamespace,
+    integer p_versionNumberMajor,
+    integer p_versionNumberMinor,
+    integer p_schemaID,
+    integer p_priority
+  ) := {
+    protocolNamespace := p_protocolNamespace,
+    versionNumberMajor := p_versionNumberMajor,
+    versionNumberMinor := p_versionNumberMinor,
+    schemaID := p_schemaID,
+    priority := p_priority
+  }
+
+  /**
+   * @desc    Receive template for SupportedAppProtocolRes message.
+   */
+  template SupportedAppProtocolRes mw_CMN_CMN_SupportedAppProtocolRes_001(
+    template (present) ResponseCodeType p_responseCode,
+    template IdType p_sID
+  ) := {
+    responseCode := p_responseCode,
+    schemaID := p_sID
+  }
+
+  // === Test Behavior Function ===
+
+  /**
+   * @desc    Phase C test behavior function.
+   *          Sends a SupportedAppProtocolReq and verifies response.
+   */
+  function f_SECC_CMN_TB_VTB_SupportedAppProtocol_001(
+    in verdicttype v_vct
+  ) runs on SECCTester return verdicttype {
+
+    var SupportedAppProtocolRes v_responseMessage;
+
+    // Start message timeout timer
+    tc_V2G_EVCC_Msg_Timer.start(par_V2G_EVCC_Msg_Timeout_SupportedAppProtocolReq);
+
+    // Send SupportedAppProtocolReq
+    pt_V2G_TCP_TLS_ALM_SECC_Port.send(
+      md_CMN_CMN_SupportedAppProtocolReq_001(
+        md_CMN_CMN_APPProtocolType_001(
+          vc_Supported_ISO_Namespace,
+          vc_versionNumberMajor,
+          vc_versionNumberMinor,
+          10,
+          2
+        )
+      )
+    );
+
+    // Alt block: handle response alternatives
+    alt {
+      // Expected: Valid response with success code
+      [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(
+        mw_CMN_CMN_SupportedAppProtocolRes_001(e_OK, ?)
+      ) {
+        tc_V2G_EVCC_Msg_Timer.stop;
+        log("PASS: Valid SupportedAppProtocolRes received with e_OK response");
+        setverdict(pass);
+      }
+
+      // Unexpected: Error response
+      [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(
+        mw_CMN_CMN_SupportedAppProtocolRes_001(e_FAILED, ?)
+      ) {
+        tc_V2G_EVCC_Msg_Timer.stop;
+        log("FAIL: SECC returned e_FAILED response");
+        setverdict(fail);
+      }
+
+      // Unexpected: Invalid response
+      [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {
+        tc_V2G_EVCC_Msg_Timer.stop;
+        log("FAIL: Invalid response received");
+        setverdict(fail);
+      }
+
+      // Timeout
+      [] tc_V2G_EVCC_Msg_Timer.timeout {
+        log("INCONC: No response received within timeout");
+        setverdict(inconc);
+      }
+    }
+
+    return getverdict;
+  }
+
+  // === Testcase ===
+
+  /**
+   * @desc    GoodCase testcase for SupportedAppProtocol.
+   *          Verifies that SECC correctly handles valid SupportedAppProtocolReq
+   *          and responds with successful negotiation.
+   */
+  testcase TC_SECC_CMN_VTB_SupportedAppProtocol_001()
+    runs on SECCTester system SystemSECC {
+
+    var HAL_61851_Listener v_HAL_61851_Listener;
+    var verdicttype preConVerdict;
+
+    // -- Phase A + B: Pre Conditions --
+    // Phase A: Initialize test configuration
+    f_SECC_CMN_PR_InitConfiguration_001(v_HAL_61851_Listener, system);
+
+    // Phase B: Complete binding to bring SUT to known state
+    preConVerdict := f_SECC_CMN_PR_Binding_001(v_HAL_61851_Listener);
+
+    // -- Phase C: Test Behavior --
+    if (preConVerdict == pass) {
+      // Initialize configuration for test
+      f_SECC_CMN_PR_InitConfiguration_002(system, pass, fail);
+
+      // Execute test behavior
+      f_SECC_CMN_TB_VTB_SupportedAppProtocol_001(fail);
+
+      // Stop communication setup timer
+      tc_V2G_EVCC_CommunicationSetup_Timer.stop;
+    } else {
+      log("PreCondition was unsuccessful.");
+      setverdict(inconc);
+    }
+
+    // -- Phase D: Post Conditions --
+    f_SECC_CMN_PO_IInitialState_001(v_HAL_61851_Listener);
+    f_SECC_CMN_PO_ShutdownConfiguration_001(v_HAL_61851_Listener, system);
+  }
+
+}

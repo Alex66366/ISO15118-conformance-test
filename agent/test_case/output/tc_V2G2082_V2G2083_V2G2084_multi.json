@@ -1,0 +1,100 @@
+{
+  "generation_metadata": {
+    "timestamp": "2026-04-10T09:08:15.718792",
+    "mode": "multi",
+    "requirement_ids": [
+      "V2G2-082",
+      "V2G2-083",
+      "V2G2-084",
+      "V2G2-085"
+    ],
+    "pipeline": "4-Agent (Orchestrator→Modeler→Generator→Verifier)",
+    "elapsed_seconds": 390.4
+  },
+  "orchestrator_plan": {
+    "mode": "multi",
+    "plan_id": "PLAN_MULTI_V2GTP_Header_Structure",
+    "source_requirements": [
+      "V2G2-082",
+      "V2G2-083",
+      "V2G2-084",
+      "V2G2-085"
+    ],
+    "grouping_strategy": "message_flow",
+    "requirement_groups": [
+      {
+        "group_id": "GRP_001",
+        "requirements": [
+          "V2G2-082",
+          "V2G2-083",
+          "V2G2-084",
+          "V2G2-085"
+        ],
+        "rationale": "All four requirements define the structure, byte ordering, and encoding of the V2GTP header. V2G2-082 mandates the header structure per Figure 9, V2G2-083 mandates the 8-byte send order per Figure 9, V2G2-084 specifies lower-numbered bytes are sent first (byte 1 through byte 8), and V2G2-085 specifies big endian encoding for payload type and payload length fields. These are tightly coupled structural requirements that must be validated together on any V2GTP message exchange.",
+        "sut_type": "SECC",
+        "category": "CMN",
+        "message_type": "V2GTPHeader",
+        "precondition_chain": [
+          "f_SECC_CMN_PR_InitConfiguration_001",
+          "f_SECC_CMN_PR_TCP_Connected_001"
+        ],
+        "testing_scope": [
+          "V2GTP header structure conformance to Figure 9 (Protocol Version, Inverse Protocol Version, Payload Type, Payload Length)",
+          "Header field order: 8 bytes sent in order as shown in Figure 9",
+          "Byte ordering: lower-numbered bytes sent before higher-numbered bytes (byte 1 first, byte 8 last)",
+          "Big endian encoding of Payload Type field (most significant byte first)",
+          "Big endian encoding of Payload Length field (most significant byte first)",
+          "Protocol Version field value (0x01 for V2GTP version 1)",
+          "Inverse Protocol Version field value (0xFE, bitwise inverse of Protocol Version)",
+          "Payload Type field value validation against Table 10 (e.g., 0x8001 for EXI encoded V2G Message)",
+          "Payload Length field value matches actual payload size"
+        ],
+        "sequence_plan": [
+          {
+            "seq_no": "001",
+            "test_type": "GoodCase",
+            "description": "Verify SECC sends a V2GTP message with correctly structured header: Protocol Version=0x01, Inverse Protocol Version=0xFE, valid Payload Type (0x8001), correct Payload Length, all in correct byte order and big endian encoding"
+          },
+          {
+            "seq_no": "002",
+            "test_type": "BadCase",
+            "description": "Send a V2GTP message to SECC with invalid Protocol Version (not 0x01) and verify SECC rejects or ignores the malformed header"
+          },
+          {
+            "seq_no": "003",
+            "test_type": "BadCase",
+            "description": "Send a V2GTP message to SECC with Inverse Protocol Version not matching the bitwise inverse of Protocol Version and verify SECC rejects the message"
+          },
+          {
+            "seq_no": "004",
+            "test_type": "BadCase",
+            "description": "Send a V2GTP message to SECC with invalid Payload Type (reserved value outside defined ranges in Table 10) and verify SECC rejects the message"
+          },
+          {
+            "seq_no": "005",
+            "test_type": "BadCase",
+            "description": "Send a V2GTP message to SECC with Payload Length not matching the actual payload size and verify SECC rejects or handles the inconsistency"
+          }
+        ]
+      }
+    ],
+    "figure_references": [
+      "Figure 9"
+    ],
+    "table_references": [
+      "Table 9",
+      "Table 10"
+    ],
+    "notes": "All four requirements apply to 'A V2GTP entity' which encompasses both SECC and EVCC. For conformance testing purposes, the SUT is set to SECC as the primary target, since the tester (acting as EVCC) initiates the first V2GTP message exchange (SupportedAppProtocolReq). The same test logic could be mirrored for EVCC SUT testing. The requirements are purely structural (header format and encoding) and apply to every V2GTP message regardless of charging mode, hence category is CMN. The precondition chain only requires TCP connection since V2GTP header validation occurs at the transport protocol layer, before any application-layer message exchange."
+  },
+  "testing_points": [
+    {
+      "type": "functional",
+      "description": "Verify requirement ?",
+      "test_approach": "positive",
+      "expected_behavior": "Requirement satisfied"
+    }
+  ],
+  "test_cases": [],
+  "verification": {}
+}

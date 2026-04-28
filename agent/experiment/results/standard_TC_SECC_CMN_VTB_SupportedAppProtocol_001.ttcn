@@ -1,0 +1,81 @@
+/**
+ * @desc    Standard reference code for TC_SECC_CMN_VTB_SupportedAppProtocol_001
+ * @source  ISO 15118-4:2018 (OCR-extracted from knowledge base)
+ * @requirements V2G2-728, V2G2-025, V2G2-026, V2G2-168, V2G2-027, V2G2-029, V2G2-723, V2G2-030, V2G2-032, V2G2-033, V2G2-034, V2G2-729, V2G2-068, V2G2-082, V2G2-086, V2G2-087
+ */
+
+// ============ Templates ============
+
+// [template] md_CMN_CMN_SupportedAppProtocolReq_001
+template SupportedAppProtocolReq md_CMN_CMN_SupportedAppProtocolReq_001(
+    template (present) AppProtocolType p_protocolList) := {
+        appProtocol_list := {p_protocolList}
+}
+
+// [template] md_CMN_CMN_SupportedAppProtocolRes_001
+template SupportedAppProtocolRes md_CMN_CMN_SupportedAppProtocolRes_001(
+    template (present) ResponseCodeType p_responseCode,
+    template IdType p_sID) := {
+        responseCode := p_responseCode, schemaID := p_sID
+}
+
+// [template] md_CMN_CMN_SupportedAppProtocolRes_002
+template SupportedAppProtocolRes md_CMN_CMN_SupportedAppProtocolRes_002(
+    template (present) ResponseCodeType p_responseCode) := {
+        responseCode := p_responseCode, schemaID := omit
+}
+
+// [template] mw_EVCC_CMN_SupportedAppProtocolReq_001
+template SupportedAppProtocolReq mw_EVCC_CMN_SupportedAppProtocolReq_001() := {
+        appProtocol_list := ? length (1..20)
+    }
+
+// ============ Test Behavior Function ============
+
+function f_SECC_CMN_TB_VTB_SupportedAppProtocol_001(in verdicttype v_vct) 
+    runs on SECCTester 
+    return verdicttype {
+        var SupportedAppProtocolRes v_responseMessage;
+        tc_V2G_EVCC_Msg_Timer.start(par_V2G_EVCC_Msg_Timeout_SupportedAppProtocolReq);
+        pt_V2G_TCP_TLS_ALM_SECC_Port.send(md_CMN_CMN_SupportedAppProtocolReq_001(
+            md_CMN_CMN_APPProtocolType_001(
+                vc_Supported_ISO_Namespace,
+                vc_versionNumberMajor,
+                vc_versionNumberMinor, 10, 2));
+        }
+
+// ============ Precondition Functions ============
+
+// f_SECC_CMN_PR_SupportedAppProtocol_001
+function f_SECC_CMN_PR_SupportedAppProtocol_001(out HAL_61851_Listener v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMN_PR_Binding_001(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMN_PR_InitConfiguration_002(system, pass, inconc); verdict := f_SECC_CMN_TB_VTB_SupportedAppProtocol_001(inconc); // clear SDP Port pt_V2G_UID_SDP_Port.clear; vc,默认_SDP_Message := activate(a_SDP_Message()); } return verdict;   
+}   
+function f_SECC_CMN_PR SESSIONSetup_001(out HAL_61851 ,(var verdicttype verdict := f_SECC_CMN_PR_bounding_to_out)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMN_PR_bounding_to_out)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMN_PR_bounding_to_out)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMN_PR_bounding_to_out)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMN_PR_bounding_to出了)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMN_PR_bounding_to_out)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMN_PR_bounding_to_out)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMN_PR_bounding_to_out)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMNazoleout)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMNazoleout)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMNazoleout)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMNazoleout)(v_HAL_61851 ,(var verdicttype verdict := f_SECC_CMNazoleout)(v_HAL_61
+
+var verdicttype verdict := f_SECC_CMN_PR_SupportedAppProtocol_001(v_HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_ 61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL 2G_EVCC_CommunicationSetup_Timer.stop; tc_V2G_SECC_CommunicationSetup_Timer.stop; } return verdict;   
+}   
+function f_SECC_CMN_PR_ServiceDiscovery_001(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HALEL 61851,(out HALEL 61851,(out HALEL 6 
+
+function f_SECC_CMN_PR_PaymentDetails_001(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL_61851 ,(out HAL 2000   
+var verdicttype verdict; if(PICKIT_SECC_CMN_CertificateHandling == certUpdate and PICS_CMN_IDentificationMode == pnC){ verdict := f_SECC_CMN_PR_CertificateUpdate_001(v_HAL_61851 ,(Listener); }
+
+// ============ Testcase ============
+
+testcase TC_SECC_CMN_VTB_SupportedAppProtocol_001() runs on SECCTester system SystemSECC {
+        var HAL_61851_Listener v HAL_61851_Listener;
+        var verdicttype preConVerdict;
+        // ____________ Pre Conditions ____________
+        f_SECC_CMN_PR_InitConfiguration_001(v HAL_61851_Listener,system);
+        preConVerdict := f_SECC_CMN_PR_Binding_001(v HAL_61851_Listener);
+        // ____________ Test behavior ____________
+        if(preConVerdict == pass) {
+            f_SECC_CMN_PR_InitConfiguration_002(system,pass,fail);
+            f_SECC_CMN_TB_VTB_SupportedAppProtocol_001(fail);
+            tc_V2G_EVCC_CommunicationSetup_Timer.stop;
+        }
+        else {
+            log("PreCondition was unsuccessful.")
+        }
+        // ____________ Post Conditions ____________
+        f_SECC_CMN_PO_IInitialState_001(v HAL_61851_Listener);
+        f_SECC_CMN_PO_ShutdownConfiguration_001(v HAL_61851_Listener,system);
+    }
