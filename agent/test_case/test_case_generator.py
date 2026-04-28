@@ -107,9 +107,9 @@ def extract_json_from_response(text: str) -> Optional[Dict]:
             pass
         # 截断恢复：使用花括号平衡追踪尝试恢复截断的 JSON
         recovered = _recover_truncated_json(block_content)
-            if recovered:
-                log("Phase 1 JSON 截断恢复成功", "WARN")
-                return recovered
+        if recovered:
+            log("Phase 1 JSON 截断恢复成功", "WARN")
+            return recovered
 
     return None
 
