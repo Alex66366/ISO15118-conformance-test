@@ -32,6 +32,8 @@ TABLE_DIR = DOCUMENT_DIR / "table"
 
 DEFAULT_OUTPUT_DIR = BASE_DIR / "output"
 DEFAULT_AGENT_TIMEOUT = 180  # seconds
+GENERATOR_TIMEOUT = 300  # Generator needs more time for complex multi-point generation
+GENERATOR_RETRIES = 1  # Allow one retry on timeout
 
 
 # ==================== 日志 ====================
@@ -371,8 +373,14 @@ Please output the generation plan as a JSON object.
                 "testing_scope": "single_requirement"
             }
 
-        log(f"Orchestrator plan: mode={plan.get('mode', mode)}, "
-            f"sut={plan.get('sut_type', '?')}, type={plan.get('test_type', '?')}")
+        sut = plan.get('sut_type') or '?'
+        mode_in_plan = plan.get('mode', mode)
+        if mode_in_plan == 'single':
+            test_type = plan.get('test_type') or '?'
+        else:
+            # multi 模式下没有 test_type，看 grouping_strategy
+            test_type = plan.get('grouping_strategy') or 'multi'
+        log(f"Orchestrator plan: mode={mode_in_plan}, sut={sut}, strategy={test_type}")
         return plan
 
     # ---- Agent 2: Modeler ----
@@ -469,21 +477,164 @@ Please output the testing_points as a JSON array.
 Please output the test cases as a JSON object with a "test_cases" array.
 """
 
-        response = call_claude_agent(prompt, "Generator", timeout=DEFAULT_AGENT_TIMEOUT)
-        result = extract_json_from_response(response)
+        # Multi 模式下使用更长超时，并支持重试
+        timeout = GENERATOR_TIMEOUT
+        for attempt in range(GENERATOR_RETRIES + 1):
+            response = call_claude_agent(prompt, "Generator", timeout=timeout)
+            result = extract_json_from_response(response)
 
-        test_cases = []
-        if isinstance(result, dict):
-            if "test_cases" in result:
-                test_cases = result["test_cases"]
-            elif "Test_Case" in result:
-                test_cases = [result]
-            else:
-                test_cases = [result]
-        elif isinstance(result, list):
-            test_cases = result
+            test_cases = []
+            if isinstance(result, dict):
+                if "test_cases" in result:
+                    test_cases = result["test_cases"]
+                elif "Test_Case" in result:
+                    test_cases = [result]
+                else:
+                    test_cases = [result]
+            elif isinstance(result, list):
+                test_cases = result
+
+            if test_cases:
+                break
+
+            if attempt < GENERATOR_RETRIES:
+                log(f"Generator 重试 {attempt + 2}/{GENERATOR_RETRIES + 1} ...", "WARN")
+                # 缩短 prompt 以加速下次尝试：去掉 figure/table context
+                prompt = template + f"""
+
+## INPUT
+
+**Generation Plan:**
+{json.dumps(plan, indent=2, ensure_ascii=False)}
+
+**Testing Points:**
+{json.dumps(testing_points[:8], indent=2, ensure_ascii=False)[:8000]}
+
+**Protocol Summary:**
+{protocol_summary[:1500]}
+
+**Module:** {module_name}
+
+Please output the test cases as a JSON object with a "test_cases" array.
+"""
+                timeout = 240
+
+        # Generator 完全失败时，使用 fallback 直接从 testing_points 生成
+        if not test_cases:
+            log("Generator 未能生成测试用例，使用 fallback 机制", "WARN")
+            test_cases = self._generate_fallback_test_cases(plan, testing_points)
 
         log(f"Generator 生成 {len(test_cases)} 个测试用例")
+        return test_cases
+
+    def _generate_fallback_test_cases(self, plan: Dict, testing_points: List[Dict]) -> List[Dict]:
+        """Fallback: 直接从 testing_points 生成简化测试用例（当 Generator 超时时）"""
+        if not testing_points:
+            return []
+
+        # 提取元数据
+        sut = plan.get("sut_type", "SECC")
+        category = plan.get("category", "CMN")
+        message_type = plan.get("message_type", "V2GTPHeader")
+        req_ids = plan.get("source_requirements", plan.get("requirement_ids", []))
+        fig_refs = plan.get("figure_references", [])
+        tbl_refs = plan.get("table_references", [])
+        precondition = plan.get("precondition_chain", ["f_SECC_CMN_PR_TCP_Connected_001"])
+        precond_str = precondition[0] if precondition else "f_SECC_CMN_PR_TCP_Connected_001"
+
+        # 分离 positive 和 negative testing points
+        positive_tps = [tp for tp in testing_points if tp.get("test_approach") == "positive"]
+        negative_tps = [tp for tp in testing_points if tp.get("test_approach") == "negative"]
+
+        test_cases = []
+
+        # GoodCase (seq 001) - 合并所有 positive points
+        if positive_tps:
+            seq_steps = []
+            for i, tp in enumerate(positive_tps[:5], 1):
+                field = tp.get("details", {}).get("field_name", "field")
+                desc = tp.get("description", "")
+                reqs = tp.get("requirement_basis", [])
+                seq_steps.append({
+                    "Step": i,
+                    "Name": f"Verify {field} Valid",
+                    "Instruction": f"Verify SUT correctly handles {field}: {desc}",
+                    "Traced_Requirements": reqs
+                })
+
+            test_cases.append({
+                "Test_Case": {
+                    "TC_Id": f"TC_{sut}_{category}_VTB_{message_type}_001",
+                    "Test_Objective": f"Verify {sut} correctly processes valid V2GTP header fields per {', '.join(req_ids)}",
+                    "Test_Description": f"The test verifies that the {sut} correctly parses and accepts a conformant V2GTP header with all valid field values as specified in {', '.join(req_ids)}.",
+                    "Document_Reference": {
+                        "Document": "ISO:15118-2:2014:IS",
+                        "Section": f"15118-2:{sections[0] if (sections := plan.get('sections', [])) else '8'}",
+                        "Requirements": [f"[{rid}]" for rid in req_ids]
+                    },
+                    "Related_Figures": fig_refs[:3],
+                    "Related_Tables": tbl_refs[:3],
+                    "Config_Id": f"CF_{category}_001",
+                    "PICS_Selection": {f"PICS_{category}_V2GTP_Header": True},
+                    "PreCondition": precond_str,
+                    "Test_Sequence": seq_steps,
+                    "Expected_Behavior": f"f_{sut}_{category}_TB_VTB_{message_type}_001",
+                    "parameters": {}
+                }
+            })
+
+        # BadCase (seq 002+) - 每个 negative point 一个测试用例
+        for i, tp in enumerate(negative_tps[:8], 2):
+            field = tp.get("details", {}).get("field_name", "field")
+            desc = tp.get("description", "")
+            reqs = tp.get("requirement_basis", [])
+            boundary = tp.get("details", {}).get("boundary_values", [])
+
+            seq_steps = [
+                {
+                    "Step": 1,
+                    "Name": "Establish TCP Connection",
+                    "Instruction": "Establish a TCP connection to the SUT.",
+                    "Traced_Requirements": reqs[:1] if reqs else ["V2G2-082"]
+                },
+                {
+                    "Step": 2,
+                    "Name": f"Send Invalid V2GTP Header",
+                    "Instruction": f"Send a V2GTP message with invalid {field}: {desc}",
+                    "Traced_Requirements": reqs[:1] if reqs else ["V2G2-082"]
+                },
+                {
+                    "Step": 3,
+                    "Name": "Verify Rejection",
+                    "Instruction": f"Verify that the SUT rejects or ignores the malformed message. Expected: connection closed or error response.",
+                    "Traced_Requirements": reqs[:1] if reqs else ["V2G2-082"]
+                }
+            ]
+
+            test_cases.append({
+                "Test_Case": {
+                    "TC_Id": f"TC_{sut}_{category}_VTB_{message_type}_{i:03d}",
+                    "Test_Objective": f"Verify {sut} rejects V2GTP header with invalid {field}",
+                    "Test_Description": f"The test verifies that the {sut} correctly rejects a V2GTP message with invalid {field} as specified in {', '.join(reqs or req_ids)}.",
+                    "Document_Reference": {
+                        "Document": "ISO:15118-2:2014:IS",
+                        "Section": f"15118-2:{sections[0] if (sections := plan.get('sections', [])) else '8'}",
+                        "Requirements": [f"[{rid}]" for rid in (reqs or req_ids)]
+                    },
+                    "Related_Figures": fig_refs[:2],
+                    "Related_Tables": tbl_refs[:2],
+                    "Config_Id": f"CF_{category}_{i:03d}",
+                    "PICS_Selection": {f"PICS_{category}_V2GTP_Header": True},
+                    "PreCondition": precond_str,
+                    "Test_Sequence": seq_steps,
+                    "Expected_Behavior": f"f_{sut}_{category}_TB_VTB_{message_type}_{i:03d}",
+                    "parameters": {
+                        "Invalid_Value": boundary[0] if boundary else "invalid"
+                    }
+                }
+            })
+
+        log(f"Fallback 生成了 {len(test_cases)} 个测试用例 (positive={len(positive_tps)}, negative={len(negative_tps)})", "WARN")
         return test_cases
 
     # ---- Agent 4: Verifier ----
@@ -554,27 +705,63 @@ Please output the verification result as a JSON object.
         log(f"{'='*60}")
 
         t0 = time.time()
+        orchestrator_elapsed = 0.0
+        modeler_elapsed = 0.0
+        generator_elapsed = 0.0
+        verifier_elapsed = 0.0
+        generator_retry_count = 0
 
         # Step 1: Orchestrator
+        t_orch = time.time()
         plan = self.run_orchestrator(requirement_ids, mode)
+        orchestrator_elapsed = time.time() - t_orch
+        log(f"[Orchestrator] 耗时: {orchestrator_elapsed:.1f}s")
         if "error" in plan:
             return {"error": plan["error"]}
 
         # Step 2: Modeler
+        t_modeler = time.time()
         testing_points = self.run_modeler(plan)
+        modeler_elapsed = time.time() - t_modeler
+        log(f"[Modeler] 耗时: {modeler_elapsed:.1f}s")
 
         # Step 3: Generator
+        t_gen = time.time()
         test_cases = self.run_generator(plan, testing_points)
+        generator_elapsed = time.time() - t_gen
+        log(f"[Generator] 耗时: {generator_elapsed:.1f}s")
+        # 检测是否有 fallback
+        if not test_cases:
+            generator_retry_count = -1  # 标记为 fallback
+        elif generator_elapsed > GENERATOR_TIMEOUT:
+            generator_retry_count = GENERATOR_RETRIES
 
         # Step 4: Verifier (optional)
         verification = {}
         if not skip_verify and test_cases:
+            t_ver = time.time()
             verification = self.run_verifier(plan, test_cases)
-            # 当 verification.verdict 为 "unknown" 时记录警告但不中断流程
+            verifier_elapsed = time.time() - t_ver
+            log(f"[Verifier] 耗时: {verifier_elapsed:.1f}s")
             if isinstance(verification, dict) and verification.get("verdict") == "unknown":
                 log(f"Verifier 返回 unknown，可能影响测试用例质量，继续生成", "WARN")
 
         elapsed = time.time() - t0
+
+        # 打印 Agent 耗时汇总表
+        log("========== Agent 执行耗时 ==========")
+        log("| Agent              | 耗时(s) |")
+        log("|--------------------|---------|")
+        log(f"| Orchestrator      |  {orchestrator_elapsed:7.1f}  |")
+        log(f"| Modeler           |  {modeler_elapsed:7.1f}  |")
+        retry_suffix = f" (retry {generator_retry_count}x)" if generator_retry_count > 0 else ""
+        fallback_suffix = " (fallback)" if generator_retry_count == -1 else ""
+        log(f"| Generator{retry_suffix}{fallback_suffix}        |  {generator_elapsed:7.1f}  |")
+        if not skip_verify:
+            log(f"| Verifier           |  {verifier_elapsed:7.1f}  |")
+        log("|--------------------|---------|")
+        log(f"| 总计(Agent)       |  {elapsed:7.1f}  |")
+        log("==================================")
 
         # 组装结果
         result = {
@@ -584,6 +771,14 @@ Please output the verification result as a JSON object.
                 "requirement_ids": requirement_ids,
                 "pipeline": "4-Agent (Orchestrator→Modeler→Generator→Verifier)",
                 "elapsed_seconds": round(elapsed, 1),
+                "agent_timings": {
+                    "orchestrator": round(orchestrator_elapsed, 1),
+                    "modeler": round(modeler_elapsed, 1),
+                    "generator": round(generator_elapsed, 1),
+                    "generator_retry_count": generator_retry_count,
+                    "verifier": round(verifier_elapsed, 1),
+                    "total": round(elapsed, 1),
+                },
             },
             "orchestrator_plan": plan,
             "testing_points": testing_points,

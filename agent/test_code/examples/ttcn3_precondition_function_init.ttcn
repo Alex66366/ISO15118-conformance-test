@@ -1,0 +1,21 @@
+/**
+ * @desc    InitConfiguration precondition function example in SIL mode (ISO 15118-4)
+ *          Phase A: Port mapping (no PTC in SIL mode)
+ *
+ * Pattern reference: test_code/examples/ttcn3_CANONICAL_testcase.ttcn
+ */
+
+module f_SECC_CMN_PR_InitConfiguration_001 {
+
+    import from SECC_TestSystem all;
+
+    // Phase A: Initialize test configuration (SIL mode)
+    function f_SECC_CMN_PR_InitConfiguration_001()
+    runs on SECCTester
+    {
+        // Map MTC ports to system ports (SIL mode: no PTC needed)
+        map(mtc:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);
+        map(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
+        log("SIL mode: MTC ports mapped to system ports");
+    }
+}

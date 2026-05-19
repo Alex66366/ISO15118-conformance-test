@@ -1,0 +1,24 @@
+module f_SECC_CMN_PO_InitialState_001 {
+
+    /**
+     * @desc    Postcondition: Restore SECC to initial state.
+     *          Sends any necessary cleanup messages to reset the SECC
+     *          communication state to initial conditions.
+     * @reference ISO 15118-2
+     * @requirement V2G2-082
+     */
+
+    import from SECC_TestSystem all;
+    import from SECC_Constants all;
+
+    function f_SECC_CMN_PO_InitialState_001()
+        runs on SECCTester
+        return verdicttype
+    {
+        // Restore SECC to initial state
+        // In SIL mode: log the postcondition execution
+        log("PostCondition: Restoring SECC to initial state");
+        return pass;
+    }
+
+} // end of module f_SECC_CMN_PO_InitialState_001

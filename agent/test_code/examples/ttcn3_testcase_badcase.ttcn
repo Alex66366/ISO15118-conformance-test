@@ -1,5 +1,5 @@
 /**
- * @desc    BadCase testcase example from ISO 15118-4
+ * @desc    BadCase testcase example in SIL mode (ISO 15118-4)
  *          Tests that SUT correctly handles invalid V2GTP header
  *          (wrong protocol version).
  *
@@ -9,16 +9,13 @@
 testcase TC_SECC_CMN_VTB_V2GTPSessionSetup_002()
   runs on SECCTester system SystemSECC
 {
-  var HAL_61851_Listener v_HAL_61851_Listener;
   var verdicttype preConVerdict;
-  var timer tc_V2G_EVCC_Msg_Timer := floattoint(PIXIT_CMN_Message_Timeout);
-  var timer tc_CMN_TCP_Connection_Termination_Timer := floattoint(PIXIT_CMN_TCP_Connection_Timeout);
 
-  // -- Pre Conditions --
-  f_SECC_CMN_PR_InitConfiguration_001(v_HAL_61851_Listener);
-  preConVerdict := f_SECC_CMN_PR_SupportedAppProtocol_001(v_HAL_61851_Listener);
+  // Phase A+B: Pre Conditions (SIL mode - no PTC, no HAL_61851)
+  f_SECC_CMN_PR_InitConfiguration_001();
+  preConVerdict := f_SECC_CMN_PR_Binding_001();
 
-  // -- Test behavior --
+  // Phase C: Test behavior
   if (preConVerdict == pass) {
     f_SECC_CMN_TB_VTB_V2GTPSessionSetup_002();
   } else {
@@ -26,6 +23,45 @@ testcase TC_SECC_CMN_VTB_V2GTPSessionSetup_002()
     setverdict(inconc);
   }
 
-  // -- Post Conditions --
-  f_SECC_CMN_PO_InitConfiguration_001(v_HAL_61851_Listener);
+  // Phase D: Post Conditions (unconditional cleanup)
+  f_SECC_CMN_PO_InitialState_001();
+  f_SECC_CMN_PO_ShutdownConfiguration_001();
+}
+
+// BadCase test behavior: send invalid V2GTP header (wrong version byte)
+// Expected: SUT closes connection or ignores, test passes
+function f_SECC_CMN_TB_VTB_V2GTPSessionSetup_002()
+  runs on SECCTester
+  return verdicttype
+{
+  timer tc_V2G_EVCC_Msg_Timer := PX_SECC_CMN_Message_Timeout;
+
+  // Send V2GTP message with INVALID protocol version (wrong byte)
+  // Valid version is '01'O, here we send 'FF'O (invalid)
+  var octetstring invalid_msg := 'FFFF8003'O & int2oct(4, 4) & '0022'O;
+
+  tc_V2G_EVCC_Msg_Timer.start(PX_SECC_CMN_Message_Timeout);
+  pt_V2G_TCP_TLS_ALM_SECC_Port.send(invalid_msg);
+
+  alt {
+    // SUT sends TCP Close: this is expected behavior for bad input
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive('00'O) {
+      tc_V2G_EVCC_Msg_Timer.stop;
+      log("PASS: SUT closed connection on invalid V2GTP header");
+      setverdict(pass);
+    }
+    // SUT ignores: timeout means it rejected the message
+    [] tc_V2G_EVCC_Msg_Timer.timeout {
+      log("PASS: SUT ignored invalid V2GTP header");
+      setverdict(pass);
+    }
+    // SUT sent unexpected data: fail
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {
+      tc_V2G_EVCC_Msg_Timer.stop;
+      log("FAIL: SUT sent unexpected response");
+      setverdict(fail);
+    }
+  }
+
+  return getverdict;
 }

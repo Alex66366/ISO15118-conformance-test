@@ -1,5 +1,61 @@
 module SECC_CmnTemplates {
     import from SECC_TestSystem all;
+    import from SECC_Constants all;
 
-    // Simplified templates
-}
+    // ==========================================
+    // Section 1: V2GTP Header Constants
+    // ==========================================
+
+    // V2GTP protocol version constants (used in octetstring concatenation)
+    const octetstring c_V2GTP_ProtocolVersion     := '01'O;
+    const octetstring c_V2GTP_InvProtocolVersion := 'FE'O;
+    const octetstring c_V2GTP_PayloadType_SDP    := '9000'O;  // SDP Request/Response
+    const octetstring c_V2GTP_PayloadType_V2GMsg := '8001'O;  // V2G application messages
+
+    // ==========================================
+    // Section 2: V2GTP Frame Construction Helpers
+    // ==========================================
+
+    // Build a V2GTP frame as octetstring from payload.
+    // p_payloadType: '9000'O for SDP, '8001'O for V2G messages
+    // Returns: [ver=01][inv=FE][payloadType:2][payloadLength:4][payload]
+    function f_CMN_V2GTP_BuildFrame(
+        in octetstring p_payloadType,
+        in octetstring p_payload
+    ) return octetstring {
+        return c_V2GTP_ProtocolVersion
+             & c_V2GTP_InvProtocolVersion
+             & p_payloadType
+             & int2oct(lengthof(p_payload), 4)
+             & p_payload;
+    }
+
+    // ==========================================
+    // Section 3: Common Timeout Altsteps
+    // ==========================================
+
+    // Altstep that handles timeout: setverdict(inconc) and stop the timer
+    altstep a_CMN_WaitTimeout(inout timer p_timer) {
+        [] p_timer.timeout {
+            setverdict(inconc, "Timeout occurred");
+        }
+    }
+
+    // ==========================================
+    // Section 4: Verdict Helpers
+    // ==========================================
+
+    // Helper: check if a verdict is pass
+    function f_CMN_IsVerdictPass(in verdicttype p_verdict) return boolean {
+        return (p_verdict == pass);
+    }
+
+    // Helper: convert verdict to charstring
+    function f_CMN_VerdictToCharstring(in verdicttype p_verdict) return charstring {
+        if (p_verdict == pass)    { return "pass"; }
+        if (p_verdict == fail)    { return "fail"; }
+        if (p_verdict == inconc)  { return "inconc"; }
+        return "none";
+    }
+
+} // end of module SECC_CmnTemplates

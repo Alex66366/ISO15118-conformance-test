@@ -1,11 +1,14 @@
 /**
- * @desc    Test behavior function example from ISO 15118-4
+ * @desc    Test behavior function example in SIL mode (ISO 15118-4)
  *          Implements the core test logic: send stimulus, start timer,
  *          use alt to handle response alternatives, set verdict.
  *
+ * SIL mode: Port operates in octetstring mode. Send/receive raw bytes
+ *           using octetstring concatenation, NOT record/template types.
+ *
  * Pattern:
  *   1. Start timer
- *   2. Send message via port (using templates)
+ *   2. Send octetstring message via port
  *   3. alt block to handle:
  *      - Expected response -> pass
  *      - Unexpected response -> fail
@@ -15,51 +18,32 @@ function f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001()
   runs on SECCTester
   return verdicttype
 {
-  var timer tc_V2G_EVCC_Msg_Timer := floattoint(PIXIT_CMN_Message_Timeout);
+  timer tc_V2G_EVCC_Msg_Timer := PX_SECC_CMN_Message_Timeout;
 
   // Start message timeout timer
-  tc_V2G_EVCC_Msg_Timer.start(PIXIT_CMN_Message_Timeout);
+  tc_V2G_EVCC_Msg_Timer.start(PX_SECC_CMN_Message_Timeout);
 
-  // Send V2GTP message with valid header
-  pt_V2G_TCP_TLS_Port.send(
-    md_CMN_V2GTP_Message_001(
-      md_CMN_V2GTP_Header_001('01'O, 'FE'O, '8003'O, omit),
-      md_CMN_V2GTP_Payload_001(
-        md_CMN_V2GMessage_001(
-          md_CMN_MessageHeader_001(vc_SessionID),
-          md_CMN_BodyType_001(
-            md_CMN_SessionSetupReq_001(vc_eVCCID)
-          )
-        )
-      )
-    )
-  );
+  // Send V2GTP message with valid header (octetstring concatenation)
+  // V2GTP Header: version=01, inv_version=FE, payloadType=8003, payloadLength=4
+  var octetstring session_setup_req := '0022'O; // Simplified payload
+  var integer payload_len := lengthof(session_setup_req);
+  var octetstring v2gtp_msg := '01FE8003'O & int2oct(payload_len, 4) & session_setup_req;
+
+  pt_V2G_TCP_TLS_ALM_SECC_Port.send(v2gtp_msg);
 
   alt {
     // Expected: Valid SessionSetupRes with correct V2GTP header
-    [] pt_V2G_TCP_TLS_Port.receive(
-      mw_CMN_V2GTP_Message_001(
-        mw_CMN_V2GTP_Header_001('01'O, 'FE'O, '8004'O, ?),
-        mw_CMN_V2GTP_Payload_001(
-          mw_CMN_V2GMessage_001(
-            mw_CMN_MessageHeader_001(?),
-            mw_CMN_BodyType_001(
-              mw_CMN_SessionSetupRes_001(?)
-            )
-          )
-        )
-      )
-    ) {
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) -> value v_resp {
       tc_V2G_EVCC_Msg_Timer.stop;
-      log("PASS: Valid SessionSetupRes received with correct V2GTP header");
-      setverdict(pass);
-    }
-
-    // Unexpected: Wrong payload type or invalid header
-    [] pt_V2G_TCP_TLS_Port.receive(?) {
-      tc_V2G_EVCC_Msg_Timer.stop;
-      log("FAIL: Unexpected message received");
-      setverdict(fail);
+      // Manually check V2GTP header fields (cannot use ? with & in templates)
+      if (lengthof(v_resp) >= 8 and substr(v_resp, 0, 1) == '01'O
+          and substr(v_resp, 1, 1) == 'FE'O and substr(v_resp, 2, 2) == '8004'O) {
+        log("PASS: Valid SessionSetupRes received with correct V2GTP header");
+        setverdict(pass);
+      } else {
+        log("FAIL: Unexpected message received");
+        setverdict(fail);
+      }
     }
 
     // Timeout: No response within expected time

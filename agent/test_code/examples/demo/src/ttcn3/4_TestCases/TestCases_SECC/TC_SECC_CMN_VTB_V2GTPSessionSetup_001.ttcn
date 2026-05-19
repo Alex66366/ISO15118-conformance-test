@@ -8,7 +8,7 @@ module TC_SECC_CMN_VTB_V2GTPSessionSetup_001 {
 
         log("Starting test case TC_SECC_CMN_VTB_V2GTPSessionSetup_001");
 
-        map(mtc:pt_V2G_TCP_TLS_Port, system:pt_V2G_TCP_TLS_Port);
+        map(mtc:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);
         map(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
 
         // Step 1: SDP Discovery - send SDP request via UDP to trigger SECC TCP server
@@ -42,14 +42,14 @@ module TC_SECC_CMN_VTB_V2GTPSessionSetup_001 {
         // Contains SupportedAppProtocolReq with ISO 15118-2 and DIN SPEC 70121 protocol entries
         var octetstring v2gtp_sap_req := '01FE8001000000448000EBAB9371D34B9B79D189A98989C1D191D191818999D26B9B3A232B30020000000001B75726E3A64696E3A37303132313A323031323A4D73674465660040000000880'O;
         log("Sending V2GTP SupportedAppProtocolReq to SECC...");
-        pt_V2G_TCP_TLS_Port.send(v2gtp_sap_req);
+        pt_V2G_TCP_TLS_ALM_SECC_Port.send(v2gtp_sap_req);
 
         // Step 4: Wait for SupportedAppProtocolRes from SECC
         timer t_test;
         t_test.start(10.0);
 
         alt {
-            [] pt_V2G_TCP_TLS_Port.receive {
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive {
                 t_test.stop;
                 log("TCP response (SupportedAppProtocolRes) received");
                 setverdict(pass, "SupportedAppProtocolRes received from SECC");
@@ -59,7 +59,7 @@ module TC_SECC_CMN_VTB_V2GTPSessionSetup_001 {
             }
         }
 
-        unmap(mtc:pt_V2G_TCP_TLS_Port, system:pt_V2G_TCP_TLS_Port);
+        unmap(mtc:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);
         unmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
     }
 

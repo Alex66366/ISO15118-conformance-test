@@ -1,0 +1,17 @@
+module PreConditions_SECC_15118_2 {
+
+    import from SECC_TestSystem all;
+    import from f_SECC_CMN_PR_InitConfiguration_001 all;
+
+    altstep a_SECC_IgnoreUnexpectedMsg() runs on SECCTester {
+        [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {
+            log("Ignored unexpected message on TCP/TLS port");
+            repeat;
+        }
+        [] pt_V2G_UDP_SDP_Port.receive(?) {
+            log("Ignored unexpected message on UDP SDP port");
+            repeat;
+        }
+    }
+
+} // end of module PreConditions_SECC_15118_2

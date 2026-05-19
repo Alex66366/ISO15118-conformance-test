@@ -1,0 +1,18 @@
+module PostConditions_SECC_15118_2 {
+
+    import from SECC_TestSystem all;
+    import from f_SECC_CMN_PO_InitialState_001 all;
+    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
+
+    altstep a_SECC_PostIgnoreUnexpectedMsg() runs on SECCTester {
+        [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {
+            log("Ignored unexpected message on TCP/TLS port during postcondition");
+            repeat;
+        }
+        [] pt_V2G_UDP_SDP_Port.receive(?) {
+            log("Ignored unexpected message on UDP SDP port during postcondition");
+            repeat;
+        }
+    }
+
+} // end of module PostConditions_SECC_15118_2

@@ -1,0 +1,19 @@
+/**
+ * @desc    ShutdownConfiguration postcondition function example in SIL mode (ISO 15118-4)
+ *          Phase D: TCP/TLS shutdown simulation
+ *
+ * Pattern reference: test_code/examples/ttcn3_CANONICAL_testcase.ttcn
+ */
+
+module f_SECC_CMN_PO_ShutdownConfiguration_001 {
+
+    import from SECC_TestSystem all;
+
+    // Phase D: Shutdown TCP/TLS connection (SIL mode - simulated)
+    function f_SECC_CMN_PO_ShutdownConfiguration_001()
+    runs on SECCTester
+    {
+        // SIL mode: TCP connection is managed by the port adapter
+        log("TCP/TLS shutdown simulated in SIL mode");
+    }
+}

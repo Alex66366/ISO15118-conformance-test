@@ -1,0 +1,31 @@
+module SECC_TestSystem {
+
+    // ==========================================
+    // Port Type Definitions
+    // ==========================================
+
+    type port V2G_TCP_TLS_Port message {
+        out octetstring;
+        in  octetstring;
+    }
+
+    type port V2G_UDP_SDP_Port message {
+        out octetstring;
+        in  octetstring;
+    }
+
+    // ==========================================
+    // Component Type Definitions
+    // ==========================================
+
+    type component SECCTester {
+        port V2G_TCP_TLS_Port pt_V2G_TCP_TLS_ALM_SECC_Port;
+        port V2G_UDP_SDP_Port pt_V2G_UDP_SDP_Port;
+    }
+
+    type component SystemSECC {
+        port V2G_TCP_TLS_Port pt_V2G_TCP_TLS_ALM_SECC_Port;
+        port V2G_UDP_SDP_Port pt_V2G_UDP_SDP_Port;
+    }
+
+} // end of module SECC_TestSystem

@@ -30,15 +30,24 @@ from typing import Any, Dict, List, Optional
 
 from .fault_classifier import FaultResult
 
-
 # Default path to the troubleshooting knowledge base.
 # NOTE: titan_troubleshooting.md is DEPRECATED and no longer maintained.
 # All troubleshooting data now lives in titan_troubleshooting_db.json (structured JSON).
 KB_DIR = Path(__file__).parent.parent / "knowledge_base"
 TROUBLESHOOTING_DB_PATH = KB_DIR / "titan_troubleshooting_db.json"
 
+# Pipeline-specific aliases -> canonical names (used by build_compile_error_repairs).
+# This map is the single source of truth; __init__.py re-exports it as PIPELINE_ALIAS_MAP.
+PIPELINE_ALIAS_MAP = {
+    "port_undefined": "port_mismatch",
+    "timer_error":    "timeout",
+    "ttcn_syntax":    "template_field_error",
+    "cpp_link":       "import_missing",
+}
+_ERROR_TYPE_ALIAS = PIPELINE_ALIAS_MAP  # backward-compatible alias
 
-# Mapping from fault type to fix strategy and TTCN-3 code location
+# Canonical fault types: timeout | port_mismatch | template_field_error |
+# v2gtp_header_error | runs_on_mismatch | type_mismatch | import_missing
 AUTO_FIX_RULES = {
     "timeout": {
         "strategy": "auto_fix",
@@ -86,7 +95,7 @@ AUTO_FIX_RULES = {
         "location_type": "template",
         "suggestion": (
             "Fix template parameter type mismatch: ensure template parameter types "
-            "match the actual values being passed."
+            "match the values being passed."
         ),
     },
     "import_missing": {
@@ -96,6 +105,15 @@ AUTO_FIX_RULES = {
             "Add missing import statement at the top of the module. "
             "Check which module defines the missing type/symbol and add "
             "import from <module_name> all;"
+        ),
+    },
+    # --- Pipeline error-type aliases (same canonical types) ---
+    "ttcn_syntax": {
+        "strategy": "auto_fix",
+        "location_type": "template",
+        "suggestion": (
+            "Check TTCN-3 syntax: matching parentheses, semicolons, keyword spelling. "
+            "Refer to TITAN ReferenceGuide Chapter 3."
         ),
     },
 }
@@ -119,6 +137,16 @@ MANUAL_REVIEW_RULES = {
             "Do NOT modify TTCN-3 test code."
         ),
     },
+    # --- Pipeline error-type aliases ---
+    "cpp_link": {
+        "strategy": "manual_review",
+        "location_type": "cpp_adapter",
+        "suggestion": (
+            "C++ linker error: check that cpp_adapters/ .cc files implement all "
+            "required methods and there are no duplicate symbol definitions. "
+            "This is a manual review item."
+        ),
+    },
 }
 
 
@@ -132,7 +160,7 @@ class RepairSuggestion:
     suggested_code: str      # The suggested fix (empty for manual_review)
     reasoning: str           # Explanation of why this fix is needed
     confidence: float        # 0.0-1.0 confidence in this fix
-    patch_diff: str = ""    # git-style unified diff for auto-application
+    patch_diff: str = ""     # git-style unified diff for auto-application
 
 
 class RepairEngine:
@@ -351,7 +379,6 @@ class RepairEngine:
 
     def _replace_hex_value(self, text: str, field_name: str, correct_value: str) -> str:
         """Replace a hex value in a text if it appears to be wrong."""
-        import re
         pattern = rf"({field_name}\s*:=\s*)'[0-9A-Fa-f]{{2}}'H"
         return re.sub(pattern, rf"\g<1>{correct_value}", text)
 
@@ -414,7 +441,6 @@ class RepairEngine:
         return "".join(diff)
 
 
-# Standalone function for use in pipeline self-repair loop
 def build_compile_error_repairs(
     classified_errors: List[Dict],
     ttcn3_code: str,
@@ -422,28 +448,52 @@ def build_compile_error_repairs(
 ) -> List[Dict]:
     """Build repair suggestions from classified compile errors.
 
+    Accepts both raw parse errors (from parse_compile_errors) and
+    classified errors (from CompileErrorClassifier.classify).
+
+    Raw parse format:  {"type": ..., "file": ..., "line": ..., "message": ...}
+    Classified format: {"error_type": ..., "raw_message": ..., "fix_suggestion": ..., ...}
+
     Args:
-        classified_errors: Output from CompileErrorClassifier.classify()
-        ttcn3_code: Current TTCN-3 source code
-        generation_plan: Generation plan JSON
+        classified_errors: Output from parse_compile_errors() or CompileErrorClassifier.classify().
+        ttcn3_code: Current TTCN-3 source code.
+        generation_plan: Generation plan JSON.
 
     Returns:
         List of repair dicts with repair_type, suggested_code, current_code, etc.
     """
     engine = RepairEngine()
 
-    # Map classified error to a mock FaultResult for RepairEngine
-    from .fault_classifier import FaultResult
-
     repairs = []
     for err in classified_errors:
+        # Normalize field names: accept both raw parse format and classified format.
+        # Raw parse:  type / message / file / line
+        # Classified: error_type / raw_message / fix_suggestion / ...
+        err_type = (
+            err.get("error_type")
+            or err.get("type", "unknown")
+        )
+        # Normalize pipeline error-type names to canonical names (e.g. "port_undefined" -> "port_mismatch").
+        canonical_type = _ERROR_TYPE_ALIAS.get(err_type, err_type)
+        raw_msg = (
+            err.get("raw_message")
+            or err.get("message", "")
+        )
+        fix_sug = (
+            err.get("fix_suggestion")
+            or err.get("description", "")
+        )
+
         fault = FaultResult(
-            fault_type=err.get("error_type", "unknown"),
+            fault_type=canonical_type,
             confidence=err.get("confidence", 0.5),
-            evidence={"raw_message": err.get("raw_message", "")},
-            affected_component="",
+            evidence={
+                "raw_message": raw_msg,
+                "original_error_type": err_type,  # preserve original name for display/logging
+            },
+            affected_component=err.get("location", ""),
             suggested_fix_category="auto_fix",
-            description=err.get("fix_suggestion", ""),
+            description=fix_sug,
         )
         suggestions = engine.generate_repairs(fault, ttcn3_code, generation_plan)
         for s in suggestions:

@@ -1,3 +1,54 @@
 module SECC_PICS {
-    // PICS module - simplified
-}
+    import from SECC_TestSystem all;
+
+    // ==========================================
+    // PICS - Protocol Implementation Conformance Statement
+    // These flags describe which features the SUT supports.
+    // ==========================================
+
+    // ==========================================
+    // Section 1: Basic Communication
+    // ==========================================
+
+    // Does SUT support TCP communication?
+    const boolean PICS_SECC_CMN_TCP_Supported := true;
+
+    // Does SUT support UDP (SDP) communication?
+    const boolean PICS_SECC_CMN_UDP_Supported := true;
+
+    // Does SUT support IPv6?
+    const boolean PICS_SECC_CMN_IPv6_Supported := true;
+
+    // Does SUT support IPv4?
+    const boolean PICS_SECC_CMN_IPv4_Supported := true;
+
+    // ==========================================
+    // Section 2: TLS Support
+    // ==========================================
+
+    // Does SUT require TLS?
+    const boolean PICS_SECC_CMN_TLS_Required := true;
+
+    // Does SUT support TLS 1.2?
+    const boolean PICS_SECC_CMN_TLS12_Supported := true;
+
+    // ==========================================
+    // Section 3: Supported V2G Messages
+    // ==========================================
+
+    const boolean PICS_SECC_CMN_SupportedAppProtocol := true;
+    const boolean PICS_SECC_CMN_SessionSetup := true;
+    const boolean PICS_SECC_CMN_ServiceDiscovery := true;
+    const boolean PICS_SECC_CMN_PaymentServiceSelection := true;
+    const boolean PICS_SECC_CMN_ChargeParameterDiscovery := true;
+    const boolean PICS_SECC_CMN_PowerDelivery := true;
+    const boolean PICS_SECC_CMN_SessionStop := true;
+
+    // ==========================================
+    // Section 4: EVSE Capabilities
+    // ==========================================
+
+    const boolean PICS_SECC_CMN_EVSEID_Supported := true;
+    const boolean PICS_SECC_CMN_EnergyTransferMode_Supported := true;
+
+} // end of module SECC_PICS

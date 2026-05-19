@@ -13,6 +13,104 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ==========================================
+# Step 0: Handle non-ASCII path issue
+# TITAN's makefilegen + make cannot handle paths with Chinese/unicode characters.
+# Solution: copy project to an ASCII temp directory, build there, then sync back.
+# ==========================================
+BUILD_WORK_DIR=""
+ORIGINAL_DIR=""
+KEEP_TEMP=""  # Set KEEP_TEMP=1 in environment to inspect the temp build dir on failure
+
+_is_path_ascii() {
+    # Returns 0 (success) if path is pure ASCII, 1 if it contains non-ASCII chars.
+    # We test by checking if LC_ALL=C grep finds high-byte characters.
+    ! printf '%s' "$1" | LC_ALL=C grep -q '[^\x00-\x7F]'
+}
+
+_handle_non_ascii_path() {
+    local original_dir="$1"
+    local work_dir
+
+    # Always create a fresh temp directory to avoid stale files from previous runs
+    work_dir=$(mktemp -d /tmp/titan_build_XXXXXX)
+    if [ -z "$work_dir" ] || [ ! -d "$work_dir" ]; then
+        echo "[ERROR] Failed to create temporary build directory."
+        exit 1
+    fi
+    BUILD_WORK_DIR="$work_dir"
+
+    project_name="demo_build_$$"
+
+    echo "[BUILD] Project path contains non-ASCII characters."
+    echo "[BUILD] Copying project to ASCII temp directory: $work_dir/$project_name"
+    mkdir -p "$work_dir/$project_name"
+
+    # Use --delete to ensure we have a clean copy without stale files
+    # Also exclude logs to preserve any previous logs in the original location
+    rsync -a --delete --exclude='build/' --exclude='logs/' \
+        "$original_dir/" "$work_dir/$project_name/"
+
+    echo "[BUILD] Project copied. Switching to temp directory for build."
+    cd "$work_dir/$project_name"
+}
+
+_cleanup_and_restore() {
+    local exit_code=$1
+    local original_dir="$ORIGINAL_DIR"
+    local work_dir="$BUILD_WORK_DIR"
+
+    if [ -z "$work_dir" ] || [ ! -d "$work_dir" ]; then
+        return
+    fi
+
+    if [ "$exit_code" -ne 0 ] && [ -n "$KEEP_TEMP" ]; then
+        echo ""
+        echo "[BUILD] Build failed (exit code: $exit_code). Temp directory kept for inspection:"
+        echo "[BUILD]   $work_dir"
+        echo "[BUILD]   (Set KEEP_TEMP=0 or unset to auto-clean on failure)"
+        return
+    fi
+
+    # Sync back build artifacts (only on success)
+    if [ "$exit_code" -eq 0 ]; then
+        echo "[BUILD] Syncing build artifacts back to original location..."
+        if [ -d "$work_dir/demo_build_$$/build" ]; then
+            mkdir -p "$original_dir/build"
+            rsync -a --delete \
+                "$work_dir/demo_build_$$/build/" "$original_dir/build/"
+        fi
+        if [ -d "$work_dir/demo_build_$$/config" ]; then
+            mkdir -p "$original_dir/config"
+            rsync -a --delete \
+                "$work_dir/demo_build_$$/config/" "$original_dir/config/"
+        fi
+        if [ -d "$work_dir/demo_build_$$/logs" ]; then
+            mkdir -p "$original_dir/logs"
+            rsync -a \
+                "$work_dir/demo_build_$$/logs/" "$original_dir/logs/"
+        fi
+    fi
+
+    rm -rf "$work_dir"
+    echo "[BUILD] Temp directory cleaned up."
+}
+
+# Detect non-ASCII in SCRIPT_DIR
+if ! _is_path_ascii "$SCRIPT_DIR"; then
+    if ! command -v rsync &> /dev/null; then
+        echo "[ERROR] rsync is required for non-ASCII path builds but is not installed."
+        exit 1
+    fi
+
+    ORIGINAL_DIR="$SCRIPT_DIR"
+    trap '_cleanup_and_restore $?' EXIT
+    trap 'echo "[BUILD] Build interrupted."; _cleanup_and_restore 130; exit 130' INT TERM
+    _handle_non_ascii_path "$SCRIPT_DIR"
+else
+    trap 'echo "[BUILD] Build interrupted."; exit 130' INT TERM
+fi
+
+# ==========================================
 # Step 1: Clean and prepare build directory
 # ==========================================
 echo "[BUILD] Step 1: Cleaning and preparing build directory..."
@@ -104,20 +202,56 @@ echo "[BUILD] Step 3: Copying port adapter files to generated_cpp/..."
 
 cd build/generated_cpp
 
-# Copy port adapter files from source directory to generated_cpp/
-# These implement actual TCP/IPv6 socket connections for:
-# - V2GTP communication with SECC (TCP)
-# - SDP discovery protocol (UDP multicast)
+# The pipeline copies port files here before calling build.sh.
+# If they already exist with real content (> 200 bytes), use them.
+# Otherwise, search the project tree (they may be at root level, like in demo/).
 
-if [ -f "../../src/cpp_adapters/SA/ports/V2G_TCP_TLS_Port.cc" ]; then
-    cp ../../src/cpp_adapters/SA/ports/V2G_TCP_TLS_Port.cc .
-    cp ../../src/cpp_adapters/SA/ports/V2G_TCP_TLS_Port.hh .
-    cp ../../src/cpp_adapters/SA/ports/V2G_UDP_SDP_Port.cc .
-    cp ../../src/cpp_adapters/SA/ports/V2G_UDP_SDP_Port.hh .
-    echo "[BUILD] Port adapter files copied from src/cpp_adapters/SA/ports/"
-else
-    echo "[ERROR] Port adapter source files not found!"
-    echo "[HINT] Please ensure port adapter files exist in src/cpp_adapters/SA/ports/"
+find_port_file() {
+    local filename="$1"
+    local search_path=""
+
+    # Option 1: Already in current directory (pipeline already copied them)
+    if [ -f "$filename" ] && [ "$(stat -c%s "$filename" 2>/dev/null || echo 0)" -gt 200 ]; then
+        echo "$filename"
+        return 0
+    fi
+
+    # Option 2: In the project root (where demo places them)
+    search_path="../../$filename"
+    if [ -f "$search_path" ] && [ "$(stat -c%s "$search_path" 2>/dev/null || echo 0)" -gt 200 ]; then
+        cp "$search_path" .
+        echo "[BUILD] Copied $filename from project root"
+        echo "$filename"
+        return 0
+    fi
+
+    # Option 3: Search the entire project tree for the file
+    search_path=$(find ../../src/cpp_adapters -name "$filename" 2>/dev/null | head -1)
+    if [ -n "$search_path" ] && [ "$(stat -c%s "$search_path" 2>/dev/null || echo 0)" -gt 200 ]; then
+        cp "$search_path" .
+        echo "[BUILD] Copied $filename from $search_path"
+        echo "$filename"
+        return 0
+    fi
+
+    echo ""
+    return 1
+}
+
+# Copy all four port adapter files
+PORT_FILES=("V2G_TCP_TLS_Port.cc" "V2G_TCP_TLS_Port.hh" "V2G_UDP_SDP_Port.cc" "V2G_UDP_SDP_Port.hh")
+PORT_OK=true
+
+for port_file in "${PORT_FILES[@]}"; do
+    if ! find_port_file "$port_file"; then
+        echo "[ERROR] Port adapter file not found: $port_file"
+        echo "[HINT] Searched: build/generated_cpp/, project root, and src/cpp_adapters/"
+        PORT_OK=false
+    fi
+done
+
+if [ "$PORT_OK" = false ]; then
+    echo "[ERROR] One or more port adapter files are missing!"
     cd ../..
     exit 1
 fi
@@ -183,25 +317,25 @@ if grep -q "\.ttcn\.cc:" Makefile; then
 else
     echo "[WARN] Makefile may not contain TTCN-3 compilation targets."
     echo "[BUILD] Checking if makefilegen successfully compiled all .ttcn files..."
-    
+
     # List all .ttcn files that should be compiled
     TTCN_FILES=$(find ../../src/ttcn3 -name "*.ttcn" -type f)
     TTCN_COUNT=$(echo "$TTCN_FILES" | wc -l)
     echo "[BUILD] Found $TTCN_COUNT .ttcn files in src/ttcn3/"
-    
+
     # Check if .ttcn.cc files were generated
     TTCN_CC_COUNT=$(find . -maxdepth 1 -name "*.ttcn.cc" | wc -l)
     echo "[BUILD] Generated $TTCN_CC_COUNT .ttcn.cc files in generated_cpp/"
-    
+
     if [ "$TTCN_CC_COUNT" -lt "$TTCN_COUNT" ]; then
         echo "[WARN] Some .ttcn files were not compiled to .cc"
         echo "[BUILD] Attempting to manually compile missing .ttcn files..."
-        
+
         # Check if ttcn3_compiler is available
         if command -v ttcn3_compiler &> /dev/null; then
             for ttcn_file in $TTCN_FILES; do
                 ttcn_base=$(basename "$ttcn_file" .ttcn)
-                ttcn_cc="${ttcn_base}.cc"
+                ttcn_cc="${ttcn_base}.ttcn.cc"
                 if [ ! -f "$ttcn_cc" ]; then
                     echo "[BUILD] Compiling $ttcn_file -> $ttcn_cc"
                     ttcn3_compiler -I "$TTCN3_INC" "$ttcn_file" 2>&1 || true
@@ -317,7 +451,7 @@ echo ""
 echo "=== bin/ (executable) ==="
 ls -la ../bin/TestExecutable 2>/dev/null
 
-cd ../..
+cd ..
 
 echo ""
 echo "=========================================="
@@ -325,6 +459,6 @@ echo "[BUILD] Build completed successfully!"
 echo "=========================================="
 echo ""
 echo "To run the tests:"
-echo "  cd build/bin"
+echo "  cd $([ -n "$ORIGINAL_DIR" ] && echo "$ORIGINAL_DIR" || echo "$SCRIPT_DIR")/build/bin"
 echo "  ./TestExecutable ../config/titan_runtime.cfg"
 echo ""

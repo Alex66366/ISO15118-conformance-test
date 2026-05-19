@@ -1,198 +1,82 @@
 /**
- * @desc    Template examples from ISO 15118-4
+ * @desc    Common template examples from ISO 15118-4 (SIL mode)
  *
- * Naming conventions (matching demo/CmnTemplates.ttcn):
- *   md_CMN_*   : Common send templates (used by both SECC and EVCC tests)
+ * Naming conventions:
+ *   md_CMN_*   : Common send templates (defined inline)
  *   mw_CMN_*   : Common receive/matching templates (wildcard matching)
  *
- * Templates define message structures for sending and matching.
- * Use 'omit' for optional fields, '?' for wildcard matching.
+ * IMPORTANT (SIL Mode):
+ *   The V2G_TCP_TLS_Port port type is defined as `out octetstring; in octetstring;`.
+ *   This means you MUST send and receive `octetstring`, NOT record types.
+ *
+ *   For sending, use octetstring concatenation:
+ *     port.send('01'O & 'FE'O & '8001'O & int2oct(len, 4) & payload)
+ *
+ *   For receiving with wildcard matching:
+ *     port.receive('01'O & 'FE'O & '8002'O & ?)  // matches V2GTP header
+ *
+ *   The templates below define the octetstring byte layout, NOT TTCN-3 template records.
+ *   When generating code, inline the octetstring construction directly.
  */
 
 // ==========================================
-// V2GTP Layer Templates
+// V2GTP Header Octetstring Layout
 // ==========================================
-
-// V2GTP Header template (send)
-template V2GTP_Header md_CMN_V2GTP_Header_001(
-  template Oct1 p_protocolVersion,
-  template Oct1 p_invProtocolVersion,
-  template Oct2 p_payloadType,
-  template UInt32 p_payloadLength) := {
-    protocolVersion    := p_protocolVersion,
-    invProtocolVersion := p_invProtocolVersion,
-    payloadType        := p_payloadType,
-    payloadLength      := p_payloadLength
-}
-
-// V2GTP Header matching template (receive)
-template V2GTP_Header mw_CMN_V2GTP_Header_001(
-  template Oct1 p_protocolVersion,
-  template Oct1 p_invProtocolVersion,
-  template Oct2 p_payloadType,
-  template UInt32 p_payloadLength) := {
-    protocolVersion    := p_protocolVersion,
-    invProtocolVersion := p_invProtocolVersion,
-    payloadType        := p_payloadType,
-    payloadLength      := p_payloadLength
-}
-
-// V2GTP Payload template (send)
-template V2GTP_Payload md_CMN_V2GTP_Payload_001(
-  template BodyBaseType p_bodyElement) := {
-    bodyElement := p_bodyElement
-}
-
-// V2GTP Payload matching template (receive)
-template V2GTP_Payload mw_CMN_V2GTP_Payload_001(
-  template BodyBaseType p_bodyElement) := {
-    bodyElement := p_bodyElement
-}
-
-// V2GTP Message template (send)
-template V2GTP_Message md_CMN_V2GTP_Message_001(
-  template V2GTP_Header p_header,
-  template V2GTP_Payload p_payload) := {
-    header  := p_header,
-    payload := p_payload
-}
-
-// V2GTP Message matching template (receive)
-template V2GTP_Message mw_CMN_V2GTP_Message_001(
-  template V2GTP_Header p_header,
-  template V2GTP_Payload p_payload) := {
-    header  := p_header,
-    payload := p_payload
-}
+//
+// V2GTP Header (8 bytes):
+//   Byte 0: protocolVersion    = '01'O (1 byte)
+//   Byte 1: invProtocolVersion = 'FE'O (1 byte)
+//   Byte 2-3: payloadType     = '8001'O..'8004'O (2 bytes, big-endian)
+//   Byte 4-7: payloadLength    = int2oct(len, 4) (4 bytes, big-endian)
+//
+// Common payload types:
+//   '8001'O = SupportedAppProtocolReq/Res
+//   '8002'O = SessionSetupReq/Res
+//   '8003'O = ServiceDiscoveryReq/Res
+//   '8004'O = SessionTerminationReq/Res
+//
+// Example: Build a V2GTP message for SupportedAppProtocolReq
+//   var octetstring body := '0022'O;  // simplified EXI payload
+//   var integer len := lengthof(body);
+//   var octetstring msg := '01FE8001'O & int2oct(len, 4) & body;
+//   port.send(msg);
 
 // ==========================================
-// V2G Message Layer Templates
+// Common Message Payload Structures (octetstring)
 // ==========================================
-
-// V2G Message template (send)
-template V2G_Message md_CMN_V2GMessage_001(
-  template MessageHeaderType p_header,
-  template BodyType p_body) := {
-    header := p_header,
-    body   := p_body
-}
-
-// V2G Message matching template (receive)
-template V2G_Message mw_CMN_V2GMessage_001(
-  template MessageHeaderType p_header,
-  template BodyType p_body) := {
-    header := p_header,
-    body   := p_body
-}
-
-// V2G Message Header template (send)
-template MessageHeaderType md_CMN_MessageHeader_001(
-  template SessionIDType p_sessionID) := {
-    sessionID   := p_sessionID,
-    notification := omit,
-    signature   := omit
-}
-
-// V2G Message Header matching template (receive)
-template MessageHeaderType mw_CMN_MessageHeader_001(
-  template SessionIDType p_sessionID) := {
-    sessionID   := p_sessionID,
-    notification := omit,
-    signature   := omit
-}
-
-// Body type template (send)
-template BodyType md_CMN_BodyType_001(
-  template BodyBaseType p_bodyElement) := {
-    bodyElement := p_bodyElement
-}
-
-// Body type matching template (receive)
-template BodyType mw_CMN_BodyType_001(
-  template BodyBaseType p_bodyElement) := {
-    bodyElement := p_bodyElement
-}
+//
+// SupportedAppProtocolReq payload (simplified):
+//   '0022'O  (schema ID for ISO 15118-2)
+//
+// SupportedAppProtocolRes payload:
+//   '0022'O & [response_code]  (schema ID + response code)
+//
+// Common response codes (from SECC_Constants):
+//   '00'O = OK
+//   '01'O = OK_NEW_SESSION_ESTABLISHED
+//   '80'O = FAILED
 
 // ==========================================
-// V2G Body Element Templates (Send)
+// TCP Control Messages (octetstring)
 // ==========================================
-
-// SessionSetupReq template (send)
-template SessionSetupReqType md_CMN_SessionSetupReq_001(
-  template EvccIDType p_eVCCID) := {
-    eVCCID := p_eVCCID
-}
-
-// SupportedAppProtocolReq template (send)
-template SupportedAppProtocolReqType md_CMN_SupportedAppProtocolReq_001() := {
-    protocolNamespace := omit,
-    supportedAppProtocol := ?
-}
-
-// ServiceDiscoveryReq template (send)
-template ServiceDiscoveryReqType md_CMN_ServiceDiscoveryReq_001(
-  template ServiceCategoryType p_serviceCategory) := {
-    serviceScope    := omit,
-    serviceCategory := p_serviceCategory
-}
-
-// ChargeParameterDiscoveryReq template (send, AC)
-template ChargeParameterDiscoveryReqType md_CMN_ChargeParameterDiscoveryReq_001(
-  template EnergyTransferModeType p_requestedEnergyTransferMode,
-  template AC_EVChargeParameterType p_acEVChargeParameter) := {
-    maxEntriesSAScheduleTuple    := omit,
-    requestedEnergyTransferMode := p_requestedEnergyTransferMode,
-    eVChargeParameter          := p_acEVChargeParameter
-}
-
-// PowerDeliveryReq template (send)
-template PowerDeliveryReqType md_CMN_PowerDeliveryReq_001(
-  template ChargeProgressType p_chargeProgress,
-  template SAScheduleTupleIDType p_saScheduleTupleID) := {
-    chargeProgress              := p_chargeProgress,
-    saScheduleTupleID          := p_saScheduleTupleID,
-    chargingProfile            := omit,
-    eVPowerDeliveryParameter   := omit
-}
+//
+// TCP Close request:
+//   port.send('00'O)
+//
+// TCP Close response:
+//   port.receive('00'O)
 
 // ==========================================
-// V2G Body Element Templates (Receive/Match)
+// Port Send/Receive Examples (SIL Mode)
 // ==========================================
-
-// SessionSetupRes matching template (receive)
-template SessionSetupResType mw_CMN_SessionSetupRes_001(
-  template ResponseCodeType p_responseCode) := {
-    responseCode    := p_responseCode,
-    eVSEID         := ?,
-    eVSETimeStamp  := *
-}
-
-// SupportedAppProtocolRes matching template (receive)
-template SupportedAppProtocolResType mw_CMN_SupportedAppProtocolRes_001(
-  template ResponseCodeType p_responseCode) := {
-    responseCode := p_responseCode,
-    schemaID     := ?
-}
-
-// ServiceDiscoveryRes matching template (receive)
-template ServiceDiscoveryResType mw_CMN_ServiceDiscoveryRes_001(
-  template ResponseCodeType p_responseCode) := {
-    responseCode     := p_responseCode,
-    paymentOptionList := ?,
-    chargeService    := ?,
-    serviceList      := *
-}
-
-// ==========================================
-// TCP Control Message Templates
-// ==========================================
-
-// TCP Close request template (send)
-template TCPControlMessage md_CMN_TCPControlMessage_Close() := {
-    command := '00'O
-}
-
-// TCP Close response matching template (receive)
-template TCPControlMessage mw_CMN_TCPControlMessage_Closed() := {
-    command := '00'O
-}
+//
+// Send a V2GTP message:
+//   var octetstring payload := '0022'O;
+//   var integer pl := lengthof(payload);
+//   port.send('01FE8001'O & int2oct(pl, 4) & payload);
+//
+// Receive and match V2GTP header only (wildcard body):
+//   port.receive('01'O & 'FE'O & '8002'O & ?)
+//
+// Receive and match specific body bytes:
+//   port.receive('01'O & 'FE'O & '8002'O & int2oct(4, 4) & '002200'O)

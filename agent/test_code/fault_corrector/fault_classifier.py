@@ -67,22 +67,33 @@ class FaultClassifier:
         if fault:
             return fault
 
-        # 4. Check for template field errors
+        # 4. Check for missing responses (Correlator root_cause="template_field_error")
+        if root == "template_field_error":
+            missing_evts = [c for c in correlated if c.alignment_status == "packet_missing"]
+            fault = self._check_missing_response(alignment, missing_evts)
+            if fault:
+                return fault
+
+        # 5. Check for template field errors in matched packets (payloadType mismatch)
         fault = self._check_template_error(alignment)
         if fault:
             return fault
 
-        # 5. Check for precondition failures
+        # 6. Check for precondition failures
         fault = self._check_precondition_failure(alignment, log_events)
         if fault:
             return fault
 
-        # 6. Check for PCAP-only errors (SUT bugs, not test script bugs)
+        # 7. Check for PCAP-only errors (SUT bugs, not test script bugs)
         if alignment.unexpected_packets and not any(
                 c.alignment_status == "packet_missing" for c in correlated):
             return self._classify_pcap_only_error(alignment)
 
-        # 7. No error detected
+        # 8. Also check pcap_only_error from correlator root_cause
+        if root == "pcap_only_error":
+            return self._classify_pcap_only_error(alignment)
+
+        # 9. No error detected
         return FaultResult(
             fault_type="ok",
             confidence=1.0,
@@ -95,9 +106,31 @@ class FaultClassifier:
 
     def _check_timeout(self, alignment: AlignmentResult,
                       timeout_events: List[TitanLogEntry]) -> Optional[FaultResult]:
-        """Detect timeout-based failures."""
-        if alignment.root_cause != "timeout" or not timeout_events:
+        """Detect timeout-based failures.
+
+        Called when alignment.root_cause == "timeout".  Handles all three
+        timeout sub-cases from the Correlator:
+          1. timeout_count > 0 AND missing_count > 0  -> ("timeout", 0.9)
+          2. timeout_count > 0 AND missing_count == 0 -> ("timeout", 0.85)
+          3. No timeout events but Correlator returned "timeout" (impossible path,
+             kept for safety)
+        """
+        if alignment.root_cause != "timeout":
             return None
+
+        if not timeout_events:
+            return FaultResult(
+                fault_type="timeout",
+                confidence=0.85,
+                evidence={
+                    "ttcn3_side": "Correlator flagged timeout root cause but no timeout events found in log",
+                    "pcap_side": "All packets were matched; timeout may have been set with zero duration",
+                    "correlation": "Timeout root cause raised by correlator but no explicit timeout in logs",
+                },
+                affected_component="test_behavior",
+                suggested_fix_category="auto_fix",
+                description="Timeout flagged by correlator but no explicit timeout event found. Auto-fix: verify timer configuration and SUT response time.",
+            )
 
         first_timeout = timeout_events[0]
         verdict_events = [e for e in alignment.correlated_events
@@ -200,6 +233,44 @@ class FaultClassifier:
         if "15118" in port_name:
             return 15118
         return None
+
+    def _check_missing_response(self, alignment: AlignmentResult,
+                                 missing_evts: List[CorrelatedEvent]) -> Optional[FaultResult]:
+        """Detect missing response failures (packet_missing aligned events)."""
+        if not missing_evts:
+            return None
+
+        first = missing_evts[0]
+        log_e = first.log_entry
+        direction = "EVCC->SECC" if log_e and "Send" in log_e.event_type else "SECC->EVCC"
+        port_name = log_e.details if log_e else "unknown"
+
+        return FaultResult(
+            fault_type="template_field_error",
+            confidence=0.75,
+            evidence={
+                "ttcn3_side": (
+                    f"TTCN-3 {log_e.event_type if log_e else '?'} on port '{port_name}'. "
+                    f"No response captured within time window."
+                ),
+                "pcap_side": (
+                    f"No matching {direction} packet found in PCAP capture."
+                ),
+                "correlation": (
+                    f"Expected {direction} response packet was missing. "
+                    f"This may indicate a SUT implementation issue or incorrect template configuration."
+                ),
+                "missing_details": alignment.missing_packets[0] if alignment.missing_packets else {},
+            },
+            affected_component="test_behavior",
+            suggested_fix_category="auto_fix",
+            description=(
+                f"Missing response: TTCN-3 expected a {direction} response packet but none "
+                f"was captured. Possible causes: SUT did not respond, template field values "
+                f"do not match SUT expectations, or incorrect port mapping. "
+                f"Auto-fix: verify template field values and SUT reachability."
+            ),
+        )
 
     def _check_template_error(self, alignment: AlignmentResult) -> Optional[FaultResult]:
         """Detect template field value errors based on payloadType mismatch."""

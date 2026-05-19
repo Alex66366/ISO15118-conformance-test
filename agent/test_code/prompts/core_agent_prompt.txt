@@ -10,7 +10,7 @@ Generate complete TTCN-3 code for a test case, including:
 ## Input
 1. Generation plan JSON (from Orchestrator Agent)
 2. Reference TTCN-3 code examples (from Summarizer Agent)
-3. Few-shot examples from test_code/examples/
+3. Few-shot examples injected by the pipeline (see placeholder sections below)
 4. SOP from knowledge_base/ttcn3_generation_sop.json
 
 ## Output
@@ -21,7 +21,7 @@ Output ONLY a JSON object (and nothing else):
   "precondition_files": [
     {"path": "src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn", "content": "..."},
     {"path": "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn", "content": "..."},
-    {"path": "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn", "content": "..."}
+    {"path": "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_Binding_001.ttcn", "content": "..."}
   ],
   "postcondition_files": [
     {"path": "src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn", "content": "..."},
@@ -29,7 +29,20 @@ Output ONLY a JSON object (and nothing else):
     {"path": "src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn", "content": "..."}
   ]
 }
-```
+
+## Output File Path Format
+
+All generated file paths must follow this directory structure (relative to the test project root):
+
+| File Type | Path Format |
+|-----------|-------------|
+| Test case module | src/ttcn3/4_TestCases/{testcase_name}.ttcn |
+| Precondition function | src/ttcn3/3_Behavior_Steps/PreConditions/{func_name}.ttcn |
+| PreConditions aggregator | src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn |
+| Postcondition function | src/ttcn3/3_Behavior_Steps/PostConditions/{func_name}.ttcn |
+| PostConditions aggregator | src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn |
+
+Example: For function `f_SECC_CMN_PR_InitConfiguration_001`, the path is `src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn`.
 
 ---
 
@@ -44,284 +57,124 @@ For each test case, generate the following files (based on the generation plan's
 
 2. **Precondition function files** (one per entry in precondition_chain)
    - File path: src/ttcn3/3_Behavior_Steps/PreConditions/{func_name}.ttcn
-   - Module name = function name
-   - Reference: demo's PreConditions/ directory
+   - **Module name**: Use a descriptive name related to the function's purpose, NOT the same as the function name.
+     - Example: For `f_SECC_CMN_PR_TCP_Connected_001`, use `module PreConditions_TCPConnected { ... }`
+     - Reason: See "Naming Conventions" section above.
+   - The aggregator (PreConditions_SECC_15118_2.ttcn) will import these functions automatically.
 
 3. **PreConditions_SECC_15118_2.ttcn**
    - Module aggregator that imports all precondition functions from precondition_chain
    - Include a shared altstep for unexpected messages
+   - **IMPORTANT:** This module should ONLY import functions, NOT define them inline. The Core Agent generates the actual function bodies as separate .ttcn files. The pipeline rebuilds this aggregator with correct import statements.
 
 4. **Postcondition function files** (one per entry in postcondition_chain)
    - File path: src/ttcn3/3_Behavior_Steps/PostConditions/{func_name}.ttcn
    - Module name = function name
-   - Reference: demo's PostConditions/ directory
 
 5. **PostConditions_SECC_15118_2.ttcn**
    - Module aggregator that imports all postcondition functions from postcondition_chain
    - Include a shared altstep for unexpected messages
+   - **IMPORTANT:** This module should ONLY import functions, NOT define them inline.
 
 ---
 
-## Section A: Main Test Case Module
+## Section A: Main Test Case Module Structure
 
-Generate ONLY the main test case module file:
+Generate the main test case module file:
 `src/ttcn3/4_TestCases/{testcase_name}.ttcn`
 
-The test case module structure:
-
-```ttcn3
-/**
- * @desc    [Test objective from generation plan]
- * @reference ISO 15118-2:2014, Section [X.X.X]
- * @requirement [V2G2-XXX]
- */
-module {testcase_name} {
-
-  // === Imports ===
-  import from ISO15118_2_DataTypes all;
-  import from ISO15118_2_Templates all;
-  import from ISO15118_2_Functions all;
-  import from ISO15118_2_Components all;
-  import from ISO15118_2_PICS all;
-  import from ISO15118_2_PIXIT all;
-  import from ISO15118_2_Timers all;
-  import from PreConditions_SECC_15118_2 all;
-  import from PostConditions_SECC_15118_2 all;
-
-  // === Test Behavior Function ===
-  function {test_behavior_func_name}()
-    runs on {component}
-    return verdicttype
-  {
-    // 1. Start timer
-    {timer}.start({timeout_param});
-
-    // 2. Send stimulus
-    {port_name}.send(/* message using send template */);
-
-    // 3. Alt block
-    alt {
-      // Expected response
-      [] {port_name}.receive(/* matching using receive template */) {
-        {timer}.stop;
-        setverdict(pass, "...");
-      }
-      // Unexpected response
-      [] {port_name}.receive(?) {
-        {timer}.stop;
-        setverdict(fail, "...");
-      }
-      // Timeout
-      [] {timer}.timeout {
-        setverdict(inconc, "...");
-      }
-    }
-
-    return getverdict;
-  }
-
-  // === Testcase ===
-  testcase {testcase_name}()
-    runs on {component} system {system_component}
-  {
-    var verdicttype preConVerdict;
-
-    // Phase A+B: Pre Conditions
-    f_SECC_CMN_PR_InitConfiguration_001();
-    preConVerdict := f_SECC_CMN_PR_Binding_001();
-
-    // Phase C: Test Behavior
-    if (preConVerdict == pass) {
-      {test_behavior_func_name}();
-    } else {
-      log("PreCondition verdict is not pass");
-      setverdict(inconc);
-    }
-
-    // Phase D: Post Conditions (unconditional cleanup)
-    f_SECC_CMN_PO_InitialState_001();
-    f_SECC_CMN_PO_ShutdownConfiguration_001();
-  }
-}
-```
+The few-shot examples below illustrate the expected code structure.
 
 ---
 
 ## Section B: PreConditions and PostConditions Function Definitions
 
-Based on the demo reference files, generate the following function definition files.
-These functions implement the actual test setup (Phase A+B) and cleanup (Phase D).
+Generate function definition files for each entry in the generation plan's `precondition_chain` and `postcondition_chain`.
+Each function goes in its own .ttcn file. The module name should describe the function's purpose (NOT the same as the function name).
 
-### Key rules:
+---
 
-## Mode-Aware Generation (CRITICAL)
-Based on the test mode (SIL vs HIL), generate DIFFERENT precondition/postcondition code.
-The pipeline will inject the mode in the user prompt. Check for "## Test Mode" in the prompt.
+## CRITICAL: Mandatory Constraints (violating any of these will cause build failures)
 
-**SIL Mode Rules**:
-- f_SECC_CMN_PR_InitConfiguration_001: ONLY map mtc ports to system ports. NO PTC creation.
-  - NO pt_HAL_61851_Port, NO pt_HAL_61851_Listener_Port, NO pt_SLAC_Port
-  - NO v_HAL_61851_Listener variable, NO vc_SessionID, NO vc_eVCCID
-  - Function signature: `f_SECC_CMN_PR_InitConfiguration_001()` -> no return
-- f_SECC_CMN_PR_Binding_001: Log a message that SDP/TCP binding is simulated.
-  - NO calls to f_SECC_CMN_PR_SDPDiscovery_001() or f_SECC_CMN_PR_TCPConnection_001()
-  - Function signature: `f_SECC_CMN_PR_Binding_001()` -> return verdicttype (always pass in SIL)
-- f_SECC_CMN_PO_InitialState_001: ONLY unmap mtc ports. NO PTC to stop.
-  - Function signature: `f_SECC_CMN_PO_InitialState_001()` -> no return
-- f_SECC_CMN_PO_ShutdownConfiguration_001: Log a message. NO TCP close message templates.
-  - Function signature: `f_SECC_CMN_PO_ShutdownConfiguration_001()` -> no return
+### Port Names
+You MUST use port names defined in `ComponentsAndPorts.ttcn` (generated by the Infrastructure Agent). The only valid port names are:
+- `{port_name}` — the TCP/TLS port instance name (from generation_plan)
+- `pt_V2G_UDP_SDP_Port` — the UDP SDP port
+**DO NOT use `pt_V2G_TCP_TLS_Port` (without _ALM_) in `map()`/`unmap()` calls — this name does not exist in the component declaration.**
 
-**HIL Mode Rules**:
-- Full HAL_61851_Listener PTC creation and management
-- Full SDP and TCP/TLS connection handling
-- HAL61851Adapter integration
+### Module Imports
+You MUST import ONLY the modules that the Infrastructure Agent generates:
+- `SECC_TestSystem` — contains component types and port type definitions (file: `ComponentsAndPorts.ttcn`)
+- `SECC_CmnTemplates` — contains common templates and helper functions (file: `Templates/CmnTemplates.ttcn`):
+  - `f_CMN_V2GTP_BuildFrame(payloadType, payload)` — builds V2GTP octetstring frame
+  - `a_CMN_IgnoreUnexpectedMsg(port)`, `a_CMN_IgnoreUnexpectedOctetstring(port)` — altsteps
+  - `a_CMN_WaitTimeout(timer)` — timeout altstep
+  - `PX_SECC_CMN_V2GTP_ProtocolVersion = '01'O`, `PX_SECC_CMN_V2GTP_InvVersion = 'FE'O` — V2GTP constants
+- `SECC_Types` — type definitions (file: `Types/Types_SECC_15118_2.ttcn`):
+  - `EvccIDType` record, `SessionIDType` record
+  - V2G message type constants: `V2G_MSG_TYPE_SDP_REQUEST = 0x9000`, etc.
+- `SECC_Constants` — timer and constant definitions (file: `Types/TimerAndConstants.ttcn`):
+  - `PX_SECC_CMN_Message_Timeout = 60.0`, `PX_SECC_CMN_Sequence_Timeout = 2.0`
+  - `PX_SECC_CMN_TCP_Connection_Timeout = 5.0`, `PX_SECC_CMN_TLS_Handshake_Timeout = 10.0`
+  - `PX_SECC_CMN_SDP_Response_Timeout = 1.0`
+  - `PX_SECC_CMN_Default_EVCCID = '123456789ABC'O`
+  - `PX_SECC_CMN_V2GTP_ProtocolVersion = '01'O`, `PX_SECC_CMN_V2GTP_InvVersion = 'FE'O`
+- `PreConditions_SECC_15118_2` and `PostConditions_SECC_15118_2` — aggregator modules that import all individual precondition/postcondition functions (you generate these as part of your output)
+- `SECC_PICS` — PICS constants (file: `PICS/PICS_SECC_15118_2.ttcn`)
+- `SECC_PIXIT` — PIXIT configuration (file: `PIXIT/PIXIT_SECC_15118_2.ttcn`)
+- `SECC_CommonFunctions` — common utility functions (file: `Services/CommonFunctions.ttcn`):
+  - `f_CMN_wSleep(float)` — sleep/wait function
+**DO NOT import `ISO15118_2_Templates`, `ISO15118_2_Functions`, `ISO15118_2_Components`, `ISO15118_2_PICS`, or `ISO15118_2_PIXIT`** — these modules do not exist in the generated project.
 
-**Test Case Variables (SIL Mode)**:
-- DO NOT declare `var HAL_61851_Listener v_HAL_61851_Listener`
-- DO NOT pass v_HAL_61851_Listener to any function
-- Only declare: `var verdicttype preConVerdict`
+### Templates and Functions
+- Any template you use in a `send()` or `receive()` must EITHER be defined in `SECC_CmnTemplates.ttcn` OR be fully defined (with implementation) in your own code.
+- Any parameterised template call (e.g., `md_CMN_V2GTP_Message_001(...)`) must be fully implemented in your code — do NOT assume it exists in another module unless you can see it defined there.
+- Timer names must match PIXIT constants (e.g., `PX_SECC_CMN_Message_Timeout`). Do NOT invent timer names.
 
-- Each function goes in its own .ttcn file with module name = function name
-- f_SECC_CMN_PR_InitConfiguration_001: Creates HAL_61851_Listener PTC, maps all ports,
-  starts HAL listener, initializes vc_SessionID and vc_eVCCID
-- f_SECC_CMN_PR_SupportedAppProtocol_001: SDP discovery + TCP/TLS connection +
-  sends SupportedAppProtocolReq + alt block with pass/fail/timeout verdict
-- f_SECC_CMN_PO_InitialState_001: Stops HAL listener PTC, unmaps all ports
-- f_SECC_CMN_PO_ShutdownConfiguration_001: Graceful TCP/TLS connection close
-- PreConditions_SECC_15118_2: Aggregator module that imports all precondition functions
-- PostConditions_SECC_15118_2: Aggregator module that imports all postcondition functions
+### MANDATORY: No `?` with `&` in Octetstring Templates
 
-### PreConditions File Structure:
+In TTCN-3 octetstring pattern matching, the `?` (AnyValue) wildcard CANNOT be concatenated with the `&` operator. This is a language restriction, not a style preference.
 
-**PreConditions_SECC_15118_2.ttcn** (aggregator):
+**FORBIDDEN (will NOT compile):**
 ```ttcn3
-module PreConditions_SECC_15118_2 {
-    import from SECC_TestSystem all;
-    import from f_SECC_CMN_PR_InitConfiguration_001 all;
-    import from f_SECC_CMN_PR_Binding_001 all;
-    import from f_SECC_CMN_PR_InitConfiguration_002 all;
+template octetstring t := '01'O & 'FE'O & ?;        // COMPILE ERROR
+template octetstring t := '01'O & ? & '8001'O;       // COMPILE ERROR
+```
 
-    // Shared altstep for unexpected messages during preconditions
-    altstep a_SECC_CMN_UnexpectedMsg() runs on SECCTester {
-        [] any port.receive {
-            log("WARNING: Unexpected message received during precondition phase");
-            repeat;
+**CORRECT -- Use receive(?) with manual field checks in alt branch:**
+```ttcn3
+alt {
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) -> value v_resp {
+        tc_V2G_EVCC_Msg_Timer.stop;
+        if (lengthof(v_resp) >= 8 and substr(v_resp, 0, 1) == '01'O
+            and substr(v_resp, 1, 1) == 'FE'O and substr(v_resp, 2, 2) == '8002'O) {
+            setverdict(pass, "Valid response received");
+        } else {
+            setverdict(fail, "Response has wrong payload type");
         }
     }
-}
-```
-
-**f_SECC_CMN_PR_InitConfiguration_001.ttcn** (SIL mode):
-```ttcn3
-module f_SECC_CMN_PR_InitConfiguration_001 {
-    import from SECC_TestSystem all;
-
-    function f_SECC_CMN_PR_InitConfiguration_001()
-    runs on SECCTester {
-        // Map MTC ports to system ports (SIL mode: no PTC needed)
-        map(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
-        map(mtc:pt_V2G_TCP_TLS_Port, system:pt_V2G_TCP_TLS_Port);
-
-        // NOTE: In SIL mode, no HAL_61851_Listener PTC is created.
-        // No vc_SessionID or vc_eVCCID initialization needed.
+    [] tc_V2G_EVCC_Msg_Timer.timeout {
+        setverdict(inconc, "Timeout waiting for response");
     }
 }
 ```
 
-**f_SECC_CMN_PR_Binding_001.ttcn** (SIL mode):
+**CORRECT -- Use exact concatenation (no `?`):**
 ```ttcn3
-module f_SECC_CMN_PR_Binding_001 {
-    import from SECC_TestSystem all;
-
-    function f_SECC_CMN_PR_Binding_001()
-    runs on SECCTester return verdicttype {
-        var timer tc_V2G_EVCC_Msg_Timer := floattoint(PIXIT_CMN_Message_Timeout);
-
-        // SIL mode: SDP/TCP binding is simulated by the port adapter
-        log("SDP/TCP binding simulated in SIL mode");
-
-        // Send SupportedAppProtocolReq
-        tc_V2G_EVCC_Msg_Timer.start(PIXIT_CMN_Message_Timeout);
-        pt_V2G_TCP_TLS_Port.send(
-            md_CMN_V2GTP_Message_001(
-                md_CMN_V2GTP_Header_001('01'O, 'FE'O, '8001'O, int2oct(payloadSize, 4)),
-                md_CMN_V2GTP_Payload_001(
-                    md_CMN_SupportedAppProtocolReq_001()
-                )
-            )
-        );
-
-        alt {
-            [] pt_V2G_TCP_TLS_Port.receive(
-                mw_CMN_V2GTP_Message_001(
-                    mw_CMN_V2GTP_Header_001('01'O, 'FE'O, '8002'O, ?),
-                    mw_CMN_V2GTP_Payload_001(
-                        mw_CMN_SupportedAppProtocolRes_001(?)
-                    )
-                )
-            ) {
-                tc_V2G_EVCC_Msg_Timer.stop;
-                setverdict(pass);
-            }
-            [] pt_V2G_TCP_TLS_Port.receive(?) {
-                tc_V2G_EVCC_Msg_Timer.stop;
-                setverdict(fail);
-            }
-            [] tc_V2G_EVCC_Msg_Timer.timeout {
-                setverdict(inconc);
-            }
-        }
-
-        return getverdict;
-    }
-}
+// CRITICAL: Use a REAL, valid ISO 15118-2 EXI octetstring -- NEVER '0022'O or dummy placeholders.
+// Dummy EXI will crash the SECC's EXI decoder, causing TCP connection drops and 'inconc' verdict.
+// NOTE: EXI payload hex string MUST have an even number of hex characters. If odd, pad with '0' or '00'.
+var octetstring exi_payload := '8000EBAB9371D34B9B79D189A98989C1D191D191818999D26B9B3A232B30020000000001B75726E3A64696E3A37303132313A323031323A4D73674465660040000000880000'O; // Valid SupportedAppProtocolReq EXI (140 bytes, 280 hex chars)
+template octetstring t := '01'O & 'FE'O & '8001'O & int2oct(lengthof(exi_payload), 4) & exi_payload;
 ```
 
-### PostConditions File Structure:
+**REMEMBER:** In TTCN-3, `?` inside a receive pattern with `&` concatenation is ambiguous -- it can match varying numbers of bytes depending on the pattern prefix length. Always use `receive(?)` with manual `substr()`/`lengthof()` checks inside the alt branch for V2GTP field validation.
 
-**PostConditions_SECC_15118_2.ttcn** (aggregator):
-```ttcn3
-module PostConditions_SECC_15118_2 {
-    import from SECC_TestSystem all;
-    import from f_SECC_CMN_PO_InitialState_001 all;
-    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
-
-    // Shared altstep for unexpected messages during postconditions
-    altstep a_SECC_CMN_PostCondition_UnexpectedMsg() runs on SECCTester {
-        [] any port.receive {
-            log("WARNING: Unexpected message received during postcondition phase");
-            repeat;
-        }
-    }
-}
-```
-
-**f_SECC_CMN_PO_InitialState_001.ttcn** (SIL mode):
-```ttcn3
-module f_SECC_CMN_PO_InitialState_001 {
-    import from SECC_TestSystem all;
-
-    function f_SECC_CMN_PO_InitialState_001()
-    runs on SECCTester {
-        // Unmap MTC ports (SIL mode: no PTC to stop)
-        unmap(mtc:pt_V2G_TCP_TLS_Port, system:pt_V2G_TCP_TLS_Port);
-        unmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
-    }
-}
-```
-
-**f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn** (SIL mode):
-```ttcn3
-module f_SECC_CMN_PO_ShutdownConfiguration_001 {
-    import from SECC_TestSystem all;
-
-    function f_SECC_CMN_PO_ShutdownConfiguration_001()
-    runs on SECCTester {
-        // SIL mode: TCP connection is managed by the port adapter
-        log("TCP/TLS shutdown simulated in SIL mode");
-    }
-}
-```
+### Component and Port Mapping
+- In `map()`/`unmap()` calls, use the port instance names from generation_plan:
+  - TCP/TLS: the `{port_name}` value from generation_plan (e.g. `pt_V2G_TCP_TLS_ALM_SECC_Port`)
+  - UDP SDP: `pt_V2G_UDP_SDP_Port`
+- The port type name in `SECC_TestSystem` is `V2G_TCP_TLS_Port` (NOT `V2G_TCP_TLS_ALM_Port`).
 
 ---
 
@@ -334,21 +187,52 @@ module f_SECC_CMN_PO_ShutdownConfiguration_001 {
 - test behavior: f_{SUT}_{Cat}_TB_VTB_{Msg}_{Seq}
 - send template: md_CMN_{Msg}Req_{Seq}
 - receive template: mdw_{SUT}_{Msg}Res_{Seq}
-- module name = function name (e.g., module f_SECC_CMN_PR_InitConfiguration_001 { function f_SECC_CMN_PR_InitConfiguration_001(...) }
+- **module name for function files**: Use a descriptive name related to the function's purpose, NOT the same as the function name.
+  - Correct: `module PreConditions_TCPConnected { function f_SECC_CMN_PR_TCP_Connected_001() ... }`
+  - WRONG: `module f_SECC_CMN_PR_TCP_Connected_001 { function f_SECC_CMN_PR_TCP_Connected_001() ... }`
+  - Reason: When the function module wraps the function in a same-named module, calling it from another module requires fully-qualified names like `f_SECC_CMN_PR_TCP_Connected_001.f_SECC_CMN_PR_TCP_Connected_001()`, which does not match the simple function name calls used in the testcase.
+  - Use module names like `PreConditions_TCPConnected`, `PostConditions_Shutdown`, `PreConditions_SDP`, etc.
+  - The pipeline will automatically inject the correct `import from <module_name> all;` statements into the aggregator modules.
 
-### Precondition Function Parameters (MUST follow exactly)
-- f_SECC_CMN_PR_InitConfiguration_001() -> no return (SIL mode, no parameters)
-- f_SECC_CMN_PR_Binding_001() -> return verdicttype (SIL mode, no parameters)
+### MANDATORY: Direct Import Rule
+
+TTCN-3 does NOT re-export symbols imported through intermediate modules. The main testcase module MUST directly import from EVERY individual function module it calls. Do NOT rely solely on the aggregator module for imports.
+
+**CORRECT (main TC file):**
+```ttcn3
+module TC_SECC_CMN_VTB_V2GTPHeader_001 {
+    import from SECC_TestSystem all;
+    import from PreConditions_SECC_15118_2 all;
+    import from PostConditions_SECC_15118_2 all;
+    // CORRECT: Direct imports for all function modules called
+    import from f_SECC_CMN_PR_InitConfiguration_001 all;   // direct!
+    import from f_SECC_CMN_PR_Binding_001 all;               // direct!
+    import from f_SECC_CMN_PO_InitialState_001 all;          // direct!
+    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all; // direct!
+    // ...
+}
+```
+
+**WRONG (main TC file):**
+```ttcn3
+module TC_SECC_CMN_VTB_V2GTPHeader_001 {
+    import from SECC_TestSystem all;
+    import from PreConditions_SECC_15118_2 all;   // transitive ONLY - INVALID
+    import from PostConditions_SECC_15118_2 all;  // transitive ONLY - INVALID
+    // f_SECC_CMN_PR_InitConfiguration_001 is NOT visible here!
+    // TITAN will throw "there is no local or imported definition" error
+}
+```
+
+The pipeline automatically injects direct imports after generation, but you MUST also include them explicitly in your generated code to avoid confusion.
+
+### Precondition Function Parameters
+- {PRECON_PARAMS_BLOCK}
 - If a precondition function returns verdicttype, you MUST store it in preConVerdict and check it before Phase C
 
-### Postcondition Function Parameters (MUST follow exactly)
-- f_SECC_CMN_PO_InitialState_001() -> no return (SIL mode, no parameters)
-- f_SECC_CMN_PO_ShutdownConfiguration_001() -> no return (SIL mode, no parameters)
+### Postcondition Function Parameters
+- {POSTCON_PARAMS_BLOCK}
 - PostConditions MUST be called regardless of preConVerdict value (Phase D runs unconditionally)
-
-### Component and Port
-- SECC tests: runs on SECCTester system SystemSECC, port pt_V2G_TCP_TLS_ALM_SECC_Port (internal) / pt_V2G_TCP_TLS_Port (mapped)
-- EVCC tests: runs on EVCCTester system SystemEVCC, port pt_V2G_TCP_TLS_ALM_EVCC_Port (internal) / pt_V2G_TCP_TLS_Port (mapped)
 
 ### Timer
 - EVERY alt branch that receives a message MUST call {timer}.stop BEFORE setverdict
@@ -360,22 +244,323 @@ module f_SECC_CMN_PO_ShutdownConfiguration_001 {
 
 ### V2GTP Header
 - Always wrap V2G messages in V2GTP:
-  - protocolVersion='01'O, invProtocolVersion='FE'O, payloadType='8001'O
+  - protocolVersion='01'O, invProtocolVersion='FE'O
+  - payloadType varies by message type:
+    - **SDP discovery**: payloadType='9000'O
+    - **V2G application messages** (SessionSetup, ServiceDiscovery, etc.): payloadType='8001'O
   - payloadLength: MUST be a 4-byte octetstring, e.g. `int2oct(payloadSize, 4)`
   - DO NOT use 'omit' for payloadLength (it is not optional)
+- **Port Type Constraint (CRITICAL)**: The `V2G_TCP_TLS_Port` port type is defined as `out octetstring; in octetstring;`.
+  This means you MUST send and receive `octetstring`, NOT record types or template types.
+  - Correct: `{port_name}.send('01'O & 'FE'O & '8001'O & int2oct(len, 4) & payload)` (octetstring concatenation)
+  - WRONG: `{port_name}.send(someRecordTemplate)` — record types are not allowed
+  - WRONG: `{port_name}.receive(someRecordTemplate)` — port only accepts octetstring
+  - Correct: `{port_name}.receive(?)` (wildcard matching, then check bytes manually with substr)
 
 ### Precondition/Postcondition Function Definitions
 - The function DEFINITIONS (bodies) must be generated as separate .ttcn files (Section B above)
-- Reference: demo's PreConditions/ and PostConditions/ directories
-- Do NOT generate empty stubs — implement the actual logic per the demo reference
+- Do NOT generate empty stubs — implement the actual logic per the mode rules
 - Each precondition/postcondition function goes in its own .ttcn file with module name = function name
 - The aggregator modules (PreConditions_SECC_15118_2.ttcn, PostConditions_SECC_15118_2.ttcn) import all individual functions
 
 ### Test Case Module
 - The main TC_*.ttcn file MUST import from PreConditions_SECC_15118_2 and PostConditions_SECC_15118_2
+- **MANDATORY: Also directly import every function module called** (see "MANDATORY: Direct Import Rule" section above)
 - Phase A+B calls go at the beginning of the testcase body
 - Phase D calls go at the end of the testcase body (unconditional)
+- The canonical example is at `test_code/examples/ttcn3_CANONICAL_testcase.ttcn`
 
 ### Documentation
 - Add @desc, @reference, @requirement comments to the test case module
 - Add inline comments for each phase and key operations
+
+---
+
+## COMPLETE EXAMPLE: SECC V2GTPSessionSetup GoodCase
+
+```ttcn3
+// CANONICAL reference: test_code/examples/ttcn3_CANONICAL_testcase.ttcn
+module TC_SECC_CMN_VTB_V2GTPSessionSetup_001 {
+
+    // === Imports (MANDATORY: include direct imports for all function modules) ===
+    import from SECC_TestSystem all;
+    import from SECC_Types all;
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+
+    // Aggregator imports
+    import from PreConditions_SECC_15118_2 all;
+    import from PostConditions_SECC_15118_2 all;
+
+    // Direct imports for all called functions (required -- TTCN-3 does NOT re-export transitively)
+    import from f_SECC_CMN_PR_InitConfiguration_001 all;
+    import from f_SECC_CMN_PR_Binding_001 all;
+    import from f_SECC_CMN_PO_InitialState_001 all;
+    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
+
+    // === Test Behavior Function ===
+    function f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001()
+        runs on SECCTester
+        return verdicttype
+    {
+        timer tc_V2G_EVCC_Msg_Timer := PX_SECC_CMN_Message_Timeout;
+
+        // CRITICAL: Use a REAL, valid ISO 15118-2 EXI octetstring.
+        // Dummy EXI placeholders crash the SECC EXI decoder and cause TCP drops.
+        // NOTE: EXI payload hex string MUST have an even number of hex characters. If odd, pad with '0' or '00'.
+        var octetstring session_setup_req := '8000EBAB9371D34B9B79D189A98989C1D191D191818999D26B9B3A232B30020000000001B75726E3A64696E3A37303132313A323031323A4D73674465660040000000880000'O; // Valid SupportedAppProtocolReq EXI (140 bytes, 280 hex chars)
+        var integer payload_len := lengthof(session_setup_req);
+        var octetstring v2gtp_msg := '01'O & 'FE'O & '8003'O
+                                    & int2oct(payload_len, 4)
+                                    & session_setup_req;
+
+        tc_V2G_EVCC_Msg_Timer.start(PX_SECC_CMN_Message_Timeout);
+        pt_V2G_TCP_TLS_ALM_SECC_Port.send(v2gtp_msg);
+
+        alt {
+            // Expected: Valid SessionSetupRes with correct V2GTP header
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) -> value v_resp {
+                tc_V2G_EVCC_Msg_Timer.stop;
+                // Manually check V2GTP header fields (cannot use ? with & in templates)
+                if (lengthof(v_resp) >= 8 and substr(v_resp, 0, 1) == '01'O
+                    and substr(v_resp, 1, 1) == 'FE'O and substr(v_resp, 2, 2) == '8004'O) {
+                    setverdict(pass, "SECC responded with SessionSetupRes");
+                } else {
+                    setverdict(fail, "SECC sent unexpected message");
+                }
+            }
+            // Timeout: No response within expected time
+            [] tc_V2G_EVCC_Msg_Timer.timeout {
+                setverdict(inconc, "SECC did not respond within timeout");
+            }
+        }
+
+        return getverdict;
+    }
+
+    // === Testcase ===
+    testcase TC_SECC_CMN_VTB_V2GTPSessionSetup_001()
+        runs on SECCTester system SystemSECC
+    {
+        var verdicttype preConVerdict;
+
+        // Phase A+B: Pre Conditions
+        f_SECC_CMN_PR_InitConfiguration_001();
+        preConVerdict := f_SECC_CMN_PR_Binding_001();
+
+        // Phase C: Test behavior
+        if (preConVerdict == pass) {
+            f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001();
+        } else {
+            log("PreCondition verdict is not pass");
+            setverdict(inconc);
+        }
+
+        // Phase D: Post Conditions (unconditional cleanup)
+        f_SECC_CMN_PO_InitialState_001();
+        f_SECC_CMN_PO_ShutdownConfiguration_001();
+    }
+}
+```
+
+---
+
+## Core Generation Principles
+
+### Principle 1: Ports Are Raw Byte Pipes
+The V2G_TCP_TLS_Port and V2G_UDP_SDP_Port types are declared as `{ out octetstring; in octetstring; }`.
+- ALL messages are octetstrings. No record types flow through ports.
+- Sending: construct octetstring via concatenation (&), call .send()
+- Receiving: use wildcard matching (?), e.g., `.receive('01'O & 'FE'O & ?)`
+- DO NOT send record templates through ports -- they will not compile
+
+### Principle 2: Precondition Chain Position Semantics
+The position in precondition_chain determines behavior:
+- Position 1 (first): SDP discovery via UDP multicast
+- Position 2 (second): SupportedAppProtocol exchange
+- Position 3+ (middle): Subsequent V2G messages
+- Last position: The message under test (sends + expects response in alt block)
+
+### Principle 3: Timer Must Be Stopped Before setverdict
+When you call timer.start(value), you MUST call timer.stop in every branch
+that does NOT time out. The timeout branch does NOT call stop.
+
+### Principle 4: Test Behavior Always Ends With return getverdict
+
+---
+
+## Verdict Logic Decision Tree
+
+FOR EACH test_type:
+
+GoodCase:
+    receive matches expected response  ->  setverdict(pass, "...")
+    receive unexpected response        ->  setverdict(fail, "unexpected response")
+    timer timeout                     ->  setverdict(inconc, "timeout")
+    connection closed by SUT           ->  setverdict(fail, "connection lost")
+
+BadCase:
+    receive indicates error/rejection  ->  setverdict(pass, "SUT correctly rejected")
+    receive indicates acceptance       ->  setverdict(fail, "SUT should reject")
+    timeout                            ->  setverdict(pass, "SUT correctly ignored")
+    connection closed by SUT           ->  setverdict(pass, "SUT correctly closed")
+
+---
+
+## Precondition Function Generation Patterns
+
+### Pattern: InitConfiguration (Position 1: Port Mapping + SDP Discovery)
+
+**CRITICAL:** This is ALWAYS position 1. Without SDP discovery, the SECC never opens its TCP port, causing TCP timeout in the test. Use the COMPLETE implementation below (not a stub).
+
+```ttcn3
+module f_SECC_CMN_PR_InitConfiguration_001 {
+    import from SECC_TestSystem all;
+
+    function f_SECC_CMN_PR_InitConfiguration_001()
+        runs on SECCTester
+        return verdicttype
+    {
+        // Phase A: Port mapping
+        map(mtc:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);
+        map(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
+
+        // Phase B: SDP Discovery (mandatory -- SECC must be found before TCP connect)
+        // V2GTP header: version=01, inv=FE, payloadType=9000(SDP), length=4, body=2100
+        var octetstring sdp_req := '01FE9000000000021000'O;
+        pt_V2G_UDP_SDP_Port.send(sdp_req);
+
+        timer t_sdp;
+        t_sdp.start(5.0);
+
+        alt {
+            [] pt_V2G_UDP_SDP_Port.receive {
+                t_sdp.stop;
+                log("SDP discovery: SECC found via UDP multicast");
+            }
+            [] t_sdp.timeout {
+                log("SDP discovery: timeout, proceeding anyway (SIL mode)");
+            }
+        }
+
+        log("SIL mode: InitConfiguration complete, SDP discovery done");
+        return pass;
+    }
+}
+```
+
+**CRITICAL RULES:**
+- Do NOT omit the SDP discovery block
+- Do NOT use `payloadType='8001'O` for SDP -- use `payloadType='9000'O`
+- The SDP body `2100` means "request SECC IPv6 address"
+- After SDP, the C++ port adapter reads the SECC IP/port from the SDP response and uses it for TCP connections
+- In SIL mode, SDP timeout is non-fatal -- proceed anyway
+
+### Pattern: Generic Precondition (Positions 2+)
+```ttcn3
+module PreConditions_Generic {
+    function f_{SUT}_CMN_PR_{Name}_{SeqNo}()
+        runs on {SUT}Tester
+        return verdicttype
+    {
+        // Implement the specific protocol step
+        log("Executing: f_{SUT}_CMN_PR_{Name}_{SeqNo}");
+        return pass;
+    }
+}
+```
+
+### Pattern: V2GTP Message Send (Last Position: Message Under Test)
+```ttcn3
+module TestBehavior_V2G {
+    function f_{SUT}_CMN_TB_VTB_{MsgType}_{SeqNo}()
+        runs on {SUT}Tester
+        return verdicttype
+    {
+        timer tc_msg := PX_SECC_CMN_Message_Timeout;
+        tc_msg.start;
+        // CRITICAL: Use a REAL, valid ISO 15118-2 EXI octetstring -- NEVER a dummy placeholder.
+        // Dummy EXI (e.g. '0022'O) crashes the SECC EXI decoder and drops the TCP connection.
+        // NOTE: EXI payload hex string MUST have an even number of hex characters. If odd, pad with '0' or '00'.
+        var octetstring exi_payload := '8000EBAB9371D34B9B79D189A98989C1D191D191818999D26B9B3A232B30020000000001B75726E3A64696E3A37303132313A323031323A4D73674465660040000000880000'O;  // Valid SupportedAppProtocolReq EXI (140 bytes, 280 hex chars)
+        var integer payload_len := lengthof(exi_payload);
+        var octetstring v2gtp := '01'O & 'FE'O & '8001'O &
+                                 int2oct(payload_len, 4) & exi_payload;
+        pt_V2G_TCP_TLS_ALM_{SUT}_Port.send(v2gtp);
+        alt {
+            [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive('01'O & 'FE'O & '8002'O & ?) -> value v_resp {
+                tc_msg.stop;
+                if (lengthof(v_resp) >= 8) {
+                    setverdict(pass, "Valid response received");
+                } else {
+                    setverdict(fail, "Malformed response");
+                }
+            }
+            [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive(?) {
+                tc_msg.stop;
+                setverdict(fail, "Unexpected message received");
+            }
+            [] tc_msg.timeout {
+                setverdict(inconc, "Timeout waiting for response");
+            }
+        }
+        return getverdict;
+    }
+}
+```
+```
+
+---
+
+## FIX MODE (when error_feedback is provided)
+
+When operating in **fix mode** (repair iteration), the prompt is simplified to focus on fixing errors:
+
+### Fix Mode Input
+- `generation_plan`: The original generation plan JSON
+- `error_feedback`: Filtered compilation errors (core + unknown errors only)
+- `previous_core_files`: Your previously generated files (for reference)
+- `local_ref_section`: Knowledge base search results
+
+### Fix Mode Instructions
+1. Read the `error_feedback` carefully - these are the ONLY errors to fix
+2. Review your `previous_core_files` to understand what was generated before
+3. Fix ONLY the reported errors, do NOT change working code
+4. Keep the testcase ID and module name unchanged
+5. Output the corrected TTCN-3 code as JSON
+
+### Fix Mode Output Format
+```json
+{
+  "testcase": "... (corrected main TC_*.ttcn module code) ...",
+  "precondition_files": [...],
+  "postcondition_files": [...]
+}
+```
+
+### Fix Mode Guidelines
+- DO NOT regenerate the entire file unless necessary
+- Focus on fixing the specific errors in `error_feedback`
+- If an error mentions a specific line or function, fix that specific part
+- Maintain the same structure and naming conventions
+- Add @reference comments to trace back to requirements
+
+---
+
+# CRITICAL OUTPUT DIRECTIVE — PREVENTING OVER-THINKING
+
+**FAILURE TO FOLLOW THIS DIRECTIVE WILL CAUSE THE PIPELINE TO CRASH.**
+
+1. **DO NOT over-analyze TTCN-3 edge cases** (e.g. exact behavior of the `?` wildcard, `omit`, `*`, octetstring concatenation, etc.) in your reasoning/thinking phase. If you are unsure about TTCN-3 syntax, follow the few-shot examples exactly — do not debate with yourself.
+
+2. **You MUST conclude your reasoning and output the JSON.** Do NOT abort before outputting the code block. Do NOT output only analysis without the final JSON. Your output must end with:
+
+```json
+{
+  "testcase": "...",
+  "precondition_files": [...],
+  "postcondition_files": [...]
+}
+```
+
+3. **Your entire response MUST end with a valid JSON block** enclosed in ` ```json ... ``` ` containing the files. This is non-negotiable. If your response does not end with a JSON code block, the pipeline will fail.

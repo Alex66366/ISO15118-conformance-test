@@ -1,0 +1,796 @@
+{
+  "generation_metadata": {
+    "timestamp": "2026-05-01T11:26:55.620373",
+    "mode": "single",
+    "requirement_ids": [
+      "V2G2-082"
+    ],
+    "pipeline": "4-Agent (Orchestrator→Modeler→Generator→Verifier)",
+    "elapsed_seconds": 167.4,
+    "agent_timings": {
+      "orchestrator": 16.7,
+      "modeler": 35.6,
+      "generator": 37.8,
+      "generator_retry_count": 0,
+      "verifier": 77.4,
+      "total": 167.4
+    }
+  },
+  "orchestrator_plan": {
+    "mode": "single",
+    "plan_id": "PLAN_V2G2-082",
+    "source_requirements": [
+      "V2G2-082"
+    ],
+    "analysis": {
+      "normative_verb": "shall",
+      "subject": "both",
+      "action": "use the V2GTP header structure as defined in Figure 9",
+      "object": "V2GTP message header (ProtocolVersion, InverseProtocolVersion, PayloadType, PayloadLength)",
+      "conditions": "for all V2GTP messages sent"
+    },
+    "test_type": "Both",
+    "sut_type": "SECC",
+    "category": "CMN",
+    "message_type": "V2GTP Header",
+    "precondition_chain": [
+      "f_SECC_CMN_PR_TCP_Connected_001"
+    ],
+    "testing_scope": [
+      "ProtocolVersion field is set to 0x01",
+      "InverseProtocolVersion field equals ProtocolVersion XOR 0xFF (i.e. 0xFE)",
+      "PayloadType field contains a valid value from Table 10 (e.g. 0x8001 for EXI encoded V2G Message)",
+      "PayloadLength field accurately reflects the byte length of the payload",
+      "SECC rejects or ignores messages with incorrect ProtocolVersion",
+      "SECC rejects or ignores messages with InverseProtocolVersion not matching XOR pattern",
+      "SECC rejects or ignores messages with reserved or invalid PayloadType values"
+    ],
+    "sequence_plan": [
+      {
+        "seq_no": "001",
+        "test_type": "GoodCase",
+        "description": "Tester sends a V2GTP message with correct header (ProtocolVersion=0x01, InverseProtocolVersion=0xFE, valid PayloadType=0x8001, accurate PayloadLength); SECC accepts and processes the message normally"
+      },
+      {
+        "seq_no": "002",
+        "test_type": "BadCase",
+        "description": "Tester sends a V2GTP message with incorrect ProtocolVersion (e.g. 0x02) and correspondingly wrong InverseProtocolVersion; SECC shall reject or close the connection"
+      },
+      {
+        "seq_no": "003",
+        "test_type": "BadCase",
+        "description": "Tester sends a V2GTP message with correct ProtocolVersion=0x01 but InverseProtocolVersion not equal to 0xFE (XOR pattern violated); SECC shall reject or close the connection"
+      },
+      {
+        "seq_no": "004",
+        "test_type": "BadCase",
+        "description": "Tester sends a V2GTP message with a reserved PayloadType value (e.g. 0x0001); SECC shall reject or close the connection"
+      }
+    ],
+    "figure_references": [
+      "Figure 9"
+    ],
+    "table_references": [
+      "Table 9",
+      "Table 10"
+    ],
+    "notes": "V2G2-082 applies to all V2GTP entities (both SECC and EVCC); the plan targets SECC as SUT with the tester acting as EVCC. A symmetric EVCC-as-SUT plan would follow the same structure. The BadCase tests derive from the implicit rejection obligation: a conformant entity must not accept malformed V2GTP headers."
+  },
+  "testing_points": [
+    {
+      "tp_id": "TP_001",
+      "modeling_type": "packet_field",
+      "description": "ProtocolVersion field must be set to 0x01 in all V2GTP messages",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "field_name": "ProtocolVersion",
+        "data_type": "uint8",
+        "cardinality": "1",
+        "value_constraints": "Fixed value: 0x01",
+        "boundary_values": [
+          "0x01"
+        ]
+      },
+      "test_approach": "positive",
+      "expected_behavior": "SECC accepts the V2GTP message and processes it normally when ProtocolVersion=0x01",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": []
+    },
+    {
+      "tp_id": "TP_002",
+      "modeling_type": "packet_field",
+      "description": "SECC rejects V2GTP message when ProtocolVersion is not 0x01",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "field_name": "ProtocolVersion",
+        "data_type": "uint8",
+        "cardinality": "1",
+        "value_constraints": "Fixed value: 0x01; any other value is invalid",
+        "boundary_values": [
+          "0x00",
+          "0x02",
+          "0xFF"
+        ]
+      },
+      "test_approach": "negative",
+      "expected_behavior": "SECC rejects or closes the connection when ProtocolVersion is not 0x01",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": []
+    },
+    {
+      "tp_id": "TP_003",
+      "modeling_type": "packet_field",
+      "description": "InverseProtocolVersion must equal ProtocolVersion XOR 0xFF (i.e. 0xFE when ProtocolVersion=0x01)",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "field_name": "InverseProtocolVersion",
+        "data_type": "uint8",
+        "cardinality": "1",
+        "value_constraints": "Must equal ProtocolVersion XOR 0xFF; when ProtocolVersion=0x01, value must be 0xFE",
+        "boundary_values": [
+          "0xFE"
+        ]
+      },
+      "test_approach": "positive",
+      "expected_behavior": "SECC accepts the V2GTP message when InverseProtocolVersion=0xFE (correct XOR complement of 0x01)",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": []
+    },
+    {
+      "tp_id": "TP_004",
+      "modeling_type": "packet_field",
+      "description": "SECC rejects V2GTP message when InverseProtocolVersion does not match XOR pattern",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "field_name": "InverseProtocolVersion",
+        "data_type": "uint8",
+        "cardinality": "1",
+        "value_constraints": "Must equal ProtocolVersion XOR 0xFF; violation of XOR pattern is invalid",
+        "boundary_values": [
+          "0x00",
+          "0x01",
+          "0xFF"
+        ]
+      },
+      "test_approach": "negative",
+      "expected_behavior": "SECC rejects or closes the connection when InverseProtocolVersion does not equal ProtocolVersion XOR 0xFF",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": []
+    },
+    {
+      "tp_id": "TP_005",
+      "modeling_type": "packet_field",
+      "description": "PayloadType field must contain a valid value (e.g. 0x8001 for EXI encoded V2G Message)",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "field_name": "PayloadType",
+        "data_type": "uint16",
+        "cardinality": "1",
+        "value_constraints": "Valid values defined in Table 10; 0x8001 = EXI encoded V2G Message",
+        "boundary_values": [
+          "0x8001"
+        ]
+      },
+      "test_approach": "positive",
+      "expected_behavior": "SECC accepts the V2GTP message when PayloadType=0x8001 (valid EXI V2G message type)",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": [
+        "Table 10"
+      ]
+    },
+    {
+      "tp_id": "TP_006",
+      "modeling_type": "packet_field",
+      "description": "SECC rejects V2GTP message with reserved or invalid PayloadType value",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "field_name": "PayloadType",
+        "data_type": "uint16",
+        "cardinality": "1",
+        "value_constraints": "Reserved values (e.g. 0x0001) are invalid; only Table 10 defined values are valid",
+        "boundary_values": [
+          "0x0001",
+          "0x0000",
+          "0xFFFF"
+        ]
+      },
+      "test_approach": "negative",
+      "expected_behavior": "SECC rejects or closes the connection when PayloadType contains a reserved or undefined value",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": [
+        "Table 10"
+      ]
+    },
+    {
+      "tp_id": "TP_007",
+      "modeling_type": "packet_field",
+      "description": "PayloadLength field must accurately reflect the byte length of the payload",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "field_name": "PayloadLength",
+        "data_type": "uint32",
+        "cardinality": "1",
+        "value_constraints": "Must equal the actual byte length of the payload that follows the header",
+        "boundary_values": [
+          "0",
+          "actual_payload_length"
+        ]
+      },
+      "test_approach": "positive",
+      "expected_behavior": "SECC accepts and correctly processes the V2GTP message when PayloadLength matches the actual payload byte count",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": []
+    },
+    {
+      "tp_id": "TP_008",
+      "modeling_type": "packet_field",
+      "description": "SECC rejects V2GTP message when PayloadLength does not match actual payload size",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "field_name": "PayloadLength",
+        "data_type": "uint32",
+        "cardinality": "1",
+        "value_constraints": "Mismatch between declared PayloadLength and actual payload bytes is invalid",
+        "boundary_values": [
+          "declared_length + 1",
+          "declared_length - 1",
+          "0xFFFFFFFF"
+        ]
+      },
+      "test_approach": "negative",
+      "expected_behavior": "SECC rejects or closes the connection when PayloadLength does not match the actual payload byte count",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": []
+    },
+    {
+      "tp_id": "TP_009",
+      "modeling_type": "functional",
+      "description": "Complete valid V2GTP header: all four fields correct simultaneously — GoodCase end-to-end",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "mechanism": "V2GTP header validation",
+        "precondition": "TCP connection established between tester (acting as EVCC) and SECC",
+        "stimulus": "Tester sends V2GTP message with ProtocolVersion=0x01, InverseProtocolVersion=0xFE, PayloadType=0x8001, PayloadLength=accurate byte count",
+        "expected_response": "SECC accepts the message and responds normally (e.g. with a valid V2G application-layer response)"
+      },
+      "test_approach": "positive",
+      "expected_behavior": "SECC processes the V2GTP message without error; connection remains open and SECC sends a valid application-layer response",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": [
+        "Table 10"
+      ]
+    },
+    {
+      "tp_id": "TP_010",
+      "modeling_type": "functional",
+      "description": "SECC rejects message with incorrect ProtocolVersion and correspondingly wrong InverseProtocolVersion",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "mechanism": "V2GTP header validation — ProtocolVersion mismatch",
+        "precondition": "TCP connection established between tester (acting as EVCC) and SECC",
+        "stimulus": "Tester sends V2GTP message with ProtocolVersion=0x02, InverseProtocolVersion=0xFD (XOR complement of 0x02), PayloadType=0x8001, PayloadLength=accurate",
+        "expected_response": "SECC rejects the message or closes the TCP connection"
+      },
+      "test_approach": "negative",
+      "expected_behavior": "SECC rejects the V2GTP message or terminates the connection upon receiving an unsupported ProtocolVersion value",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": []
+    },
+    {
+      "tp_id": "TP_011",
+      "modeling_type": "functional",
+      "description": "SECC rejects message with correct ProtocolVersion but violated XOR pattern in InverseProtocolVersion",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "mechanism": "V2GTP header validation — InverseProtocolVersion XOR pattern violation",
+        "precondition": "TCP connection established between tester (acting as EVCC) and SECC",
+        "stimulus": "Tester sends V2GTP message with ProtocolVersion=0x01, InverseProtocolVersion=0x01 (XOR pattern violated), PayloadType=0x8001, PayloadLength=accurate",
+        "expected_response": "SECC rejects the message or closes the TCP connection"
+      },
+      "test_approach": "negative",
+      "expected_behavior": "SECC rejects the V2GTP message or terminates the connection when InverseProtocolVersion does not satisfy the XOR complement constraint",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": []
+    },
+    {
+      "tp_id": "TP_012",
+      "modeling_type": "functional",
+      "description": "SECC rejects message with reserved PayloadType value",
+      "requirement_basis": [
+        "V2G2-082"
+      ],
+      "details": {
+        "mechanism": "V2GTP header validation — invalid PayloadType",
+        "precondition": "TCP connection established between tester (acting as EVCC) and SECC",
+        "stimulus": "Tester sends V2GTP message with ProtocolVersion=0x01, InverseProtocolVersion=0xFE, PayloadType=0x0001 (reserved), PayloadLength=accurate",
+        "expected_response": "SECC rejects the message or closes the TCP connection"
+      },
+      "test_approach": "negative",
+      "expected_behavior": "SECC rejects the V2GTP message or terminates the connection when PayloadType contains a reserved or undefined value",
+      "figure_references": [
+        "Figure 9"
+      ],
+      "table_references": [
+        "Table 10"
+      ]
+    }
+  ],
+  "test_cases": [
+    {
+      "Test_Case": {
+        "TC_Id": "TC_SECC_CMN_VTB_V2GTPHeader_001",
+        "Test_Objective": "验证SECC正确接受并处理包含完整合法V2GTP头部字段的消息",
+        "Test_Description": "本测试用例验证当测试仪（充当EVCC）向SECC发送ProtocolVersion=0x01、InverseProtocolVersion=0xFE、PayloadType=0x8001且PayloadLength与实际载荷字节数完全匹配的V2GTP消息时，SECC能够正常接受并在应用层作出有效响应。该用例覆盖V2GTP头部四个字段全部合法的正向场景，是所有V2GTP报文交互的基准。",
+        "Document_Reference": {
+          "Document": "ISO:15118-2:2014:IS",
+          "Section": "15118-2:7.8",
+          "Requirements": [
+            "[V2G2-082]"
+          ]
+        },
+        "Related_Figures": [
+          "Figure 9"
+        ],
+        "Related_Tables": [
+          "Table 10"
+        ],
+        "Config_Id": "CF_CMN_001",
+        "PICS_Selection": {
+          "PICS_CMN_V2GTP_Header": true
+        },
+        "PreCondition": "f_SECC_CMN_PR_TCP_Connected_001",
+        "Test_Sequence": [
+          {
+            "Step": 1,
+            "Name": "建立TCP连接",
+            "Instruction": "测试仪作为EVCC向SECC的V2G端口发起TCP连接，等待连接成功建立。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          },
+          {
+            "Step": 2,
+            "Name": "发送合法V2GTP消息",
+            "Instruction": "测试仪构造V2GTP消息，设置ProtocolVersion=0x01、InverseProtocolVersion=0xFE、PayloadType=0x8001（EXI编码V2G消息），PayloadLength字段值等于实际EXI载荷的字节长度，然后发送该消息。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          },
+          {
+            "Step": 3,
+            "Name": "验证SECC正常响应",
+            "Instruction": "验证SECC在规定时限内返回有效的V2GTP封装应用层响应消息，且TCP连接保持打开状态。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          }
+        ],
+        "Expected_Behavior": "f_SECC_CMN_TB_VTB_V2GTPHeader_001",
+        "parameters": {
+          "ProtocolVersion": "0x01",
+          "InverseProtocolVersion": "0xFE",
+          "PayloadType": "0x8001",
+          "PayloadLength": "actual_payload_length"
+        }
+      }
+    },
+    {
+      "Test_Case": {
+        "TC_Id": "TC_SECC_CMN_VTB_V2GTPHeader_002",
+        "Test_Objective": "验证SECC拒绝或关闭连接当V2GTP消息的ProtocolVersion字段值不等于0x01",
+        "Test_Description": "本测试用例验证当测试仪向SECC发送ProtocolVersion=0x02（非法值）且InverseProtocolVersion=0xFD（0x02的XOR补码）的V2GTP消息时，SECC应拒绝处理该消息或关闭TCP连接。该用例对应V2G2-082中ProtocolVersion固定为0x01的强制要求，验证SECC对非法协议版本的拒绝行为。",
+        "Document_Reference": {
+          "Document": "ISO:15118-2:2014:IS",
+          "Section": "15118-2:7.8",
+          "Requirements": [
+            "[V2G2-082]"
+          ]
+        },
+        "Related_Figures": [
+          "Figure 9"
+        ],
+        "Related_Tables": [
+          "Table 9"
+        ],
+        "Config_Id": "CF_CMN_002",
+        "PICS_Selection": {
+          "PICS_CMN_V2GTP_Header": true
+        },
+        "PreCondition": "f_SECC_CMN_PR_TCP_Connected_001",
+        "Test_Sequence": [
+          {
+            "Step": 1,
+            "Name": "建立TCP连接",
+            "Instruction": "测试仪作为EVCC向SECC的V2G端口发起TCP连接，等待连接成功建立。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          },
+          {
+            "Step": 2,
+            "Name": "发送非法ProtocolVersion的V2GTP消息",
+            "Instruction": "测试仪构造V2GTP消息，设置ProtocolVersion=0x02（非法值）、InverseProtocolVersion=0xFD（0x02 XOR 0xFF的结果）、PayloadType=0x8001、PayloadLength=实际载荷字节数，然后发送该消息。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          },
+          {
+            "Step": 3,
+            "Name": "验证SECC拒绝处理",
+            "Instruction": "验证SECC拒绝该消息（不返回正常应用层响应）或主动关闭TCP连接；SECC不得正常处理该消息并返回V2G应用层响应。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          }
+        ],
+        "Expected_Behavior": "f_SECC_CMN_TB_VTB_V2GTPHeader_002",
+        "parameters": {
+          "ProtocolVersion": "0x02",
+          "InverseProtocolVersion": "0xFD",
+          "PayloadType": "0x8001",
+          "PayloadLength": "actual_payload_length"
+        }
+      }
+    },
+    {
+      "Test_Case": {
+        "TC_Id": "TC_SECC_CMN_VTB_V2GTPHeader_003",
+        "Test_Objective": "验证SECC拒绝或关闭连接当V2GTP消息的InverseProtocolVersion不满足XOR补码约束",
+        "Test_Description": "本测试用例验证当测试仪向SECC发送ProtocolVersion=0x01但InverseProtocolVersion=0x01（违反XOR补码约束，正确值应为0xFE）的V2GTP消息时，SECC应拒绝处理该消息或关闭TCP连接。该用例验证SECC对InverseProtocolVersion字段完整性校验的实施情况。",
+        "Document_Reference": {
+          "Document": "ISO:15118-2:2014:IS",
+          "Section": "15118-2:7.8",
+          "Requirements": [
+            "[V2G2-082]"
+          ]
+        },
+        "Related_Figures": [
+          "Figure 9"
+        ],
+        "Related_Tables": [
+          "Table 9"
+        ],
+        "Config_Id": "CF_CMN_003",
+        "PICS_Selection": {
+          "PICS_CMN_V2GTP_Header": true
+        },
+        "PreCondition": "f_SECC_CMN_PR_TCP_Connected_001",
+        "Test_Sequence": [
+          {
+            "Step": 1,
+            "Name": "建立TCP连接",
+            "Instruction": "测试仪作为EVCC向SECC的V2G端口发起TCP连接，等待连接成功建立。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          },
+          {
+            "Step": 2,
+            "Name": "发送InverseProtocolVersion违反XOR约束的V2GTP消息",
+            "Instruction": "测试仪构造V2GTP消息，设置ProtocolVersion=0x01、InverseProtocolVersion=0x01（违反XOR补码约束，正确值应为0xFE）、PayloadType=0x8001、PayloadLength=实际载荷字节数，然后发送该消息。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          },
+          {
+            "Step": 3,
+            "Name": "验证SECC拒绝处理",
+            "Instruction": "验证SECC拒绝该消息（不返回正常应用层响应）或主动关闭TCP连接；SECC不得正常处理该消息。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          }
+        ],
+        "Expected_Behavior": "f_SECC_CMN_TB_VTB_V2GTPHeader_003",
+        "parameters": {
+          "ProtocolVersion": "0x01",
+          "InverseProtocolVersion": "0x01",
+          "PayloadType": "0x8001",
+          "PayloadLength": "actual_payload_length"
+        }
+      }
+    },
+    {
+      "Test_Case": {
+        "TC_Id": "TC_SECC_CMN_VTB_V2GTPHeader_004",
+        "Test_Objective": "验证SECC拒绝或关闭连接当V2GTP消息的PayloadType字段包含保留或未定义值",
+        "Test_Description": "本测试用例验证当测试仪向SECC发送包含保留PayloadType值（0x0001）的V2GTP消息时，SECC应拒绝处理该消息或关闭TCP连接。该用例验证SECC对PayloadType字段合法性校验的实施情况，确保SECC只接受Table 10中定义的合法PayloadType值。",
+        "Document_Reference": {
+          "Document": "ISO:15118-2:2014:IS",
+          "Section": "15118-2:7.8",
+          "Requirements": [
+            "[V2G2-082]"
+          ]
+        },
+        "Related_Figures": [
+          "Figure 9"
+        ],
+        "Related_Tables": [
+          "Table 10"
+        ],
+        "Config_Id": "CF_CMN_004",
+        "PICS_Selection": {
+          "PICS_CMN_V2GTP_Header": true
+        },
+        "PreCondition": "f_SECC_CMN_PR_TCP_Connected_001",
+        "Test_Sequence": [
+          {
+            "Step": 1,
+            "Name": "建立TCP连接",
+            "Instruction": "测试仪作为EVCC向SECC的V2G端口发起TCP连接，等待连接成功建立。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          },
+          {
+            "Step": 2,
+            "Name": "发送保留PayloadType的V2GTP消息",
+            "Instruction": "测试仪构造V2GTP消息，设置ProtocolVersion=0x01、InverseProtocolVersion=0xFE、PayloadType=0x0001（保留值，Table 10中未定义）、PayloadLength=实际载荷字节数，然后发送该消息。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          },
+          {
+            "Step": 3,
+            "Name": "验证SECC拒绝处理",
+            "Instruction": "验证SECC拒绝该消息（不返回正常应用层响应）或主动关闭TCP连接；SECC不得正常处理含有保留PayloadType的消息。",
+            "Traced_Requirements": [
+              "V2G2-082"
+            ]
+          }
+        ],
+        "Expected_Behavior": "f_SECC_CMN_TB_VTB_V2GTPHeader_004",
+        "parameters": {
+          "ProtocolVersion": "0x01",
+          "InverseProtocolVersion": "0xFE",
+          "PayloadType": "0x0001",
+          "PayloadLength": "actual_payload_length"
+        }
+      }
+    }
+  ],
+  "verification": {
+    "evaluation_summary": {
+      "test_cases_evaluated": 4,
+      "requirements_input": 0,
+      "testing_points_input": 0
+    },
+    "breadth": {
+      "score": 4,
+      "sub_scores": {
+        "requirement_coverage": 4,
+        "message_coverage": 4,
+        "scenario_coverage": 4,
+        "state_coverage": 3,
+        "functional_area_coverage": 3
+      },
+      "covered_requirements": [
+        "V2G2-082"
+      ],
+      "uncovered_requirements": [],
+      "covered_testing_points": [],
+      "uncovered_testing_points": [],
+      "breadth_observations": [
+        "四个测试用例覆盖了V2GTP头部验证的核心正向与负向场景：合法头部（_001）、非法ProtocolVersion（_002）、XOR约束违反（_003）、保留PayloadType（_004）。",
+        "缺少PayloadLength字段的错误场景（声明长度与实际载荷不符），对应Modeler层的TP_007/TP_008测试点未被覆盖。",
+        "ProtocolVersion边界值（0x00、0xFF）仅在生成计划中提及，实际测试用例仅选择了0x02作为代表值，其他边界值未单独测试。",
+        "PayloadType边界值（0x0000、0xFFFF）未生成独立测试用例，仅覆盖了0x0001保留值。",
+        "未提供requirements和testing_points输入，无法执行完整的需求追溯性检查；评估基于测试用例内部内容进行。",
+        "缺少对EVCC作为SUT的对称测试用例（V2G2-082同时适用于SECC和EVCC）。",
+        "未覆盖SDP（SECC Discovery Protocol）层的V2GTP消息场景。"
+      ]
+    },
+    "depth": {
+      "score": 3,
+      "sub_scores": {
+        "basic_functionality": 4,
+        "boundary_conditions": 2,
+        "error_handling": 3,
+        "test_sequence_quality": 3,
+        "naming_format_compliance": 4
+      },
+      "per_test_case": [
+        {
+          "tc_id": "TC_SECC_CMN_VTB_V2GTPHeader_001",
+          "depth_score": 4,
+          "issues": [
+            "Step 3中'规定时限'未明确指定具体定时器名称或超时值（如tc_V2G_SECC_Msg_Timer），缺乏可执行性。",
+            "未验证SECC响应消息中V2GTP头部字段（ProtocolVersion、PayloadType等）的正确性，仅验证'有效响应'。",
+            "测试步骤中缺少verdict设置说明（setverdict(pass)触发条件）。"
+          ],
+          "strengths": [
+            "完整覆盖GoodCase四字段合法场景，作为基准测试用例结构清晰。",
+            "parameters字段完整列出所有四个V2GTP头部字段的合法值。",
+            "命名规范完全符合ISO 15118-4格式要求。"
+          ]
+        },
+        {
+          "tc_id": "TC_SECC_CMN_VTB_V2GTPHeader_002",
+          "depth_score": 3,
+          "issues": [
+            "Step 3中拒绝行为的判断标准模糊：'不返回正常应用层响应'与'主动关闭TCP连接'是两种不同的行为，未明确哪种行为触发pass，哪种触发fail。",
+            "仅测试ProtocolVersion=0x02，未覆盖其他无效值边界（0x00、0xFF）。",
+            "缺少超时场景描述：若SECC既不响应也不关闭连接，测试结果如何判定。"
+          ],
+          "strengths": [
+            "正确指定了InverseProtocolVersion=0xFD（0x02的XOR补码），测试场景内部一致。",
+            "明确说明SECC不得正常处理并返回应用层响应，拒绝行为定义明确。"
+          ]
+        },
+        {
+          "tc_id": "TC_SECC_CMN_VTB_V2GTPHeader_003",
+          "depth_score": 3,
+          "issues": [
+            "仅测试InverseProtocolVersion=0x01一个违规值，未覆盖其他XOR违规值（0x00、0xFF）。",
+            "Step 3拒绝判定标准同样模糊，未区分不同拒绝行为的pass条件。",
+            "未说明SECC在检测到XOR违规后预期的具体错误处理机制（是否发送错误响应或静默丢弃）。"
+          ],
+          "strengths": [
+            "测试场景设计精确：保持ProtocolVersion=0x01合法，仅破坏XOR约束，隔离了InverseProtocolVersion字段的独立验证。",
+            "测试目标描述明确，符合ISO 15118-4的负向测试设计原则。"
+          ]
+        },
+        {
+          "tc_id": "TC_SECC_CMN_VTB_V2GTPHeader_004",
+          "depth_score": 3,
+          "issues": [
+            "仅测试PayloadType=0x0001一个保留值，未覆盖0x0000和0xFFFF边界值。",
+            "未说明当PayloadType无效时，EXI载荷内容应如何构造（空载荷还是任意载荷）。",
+            "Step 3拒绝判定标准与_002/_003相同，存在相同的模糊性问题。"
+          ],
+          "strengths": [
+            "明确引用Table 10作为PayloadType合法性的判断依据，需求追溯性良好。",
+            "测试场景设计合理：其余三个头部字段均保持合法值，精确隔离PayloadType字段的错误。"
+          ]
+        }
+      ],
+      "depth_observations": [
+        "所有BadCase测试用例（_002、_003、_004）的Step 3均未明确定义pass/fail判定条件（setverdict触发逻辑），降低了测试用例的可执行性。",
+        "边界值覆盖不足：每个字段仅选取一个代表性违规值，未系统性地测试边界值（如0x00、0xFF、最大值）。",
+        "所有测试用例均缺少后置条件（Postcondition）步骤，未描述TCP连接清理或端口释放操作。",
+        "PayloadLength字段未设计专门的BadCase测试用例（声明长度与实际不符场景），是深度覆盖的主要缺口。",
+        "GoodCase（_001）的Step 3未验证SECC响应的V2GTP头部字段合法性，仅验证'有效响应'，深度不足。",
+        "命名规范整体符合ISO 15118-4要求，TC_Id、PreCondition、Expected_Behavior格式完整。"
+      ]
+    },
+    "overall_score": 4,
+    "verdict": "pass",
+    "missing_coverage": [
+      {
+        "type": "scenario",
+        "id": "PayloadLength_mismatch_badcase",
+        "description": "缺少PayloadLength字段错误场景：声明的PayloadLength与实际载荷字节数不符（过大或过小）时，SECC应拒绝或关闭连接。此场景对应V2G2-082的完整性要求，属于核心BadCase。",
+        "severity": "major"
+      },
+      {
+        "type": "boundary",
+        "id": "ProtocolVersion_boundary_values",
+        "description": "ProtocolVersion边界值0x00和0xFF未单独测试，仅覆盖0x02作为代表性无效值。边界值测试对协议一致性验证至关重要。",
+        "severity": "minor"
+      },
+      {
+        "type": "boundary",
+        "id": "PayloadType_boundary_values",
+        "description": "PayloadType边界值0x0000和0xFFFF未测试，仅覆盖0x0001保留值。",
+        "severity": "minor"
+      },
+      {
+        "type": "boundary",
+        "id": "InverseProtocolVersion_boundary_values",
+        "description": "InverseProtocolVersion仅测试了0x01违规值，未覆盖0x00和0xFF等其他XOR违规边界值。",
+        "severity": "minor"
+      },
+      {
+        "type": "scenario",
+        "id": "EVCC_as_SUT",
+        "description": "V2G2-082明确适用于SECC和EVCC两类实体，当前测试套件仅覆盖SECC作为SUT的场景，缺少EVCC作为SUT的对称测试用例。",
+        "severity": "major"
+      },
+      {
+        "type": "error_handling",
+        "id": "pass_fail_verdict_criteria",
+        "description": "所有BadCase测试用例的Step 3均未明确定义pass/fail判定标准，'拒绝'和'关闭连接'两种行为的判定逻辑未区分，影响测试可执行性。",
+        "severity": "major"
+      }
+    ],
+    "improvement_suggestions": [
+      {
+        "priority": "high",
+        "target": "depth",
+        "suggestion": "在所有BadCase测试用例的Step 3中明确定义pass判定条件：（a）若SECC关闭TCP连接，则setverdict(pass)；（b）若SECC在T_timeout时间内无任何响应，则setverdict(pass)；（c）若SECC返回正常V2G应用层响应，则setverdict(fail)。建议在Expected_Behavior函数中通过alt块实现上述三路分支判定。",
+        "affected_tc_ids": [
+          "TC_SECC_CMN_VTB_V2GTPHeader_002",
+          "TC_SECC_CMN_VTB_V2GTPHeader_003",
+          "TC_SECC_CMN_VTB_V2GTPHeader_004"
+        ]
+      },
+      {
+        "priority": "high",
+        "target": "breadth",
+        "suggestion": "新增BadCase测试用例TC_SECC_CMN_VTB_V2GTPHeader_005，测试PayloadLength与实际载荷不匹配场景：Step 1建立TCP连接；Step 2发送V2GTP消息（合法头部，但PayloadLength声明值比实际EXI载荷多4字节）；Step 3验证SECC拒绝该消息或关闭TCP连接。",
+        "affected_tc_ids": []
+      },
+      {
+        "priority": "medium",
+        "target": "depth",
+        "suggestion": "在TC_SECC_CMN_VTB_V2GTPHeader_001的Step 3中增加对SECC响应V2GTP头部字段的验证：明确要求响应消息的ProtocolVersion=0x01、InverseProtocolVersion=0xFE、PayloadType=0x8001，确保GoodCase验证深度覆盖请求与响应双向合规性。",
+        "affected_tc_ids": [
+          "TC_SECC_CMN_VTB_V2GTPHeader_001"
+        ]
+      },
+      {
+        "priority": "medium",
+        "target": "depth",
+        "suggestion": "在所有测试用例中增加Postcondition步骤（Step N+1），描述测试结束后的清理操作：关闭TCP连接、释放端口映射，对应f_SECC_CMN_PO_InitConfiguration_001后置条件函数调用。",
+        "affected_tc_ids": [
+          "TC_SECC_CMN_VTB_V2GTPHeader_001",
+          "TC_SECC_CMN_VTB_V2GTPHeader_002",
+          "TC_SECC_CMN_VTB_V2GTPHeader_003",
+          "TC_SECC_CMN_VTB_V2GTPHeader_004"
+        ]
+      },
+      {
+        "priority": "medium",
+        "target": "breadth",
+        "suggestion": "在TC_SECC_CMN_VTB_V2GTPHeader_001的Step 1中明确指定定时器名称（tc_V2G_SECC_Msg_Timer）和超时值参考，使测试步骤具备可执行性而非仅描述性。",
+        "affected_tc_ids": [
+          "TC_SECC_CMN_VTB_V2GTPHeader_001"
+        ]
+      },
+      {
+        "priority": "low",
+        "target": "breadth",
+        "suggestion": "将TC_SECC_CMN_VTB_V2GTPHeader_002扩展或新增测试用例，覆盖ProtocolVersion=0x00和0xFF两个边界无效值，以提升边界条件覆盖率。可通过parameters化方式在同一测试用例框架内扩展多个boundary值测试。",
+        "affected_tc_ids": [
+          "TC_SECC_CMN_VTB_V2GTPHeader_002"
+        ]
+      }
+    ],
+    "format_violations": [],
+    "verifier_notes": "本次评估在requirements和testing_points输入为空的情况下进行，仅基于测试用例内容和generation_plan进行评估，因此需求追溯性分析（covered_requirements、uncovered_requirements）不完整。测试套件整体结构规范，命名完全符合ISO 15118-4格式要求，四个测试用例形成了合理的正向+负向覆盖矩阵。主要改进方向集中在：（1）BadCase判定条件的精确化；（2）PayloadLength错误场景的补充；（3）后置条件步骤的添加。建议在补充上述改进后重新执行Verifier评估。"
+  }
+}

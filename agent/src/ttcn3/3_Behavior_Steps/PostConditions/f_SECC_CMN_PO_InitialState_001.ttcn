@@ -1,0 +1,12 @@
+module f_SECC_CMN_PO_InitialState_001 {
+
+    import from SECC_TestSystem all;
+
+    function f_SECC_CMN_PO_InitialState_001()
+        runs on SECCTester
+    {
+        log("PostCondition: Restoring initial state");
+        // Signal to reset any ongoing V2G session state
+    }
+
+} // end of module f_SECC_CMN_PO_InitialState_001

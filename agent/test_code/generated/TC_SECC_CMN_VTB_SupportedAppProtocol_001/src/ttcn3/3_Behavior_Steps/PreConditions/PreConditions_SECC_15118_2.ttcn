@@ -1,6 +1,0 @@
-module PreConditions_SECC_15118_2 {
-    import from SECC_TestSystem all;
-    import from f_SECC_CMN_PR_InitConfiguration_001 all;
-    import from f_SECC_CMN_PR_Binding_001 all;
-    import from f_SECC_CMN_PR_InitConfiguration_002 all;
-}

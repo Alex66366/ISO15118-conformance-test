@@ -1,0 +1,23 @@
+/**
+ * @desc    Binding precondition function example in SIL mode (ISO 15118-4)
+ *          Phase B: SDP/TCP binding simulation (no real communication in SIL)
+ *
+ * Pattern reference: test_code/examples/ttcn3_CANONICAL_testcase.ttcn
+ */
+
+module f_SECC_CMN_PR_Binding_001 {
+
+    import from SECC_TestSystem all;
+
+    // Phase B: Complete SDP/TCP binding (SIL mode - simulated)
+    function f_SECC_CMN_PR_Binding_001()
+    runs on SECCTester
+    return verdicttype
+    {
+        // SIL mode: SDP/TCP binding is simulated by the port adapter
+        log("SDP/TCP binding simulated in SIL mode");
+
+        // SIL mode: always pass (no actual TCP/TLS communication)
+        return pass;
+    }
+}

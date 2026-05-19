@@ -32,9 +32,9 @@ class AlignmentResult:
     """Result of correlating log events with PCAP packets."""
     tc_name: str
     correlated_events: List[CorrelatedEvent]
-    missing_packets: List[V2GTP_Packet]
+    missing_packets: List[dict]
     unexpected_packets: List[V2GTP_Packet]
-    root_cause: str        # "timeout" | "malformed_response" | "port_mismatch" | "ok"
+    root_cause: str        # "timeout" | "template_field_error" | "v2gtp_header_error" | "pcap_only_error" | "ok"
     confidence: float       # 0.0 - 1.0
     summary: str            # Human-readable summary
 
@@ -92,6 +92,7 @@ class Correlator:
                 )
             else:
                 # No matching packet found
+                expected_direction = "EVCC->SECC" if "Send" in log_e.event_type else "SECC->EVCC"
                 if log_e.event_type == "EVENT_PORT_SEND":
                     aligned = CorrelatedEvent(
                         log_entry=log_e,
@@ -100,7 +101,11 @@ class Correlator:
                         time_offset_ms=0.0,
                         seq_index=seq_idx,
                     )
-                    missing.append(pkt if False else None)  # placeholder
+                    missing.append({
+                        "log_entry": log_e.details,
+                        "expected_direction": expected_direction,
+                        "timestamp_ms": log_time_ms,
+                    })
                 else:
                     aligned = CorrelatedEvent(
                         log_entry=log_e,
@@ -184,7 +189,7 @@ class Correlator:
 
     def _analyze_alignment(self, correlated: List[CorrelatedEvent],
                            timeouts: List[TitanLogEntry],
-                           missing: List,
+                           missing: List[dict],
                            unexpected: List[V2GTP_Packet]
                            ) -> Tuple[str, float]:
         """Analyze alignment to determine root cause."""
@@ -196,14 +201,13 @@ class Correlator:
             return ("timeout", 0.9)
 
         if missing_count > 0:
-            return ("malformed_response", 0.75)
+            return ("template_field_error", 0.75)
 
         if unexpected_count > 0:
-            # Check if unexpected packets have wrong payload type
             for pkt in unexpected:
                 if pkt.protocol_version and pkt.protocol_version != '01':
                     return ("v2gtp_header_error", 0.8)
-            return ("unexpected_response", 0.6)
+            return ("pcap_only_error", 0.6)
 
         if timeout_count > 0:
             return ("timeout", 0.85)
@@ -211,7 +215,7 @@ class Correlator:
         return ("ok", 1.0)
 
     def _build_summary(self, correlated: List[CorrelatedEvent],
-                       missing: List, unexpected: List[V2GTP_Packet],
+                       missing: List[dict], unexpected: List[V2GTP_Packet],
                        root_cause: str) -> str:
         """Build human-readable alignment summary."""
         lines = [f"Root cause: {root_cause}"]

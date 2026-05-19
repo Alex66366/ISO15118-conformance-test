@@ -1,3 +1,30 @@
 module PreConditions_SECC_15118_2 {
     import from SECC_TestSystem all;
-}
+
+    // ==========================================
+    // PreConditions Aggregator Module
+    // This module imports all individual precondition functions.
+    // Individual function definitions are in separate files:
+    //   src/ttcn3/3_Behavior_Steps/PreConditions/f_*.ttcn
+    //
+    // The test case module should import from this aggregator
+    // and call the function directly:
+    //   f_SECC_CMN_PR_InitConfiguration_001()
+    // ==========================================
+
+    // Import individual precondition functions (placeholders -- implemented in separate files)
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+    // Import function modules -- MUST have these for the aggregator to work correctly
+    import from PreConditions_InitConfig all;
+    import from f_SECC_CMN_PR_Binding_001 all;
+
+    // Altstep for unexpected messages during preconditions
+    altstep a_PreCondition_UnexpectedHandler() {
+        [] any port.receive {
+            log("WARNING: Unexpected message during preconditions, ignored");
+            repeat;
+        }
+    }
+
+} // end of module PreConditions_SECC_15118_2

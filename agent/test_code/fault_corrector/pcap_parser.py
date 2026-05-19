@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 try:
-    from scapy.all import rdpcap, TCP, UDP, IPv6, Raw
+    from scapy.all import rdpcap, TCP, UDP, IPv6, IPv4, Raw, IP
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
@@ -89,8 +89,12 @@ class PcapParser:
             src_ip = pkt[IPv6].src
             dst_ip = pkt[IPv6].dst
         else:
-            src_ip = getattr(pkt, 'src', '')
-            dst_ip = getattr(pkt, 'dst', '')
+            if IP in pkt:
+                src_ip = pkt[IP].src
+                dst_ip = pkt[IP].dst
+            else:
+                src_ip = getattr(pkt, 'src', '')
+                dst_ip = getattr(pkt, 'dst', '')
 
         # Extract ports
         if TCP in pkt:

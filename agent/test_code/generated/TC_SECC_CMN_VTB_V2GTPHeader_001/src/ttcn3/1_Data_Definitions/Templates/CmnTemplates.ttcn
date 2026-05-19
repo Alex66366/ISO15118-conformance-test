@@ -1,0 +1,60 @@
+module SECC_CmnTemplates {
+    import from SECC_TestSystem all;
+    import from SECC_Constants all;
+
+    // ==========================================
+    // Section 1: V2GTP Header Constants
+    // ==========================================
+
+    // V2GTP protocol version constants (used in octetstring concatenation)
+    const octetstring c_V2GTP_ProtocolVersion     := '01'O;
+    const octetstring c_V2GTP_InvProtocolVersion  := 'FE'O;
+    const octetstring c_V2GTP_PayloadType_SDP     := '9000'O;  // SDP Request/Response
+    const octetstring c_V2GTP_PayloadType_V2GMsg  := '8001'O;  // V2G application messages
+
+    // ==========================================
+    // Section 2: V2GTP Frame Construction Helpers
+    // ==========================================
+
+    // Build a V2GTP frame as octetstring from payload.
+    // p_payloadType: '9000'O for SDP, '8001'O for V2G messages
+    // Returns: [ver=01][inv=FE][payloadType:2][payloadLength:4][payload]
+    function f_CMN_V2GTP_BuildFrame(
+        in octetstring p_payloadType,
+        in octetstring p_payload
+    ) return octetstring {
+        return c_V2GTP_ProtocolVersion
+             & c_V2GTP_InvProtocolVersion
+             & p_payloadType
+             & int2oct(lengthof(p_payload), 4)
+             & p_payload;
+    }
+
+    // ==========================================
+    // Section 3: Common Timeout Altsteps
+    // ==========================================
+
+    // Altstep that handles timeout: setverdict(inconc) and stop the timer
+    altstep a_CMN_WaitTimeout(inout timer p_timer) {
+        [] p_timer.timeout {
+            setverdict(inconc, "Timeout occurred");
+        }
+    }
+
+    // ==========================================
+    // Section 4: Send/Receive Templates
+    // ==========================================
+
+    // Template: V2GTP Header Request (send)
+    template octetstring md_CMN_V2GTPHeaderReq_001(
+        in octetstring p_payload
+    ) := c_V2GTP_ProtocolVersion
+       & c_V2GTP_InvProtocolVersion
+       & c_V2GTP_PayloadType_V2GMsg
+       & int2oct(lengthof(p_payload), 4)
+       & p_payload;
+
+    // Template: V2GTP Header Response (receive wildcard — match any well-formed response)
+    template octetstring mdw_SECC_V2GTPHeaderRes_001 := ?;
+
+} // end of module SECC_CmnTemplates

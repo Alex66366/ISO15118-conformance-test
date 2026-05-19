@@ -23,8 +23,6 @@ You MUST output a valid JSON object (and nothing else) with this exact structure
     "f_{SUT}_CMN_PR_InitConfiguration_001",
     "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
   ],
-  "timer_param": "par_V2G_EVCC_Msg_Timeout_{MessageType}Req",
-  "timer_value_ms": 2000,
   "port_name": "pt_V2G_TCP_TLS_ALM_{SUT}_Port",
   "component": "{SUT}Tester",
   "system_component": "System{SUT}",
@@ -42,7 +40,7 @@ You MUST output a valid JSON object (and nothing else) with this exact structure
   },
   "requirements_traced": ["V2G2-082", "V2G2-086"],
   "test_behavior_func_name": "f_{SUT}_{Cat}_TB_VTB_{MessageType}_{SeqNo}",
-  "testcase_name": "TC_{SUT}_{Cat}_VTB_{MessageType}_{SeqNo}",
+  "testcase_name": "TC_{SUT}_{Cat}_TB_VTB_{MessageType}_{SeqNo}",
   "postcondition_chain": [
     "f_{SUT}_CMN_PO_InitialState_001",
     "f_{SUT}_CMN_PO_ShutdownConfiguration_001"
@@ -50,17 +48,36 @@ You MUST output a valid JSON object (and nothing else) with this exact structure
 }
 ```
 
-## Rules
+**Rules**
 1. SUT type: If the test targets SECC behavior, SUT=SECC. If it targets EVCC, SUT=EVCC.
 2. Category: CMN for common tests, AC for AC-specific, DC for DC-specific.
 3. SeqNo: 001 for GoodCase (valid input, expect correct response), 002+ for BadCase (invalid input, expect rejection).
 4. Precondition and postcondition chains must follow the V2G session sequence.
    PostConditions always include f_{SUT}_CMN_PO_InitialState_001 followed by f_{SUT}_CMN_PO_ShutdownConfiguration_001.
    (precondition chain rules unchanged)
-   - V2GTP tests: Init → SupportedAppProtocol
+   - V2GTPHeader/SDP tests: TCP_Connected only (transport layer, bypasses V2G session)
    - SessionSetup: Init → SupportedAppProtocol
    - ServiceDiscovery: Init → SupportedAppProtocol → SessionSetup
    - Authorization: Init → ... → PaymentServiceSelection
    - PowerDelivery: Init → ... → ChargeParameterDiscovery
-5. Timer parameter must match the message type from ISO 15118-4 Annex A.
+5. Timer parameter must match the message type from ISO 15118-2 Annex A.
 6. For BadCase verdict logic: pass when SUT rejects/closes/times out, fail when SUT accepts invalid input.
+7. Special message types that bypass standard preconditions: TCP_Connected, SLAC, TLSHandshake, TCP, V2GTP, SDP -- these do NOT require the full V2G session chain. For SDP/UDP discovery tests, set precondition_chain to [f_{SUT}_CMN_PR_InitConfiguration_001] and postcondition_chain to [f_{SUT}_CMN_PO_InitialState_001]. For pure transport-layer tests (TCP_Connected, TLSHandshake), set both chains to [].
+
+---
+
+# CRITICAL OUTPUT DIRECTIVE — PREVENTING OVER-THINKING
+
+**FAILURE TO FOLLOW THIS DIRECTIVE WILL CAUSE THE PIPELINE TO CRASH.**
+
+1. **You MUST conclude your reasoning and output the JSON.** Do NOT abort before outputting the code block. Do NOT output only analysis without the final JSON. Your output must end with:
+
+```json
+{
+  "tc_id": "...",
+  "sut_type": "...",
+  ...
+}
+```
+
+2. **Your entire response MUST end with a valid JSON block** enclosed in ` ```json ... ``` ` containing the generation plan. This is non-negotiable. If your response does not end with a JSON code block, the pipeline will fail.

@@ -218,6 +218,62 @@
       "first_seen": "2026-04-23",
       "last_seen": null,
       "verified": false
+    },
+    {
+      "id": "template_wildcard_error",
+      "error_type": "template_wildcard_error",
+      "severity": "critical",
+      "patterns": [
+        "no matching pattern for type",
+        "template type mismatch",
+        "incompatible types",
+        "?.+&"
+      ],
+      "category": "ttcn_compile",
+      "affected_file": "test_behavior_function's .ttcn file",
+      "fix": "Do NOT use ? (AnyValue) with & (concatenation) in octetstring templates. TTCN-3 pattern matching does not support ? in concatenation. Use: (1) receive with prefix pattern and manual substr() checks, or (2) wildcard-only template (? matches any value)",
+      "fix_en": "TTCN-3 does not allow ? (AnyValue) inside octetstring concatenation (&). For example, '01'O & 'FE'O & ? is invalid. Instead use receive(?) -> value v { if (lengthof(v)>=8 and substr(v,0,1)=='01'O and substr(v,2,2)=='8002'O) { ... } } for manual field checking, or receive(?) for full wildcard matching.",
+      "occurrences": 0,
+      "first_seen": "2026-05-17",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "transitive_import_failure",
+      "error_type": "transitive_import_failure",
+      "severity": "critical",
+      "patterns": [
+        "there is no local or imported definition",
+        "symbol .+ is not visible",
+        "cannot find definition of .+"
+      ],
+      "category": "ttcn_compile",
+      "affected_file": "main TC module's .ttcn file",
+      "fix": "TTCN-3 does NOT re-export symbols through import chains. The main TC module must directly import the function module: add 'import from <module_name> all;' to the main TC file. Aggregator module imports do NOT make symbols visible to the TC module.",
+      "fix_en": "TTCN-3 does not re-export symbols through import chains. If module A imports from B, and B imports from C, module A cannot see C's definitions. Always add direct 'import from <module_name> all;' to every module that uses those symbols.",
+      "occurrences": 0,
+      "first_seen": "2026-05-17",
+      "last_seen": null,
+      "verified": false
+    },
+    {
+      "id": "sdp_payload_missing",
+      "error_type": "sdp_payload_missing",
+      "severity": "critical",
+      "patterns": [
+        "timeout waiting for response",
+        "TCP connection refused",
+        "TCP timeout",
+        "connection reset by peer"
+      ],
+      "category": "ttcn_runtime",
+      "affected_file": "precondition function f_SECC_CMN_PR_InitConfiguration_001.ttcn",
+      "fix": "The InitConfiguration precondition must send an SDP Request via UDP before attempting TCP connection. Add: pt_V2G_UDP_SDP_Port.send('01FE9000000000021000'O) with a timer and alt block to handle the response. Without SDP, the SECC never opens its TCP port.",
+      "fix_en": "The InitConfiguration function (f_SECC_CMN_PR_InitConfiguration_001) must send an SDP Request via UDP multicast before returning. Use: pt_V2G_UDP_SDP_Port.send('01FE9000000000021000'O) where 0x9000 is the SDP payload type and '2100' is the request body. Without SDP discovery, the SECC never opens its TCP port, causing TCP connection timeout.",
+      "occurrences": 0,
+      "first_seen": "2026-05-17",
+      "last_seen": null,
+      "verified": false
     }
   ]
 }

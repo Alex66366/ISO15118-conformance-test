@@ -1,27 +1,24 @@
 /**
- * @desc    GoodCase testcase example from ISO 15118-4
+ * @desc    GoodCase testcase example in SIL mode (ISO 15118-4)
  *          Tests that SUT correctly processes V2GTP session setup
  *          with valid header information.
  *
  * Pattern: 4-phase test execution model
- *   Phase A: Initialize (create PTC, map ports)
- *   Phase B: Precondition (bring SUT to known state)
+ *   Phase A: Initialize (map ports - no PTC in SIL)
+ *   Phase B: Precondition (simulate SDP/TCP binding)
  *   Phase C: Test behavior (stimulus + verify response)
- *   Phase D: Postcondition (cleanup)
+ *   Phase D: Postcondition (cleanup - no PTC to stop in SIL)
  */
 testcase TC_SECC_CMN_VTB_V2GTPSessionSetup_001()
   runs on SECCTester system SystemSECC
 {
-  var HAL_61851_Listener v_HAL_61851_Listener;
   var verdicttype preConVerdict;
-  var timer tc_V2G_EVCC_Msg_Timer := floattoint(PIXIT_CMN_Message_Timeout);
-  var timer tc_CMN_TCP_Connection_Termination_Timer := floattoint(PIXIT_CMN_TCP_Connection_Timeout);
 
-  // -- Phase A + B: Pre Conditions --
-  f_SECC_CMN_PR_InitConfiguration_001(v_HAL_61851_Listener);
-  preConVerdict := f_SECC_CMN_PR_SupportedAppProtocol_001(v_HAL_61851_Listener);
+  // Phase A+B: Pre Conditions (SIL mode - no PTC, no HAL_61851)
+  f_SECC_CMN_PR_InitConfiguration_001();
+  preConVerdict := f_SECC_CMN_PR_Binding_001();
 
-  // -- Phase C: Test behavior --
+  // Phase C: Test behavior
   if (preConVerdict == pass) {
     f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001();
   } else {
@@ -29,6 +26,7 @@ testcase TC_SECC_CMN_VTB_V2GTPSessionSetup_001()
     setverdict(inconc);
   }
 
-  // -- Phase D: Post Conditions --
-  f_SECC_CMN_PO_InitConfiguration_001(v_HAL_61851_Listener);
+  // Phase D: Post Conditions (unconditional cleanup)
+  f_SECC_CMN_PO_InitialState_001();
+  f_SECC_CMN_PO_ShutdownConfiguration_001();
 }

@@ -300,13 +300,13 @@ class ISO15118_4_Preprocessor:
         self.full_content = "\n".join(contents)
         print(f"  总字符数: {len(self.full_content):,}")
 
-        # TODO 1: OCR 清理 — 在提取代码之前修复 OCR 损坏
+        # OCR 清理: 修复文档转换产生的字符损坏
         print("  执行 OCR 清理...")
         raw_len = len(self.full_content)
         self.full_content = self._clean_ocr_artifacts(self.full_content)
         print(f"  OCR 清理完成, 字符变化: {len(self.full_content) - raw_len:+,}")
 
-        # TODO 2: 合并 Markdown 代码块 — 去除 ``` 标记，合并被分割的代码
+        # 合并 Markdown 代码块: 去除 ``` 标记，合并被分割的代码
         print("  合并 Markdown 代码块...")
         self.full_content = self._merge_code_blocks(self.full_content)
         print(f"  合并后总字符数: {len(self.full_content):,}")
@@ -510,7 +510,7 @@ class ISO15118_4_Preprocessor:
         """提取所有 TTCN-3 代码块"""
         print("\n提取 TTCN-3 代码块...")
 
-        # TODO 5: 改进的代码块提取策略
+        # 两阶段提取策略: 先用正则表达式提取，再用行级扫描补充遗漏的定义
         # 阶段 1: 使用正则表达式直接提取（从已合并+清理过的全文中）
         # 提取 testcase 定义
         self._extract_testcases()
@@ -928,10 +928,10 @@ class ISO15118_4_Preprocessor:
         for tc in self.test_case_descriptions:
             tc_by_message.setdefault(tc.message_type, []).append(tc.to_dict())
 
-        # TODO 6: 建立 TC description ↔ TTCN code 关联
+        # 建立 TC description ↔ TTCN code 关联
         tc_code_associations = self._build_tc_code_associations()
 
-        # TODO 7: 按消息类型组织的视图
+        # 按消息类型组织的视图
         by_message_type = self._build_by_message_type_view()
 
         # 选取高质量 few-shot 样例
@@ -1258,21 +1258,33 @@ class ISO15118_4_Preprocessor:
 
 
 def main():
-    """主函数"""
-    doc_dir = "/data/cdy/code/v2g2_082/iso15118/agent/document"
-    doc_parts = [
-        os.path.join(doc_dir, "MinerU_markdown_ISO_15118-4-2018_1-500页_2041447572580851712.md"),
-        os.path.join(doc_dir, "MinerU_markdown_ISO_15118-4-2018_500-1000页_2041447589169328128.md"),
-        os.path.join(doc_dir, "MinerU_markdown_ISO_15118-4-2018_1000-1468页_2041447601764823040.md"),
-    ]
+    """主函数 - 预处理 ISO 15118-4 文档并构建 TTCN-3 知识库。"""
+    script_dir = Path(__file__).parent.resolve()
+    # 文档路径相对于 agent/ 目录
+    agent_dir = script_dir.parent
+    doc_dir = agent_dir / "document"
+    output_dir = doc_dir  # 输出到文档目录
 
-    output_path = os.path.join(doc_dir, "iso15118_4_ttcn_knowledge_base.json")
+    doc_parts = [
+        str(doc_dir / "MinerU_markdown_ISO_15118-4-2018_1-500页_2041447572580851712.md"),
+        str(doc_dir / "MinerU_markdown_ISO_15118-4-2018_500-1000页_2041447589169328128.md"),
+        str(doc_dir / "MinerU_markdown_ISO_15118-4-2018_1000-1468页_2041447601764823040.md"),
+    ]
+    # 验证文档存在
+    missing = [p for p in doc_parts if not Path(p).exists()]
+    if missing:
+        print(f"警告: 以下文档文件不存在:\n  " + "\n  ".join(missing))
+
+    output_path = str(output_dir / "iso15118_4_ttcn_knowledge_base.json")
 
     preprocessor = ISO15118_4_Preprocessor(doc_parts)
     knowledge_base = preprocessor.process(output_path)
 
     print(f"\n输出文件: {output_path}")
-    print(f"文件大小: {os.path.getsize(output_path) / 1024:.1f} KB")
+    if Path(output_path).exists():
+        print(f"文件大小: {Path(output_path).stat().st_size / 1024:.1f} KB")
+    else:
+        print("文件未生成（可能是文档缺失）")
 
 
 if __name__ == "__main__":

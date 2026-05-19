@@ -1,0 +1,29 @@
+module PostConditions_SECC_15118_2 {
+    import from SECC_TestSystem all;
+
+    // ==========================================
+    // PostConditions Aggregator Module
+    // This module imports all individual postcondition functions.
+    // Individual function definitions are in separate files:
+    //   src/ttcn3/3_Behavior_Steps/PostConditions/f_*.ttcn
+    //
+    // The test case module should import from this aggregator
+    // and call the function directly:
+    //   f_SECC_CMN_PO_InitialState_001()
+    // ==========================================
+
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+    // Import function modules -- MUST have these for the aggregator to work correctly
+    import from f_SECC_CMN_PO_InitialState_001 all;
+    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
+
+    // Altstep for unexpected messages during postconditions
+    altstep a_PostCondition_UnexpectedHandler() {
+        [] any port.receive {
+            log("WARNING: Unexpected message during postconditions, ignored");
+            repeat;
+        }
+    }
+
+} // end of module PostConditions_SECC_15118_2

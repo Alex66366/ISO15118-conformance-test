@@ -1,3 +1,45 @@
 module SECC_Types {
-    // Simplified types - minimal set for basic compilation
-}
+    import from SECC_TestSystem all;
+
+    // ==========================================
+    // Section 1: EvccID Type
+    // ==========================================
+
+    type record EvccIDType {
+        // Electric Vehicle Communication Controller ID
+        // Max 8 bytes (EVCCID in ISO 15118)
+        octetstring  content optional
+    }
+
+    // ==========================================
+    // Section 2: SessionID Type
+    // ==========================================
+
+    type record SessionIDType {
+        // Session ID for V2G communication
+        // 8 bytes
+        octetstring  content optional
+    }
+
+    // ==========================================
+    // Section 3: Message Type
+    // ==========================================
+
+    // V2G message types (16-bit values)
+    const integer V2G_MSG_TYPE_SDP_REQUEST        := 36864;  // 0x9000
+    const integer V2G_MSG_TYPE_SDP_RESPONSE       := 36865;  // 0x9001
+    const integer V2G_MSG_TYPE_SUPPORTED_APP_PROT := 32768;  // 0x8000
+    const integer V2G_MSG_TYPE_SESSION_SETUP     := 32769;  // 0x8001
+    const integer V2G_MSG_TYPE_SERVICE_DISCOVERY  := 32770;  // 0x8002
+    const integer V2G_MSG_TYPE_SERVICE_PAYMENT    := 32771;  // 0x8003
+    const integer V2G_MSG_TYPE_CHARGE_PARAMETER   := 32772;  // 0x8004
+    const integer V2G_MSG_TYPE_POWER_DELIVERY     := 32773;  // 0x8005
+    const integer V2G_MSG_TYPE_SESSION_STOP       := 32774;  // 0x8006
+    const integer V2G_MSG_TYPE_CABLE_CHECK        := 32775;  // 0x8007
+    const integer V2G_MSG_TYPE_PRE_CHARGE         := 32776;  // 0x8008
+    const integer V2G_MSG_TYPE_CURRENT_DEMAND     := 32777;  // 0x8009
+    const integer V2G_MSG_TYPE_CHARGING_STATUS     := 32778;  // 0x800A
+    const integer V2G_MSG_TYPE_METER_RECEIPT      := 32779;  // 0x800B
+    const integer V2G_MSG_TYPE_WELDING_DETECTION  := 32780;  // 0x800C
+
+} // end of module SECC_Types

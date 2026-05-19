@@ -2,6 +2,19 @@
   "permissions": {
     "allow": [
       "Bash(python3:*)",
+      "Write(/home/dmc/桌面/platform/agent/test_code/generated/**)",
+      "Read(/home/dmc/桌面/platform/agent/test_code/generated/**)",
+      "Read(/home/dmc/桌面/platform/agent/test_code/examples/demo/**)",
+      "Read(/home/dmc/桌面/platform/agent/test_code/examples/**)",
+      "Bash(makefilegen:*)",
+      "Bash(ttcn3_compiler:*)",
+      "Bash(ttcn3_executor:*)",
+      "Bash(bash *)",
+      "Bash(grep:*)",
+      "Bash(mkdir:*)",
+      "Bash(chmod:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
       "Bash(kill 1435471 1435996)",
       "Bash(kill 1437238 1437212)",
       "Bash(kill 1437238)"

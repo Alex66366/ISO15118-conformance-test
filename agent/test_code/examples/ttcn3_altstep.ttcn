@@ -37,7 +37,7 @@ altstep a_V2G_TCP_TLS_Message()
 altstep a_SECC_SequenceTimeout()
   runs on SECCTester
 {
-  var timer tc_V2G_SECC_Sequence_Timer := floattoint(PIXIT_CMN_Sequence_Timeout);
+  var timer tc_V2G_SECC_Sequence_Timer := PIXIT_CMN_Sequence_Timeout;
 
   [] tc_V2G_SECC_Sequence_Timer.timeout {
     log("FAIL: V2G SECC Sequence Timeout");
