@@ -24,7 +24,7 @@
 ### 1.1 核心能力
 
 | 阶段 | 输入 | 输出 | Agent 架构 |
-|------|------|------|-----------|
+|------|------|------|------------|
 | **Phase 1** | 安全需求 ID（如 V2G2-082） | 测试用例 JSON（ISO 15118-4 格式） | 4-Agent |
 | **Phase 2** | 测试用例 JSON | TTCN-3 代码文件（.ttcn） | 5-Agent（含迭代纠错） |
 | **Phase 3** | 生成的 TTCN-3 代码 + 标准参考 | 评估报告（多维度评分） | 4 步流水线 |
@@ -32,7 +32,7 @@
 ### 1.2 技术栈
 
 - **核心引擎**：Claude Code CLI（通过 `claude -p` 调用作为 sub-agent）
-- **Agent 架构**：多 Agent 协作（Orchestrator、Modeler/Summarizer、Generator/Core Agent、Verifier/Fault Corrector）
+- **Agent 架构**：多 Agent 协作（Orchestrator、Summarizer、Core Agent、Verifier/Fault Corrector、Infrastructure Agent）
 - **协议数据**：ISO 15118-2 结构化 JSON + ISO 15118-4 TTCN-3 知识库
 - **生成语言**：TTCN-3（Testing and Test Control Notation），由 Eclipse TITAN 编译运行
 - **协议标准**：ISO 15118-2:2014（需求规范）+ ISO 15118-4:2018（TTCN-3 测试规范）
@@ -43,7 +43,7 @@
 | 文件 | 用途 |
 |------|------|
 | `CLAUDE.md` | Claude Code Agent 工作指南（开发参考） |
-| `knowledge_base/` | 共用知识库（TTCN-3 SOP + TITAN 错误模式库） |
+| `test_code/knowledge_base/` | Phase 2 专用知识库（TTCN-3 SOP + TITAN 错误模式库） |
 | `test_case/` | Phase 1：测试用例生成 |
 | `test_code/` | Phase 2：TTCN-3 代码生成 |
 | `experiment/` | Phase 3：评估流水线 |
@@ -55,13 +55,8 @@
 ```
 agent/
 ├── CLAUDE.md                                    # Claude Code Agent 工作指南（开发参考）
-├── knowledge_base/                              # ===== 共用知识库（Phase 1/2 共用）=====
-│   ├── ttcn3_generation_sop.json                # TTCN-3 代码生成 SOP（7步 + 前置条件链）
-│   ├── titan_troubleshooting_db.json            # 结构化编译错误模式库（20+ 条目）
-│   ├── titan_reference_summary.json             # TITAN 编译器错误模式参考摘要
-│   └── doc_urls.json                           # Eclipse TITAN 官方文档 URL 索引
 │
-├── document/                                   # 协议文档与预处理数据
+├── document/                                    # 协议文档与预处理数据
 │   ├── MinerU_markdown_ISO_15118-2-2014_*.md       # ISO 15118-2 原始文档（3分卷）
 │   ├── MinerU_markdown_ISO_15118-4-2018_*.md        # ISO 15118-4 原始文档（3分卷）
 │   ├── MinerU_markdown_Automated_*.md                # NeTestLLM 论文
@@ -69,99 +64,104 @@ agent/
 │   ├── iso15118_4_ttcn_knowledge_base.json          # ISO 15118-4 TTCN-3 知识库
 │   ├── iso15118_preprocessor.py                     # 基础预处理器
 │   ├── iso15118_preprocessor_enhanced.py             # 增强预处理器
+│   ├── iso15118_4_preprocessor.py                    # ISO 15118-4 预处理器
 │   ├── extract_figures_tables.py                    # 图表/表格提取脚本
 │   ├── table/                                     # 提取的表格（table_1.md ~ table_112.md）
 │   └── image/                                     # 提取的图表图片（108 figures）
 │
-├── test_case/                                   # ===== Phase 1: 测试用例生成 =====
-│   ├── test_case_generator.py                   # 4-Agent 测试用例生成器
-│   ├── generated_test_cases.json                # 已生成的测试用例样例
-│   ├── test_case_TODO.md                       # 重构 TODO 计划
-│   ├── output/                                 # 各次运行的独立输出 JSON
-│   └── prompts/                                # Phase 1 Agent Prompt 模板
-│       ├── orchestrator_prompt.txt             # Orchestrator（意图分解）
-│       ├── modeler_prompt.txt                  # Modeler（低层建模）
-│       ├── generator_prompt.txt                # Generator（测试用例生成）
-│       └── verifier_prompt.txt                 # Verifier（覆盖验证）
+├── test_case/                                    # ===== Phase 1: 测试用例生成 =====
+│   ├── test_case_generator.py                    # 4-Agent 测试用例生成器
+│   ├── generated_test_cases.json                 # 已生成的测试用例样例
+│   ├── test_case_TODO.md                        # 重构 TODO 计划
+│   ├── output/                                  # 各次运行的独立输出 JSON
+│   └── prompts/                                 # Phase 1 Agent Prompt 模板
+│       ├── orchestrator_prompt.txt              # Orchestrator（意图分解）
+│       ├── modeler_prompt.txt                   # Modeler（低层建模）
+│       ├── generator_prompt.txt                 # Generator（测试用例生成）
+│       └── verifier_prompt.txt                   # Verifier（覆盖验证）
 │
-├── test_code/                                  # ===== Phase 2: TTCN-3 代码生成 =====
-│   ├── ttcn3_generation_pipeline.py            # 核心流水线（5-Agent, ~4520行）
-│   ├── iso15118_4_preprocessor.py              # ISO 15118-4 预处理器
-│   ├── prompts/                                # Phase 2 Agent Prompt 模板
-│   │   ├── orchestrator_prompt.txt             # Orchestrator（意图分解）
-│   │   ├── summarizer_prompt.txt               # Summarizer（知识检索）
-│   │   ├── core_agent_prompt.txt               # Core Agent（TTCN-3 代码生成）
-│   │   ├── fault_corrector_prompt.txt          # Fault Corrector（统一纠错 prompt）
-│   │   └── infrastructure_agent_prompt.txt     # Infrastructure Agent（TITAN 脚手架）
-│   ├── fault_corrector/                        # ===== Fault Corrector 运行时分析 =====
-│   │   ├── __init__.py
-│   │   ├── correlator.py                       # TTCN-3 log + PCAP 时间对齐
-│   │   ├── fault_classifier.py                 # 故障分类（6类 + 根因分析）
-│   │   ├── pcap_parser.py                      # PCAP V2GTP 报文解析
-│   │   ├── repair_engine.py                    # 修复建议生成 + 知识库自学习
-│   │   ├── sniffer.py                          # scapy 后台抓包
-│   │   └── titan_log_parser.py                 # TITAN TestExecution.log 解析
-│   ├── knowledge_base/                         # Phase 2 专用知识库（软链接指向根目录）
-│   ├── examples/                               # TTCN-3 Few-shot 参考样例
-│   │   ├── ttcn3_testcase_goodcase.ttcn        # GoodCase 测试用例样例
-│   │   ├── ttcn3_testcase_badcase.ttcn         # BadCase 测试用例样例
-│   │   ├── ttcn3_test_behavior_function.ttcn   # 测试行为函数样例
-│   │   ├── ttcn3_precondition_function.ttcn    # 前置条件函数样例
-│   │   ├── ttcn3_postcondition_function.ttcn   # 后置条件函数样例
-│   │   ├── ttcn3_templates.ttcn                # 消息模板样例
-│   │   ├── ttcn3_altstep.ttcn                 # Altstep 样例
-│   │   ├── ttcn3_testcase_with_imports.ttcn   # 含完整 import 的测试用例样例
-│   │   └── demo/                              # 完整可运行的 TITAN Demo 项目
-│   │       ├── README.md                       # Demo 完整说明 + V2G 通信流程
-│   │       ├── build.sh                        # 跨平台构建脚本
+├── test_code/                                   # ===== Phase 2: TTCN-3 代码生成 =====
+│   ├── ttcn3_generation_pipeline.py             # 核心流水线（5-Agent, ~7367行）
+│   ├── iso15118_4_preprocessor.py               # ISO 15118-4 预处理器
+│   ├── prompts/                                 # Phase 2 Agent Prompt 模板
+│   │   ├── orchestrator_prompt.txt              # Orchestrator（意图分解）
+│   │   ├── summarizer_prompt.txt                # Summarizer（知识检索）
+│   │   ├── core_agent_prompt.txt                # Core Agent（TTCN-3 代码生成）
+│   │   ├── fault_corrector_prompt.txt           # Fault Corrector（统一纠错 prompt）
+│   │   └── infrastructure_agent_prompt.txt      # Infrastructure Agent（TITAN 脚手架）
+│   ├── knowledge_base/                          # Phase 2 专用知识库
+│   │   ├── ttcn3_generation_sop.json            # TTCN-3 代码生成 SOP（含 common_errors）
+│   │   ├── generation_patterns.json              # 代码模式库（从 SOP 提取）
+│   │   ├── titan_troubleshooting_db.json        # 结构化编译错误模式库（20+ 条目）
+│   │   ├── titan_troubleshooting.md             # TITAN 故障排查手册
+│   │   ├── titan_reference_summary.json         # TITAN 编译器错误模式参考摘要
+│   │   └── doc_urls.json                       # Eclipse TITAN 官方文档 URL 索引
+│   ├── fault_corrector/                         # ===== Fault Corrector 运行时分析 =====
+│   │   ├── correlator.py                        # TTCN-3 log + PCAP 时间对齐
+│   │   ├── fault_classifier.py                  # 故障分类（6类 + 根因分析）
+│   │   ├── pcap_parser.py                       # PCAP V2GTP 报文解析
+│   │   ├── repair_engine.py                     # 修复建议生成 + 知识库自学习
+│   │   ├── sniffer.py                           # scapy 后台抓包
+│   │   └── titan_log_parser.py                  # TITAN TestExecution.log 解析
+│   ├── examples/                                # TTCN-3 Few-shot 参考样例
+│   │   ├── ttcn3_CANONICAL_testcase.ttcn        # 权威规范测试用例样例
+│   │   ├── ttcn3_testcase_goodcase.ttcn         # GoodCase 测试用例样例
+│   │   ├── ttcn3_testcase_badcase.ttcn           # BadCase 测试用例样例
+│   │   ├── ttcn3_test_behavior_function.ttcn    # 测试行为函数样例
+│   │   ├── ttcn3_precondition_function_*.ttcn    # 前置条件函数样例（Init/Binding）
+│   │   ├── ttcn3_postcondition_function_*.ttcn   # 后置条件函数样例（InitialState/Shutdown）
+│   │   ├── ttcn3_templates.ttcn                 # 消息模板样例
+│   │   ├── ttcn3_altstep.ttcn                   # Altstep 样例
+│   │   ├── ttcn3_testcase_with_imports.ttcn     # 含完整 import 的测试用例样例
+│   │   └── demo/                                # 完整可运行的 TITAN Demo 项目
+│   │       ├── README.md                        # Demo 完整说明 + V2G 通信流程
+│   │       ├── build.sh                         # 跨平台构建脚本
 │   │       ├── config/
 │   │       │   ├── titan_runtime.cfg
 │   │       │   └── hardware_env.json
-│   │       ├── src/ttcn3/                    # 完整 TTCN-3 源码树
+│   │       ├── src/ttcn3/                       # 完整 TTCN-3 源码树
 │   │       │   ├── 1_Data_Definitions/（PICS, PIXIT, Templates, Types）
 │   │       │   ├── 2_Architecture/（ComponentsAndPorts）
 │   │       │   ├── 3_Behavior_Steps/（PostConditions, PreConditions, Services, TestBehavior）
 │   │       │   └── 4_TestCases/（TestCases_SECC）
-│   │       ├── src/cpp_adapters/             # C++ SA/CD 适配器
+│   │       ├── src/cpp_adapters/                # C++ SA/CD 适配器
 │   │       │   ├── common/（Common.cc/.hh）
 │   │       │   ├── CD/（exi_engine/, titan_tci/）
 │   │       │   └── SA/（ports/, titan_tri/, hardware/）
-│   │       ├── build/                        # 编译产物（bin/, generated_cpp/, obj/）
-│   │       └── logs/                        # TITAN 执行日志
-│   └── generated/                           # Phase 2 生成的代码输出目录
-│       └── TC_SECC_CMN_VTB_SupportedAppProtocol_001/
-│           ├── TC_SECC_CMN_VTB_SupportedAppProtocol_001.ttcn
-│           ├── TC_SECC_CMN_VTB_SupportedAppProtocol_001_plan.json
-│           ├── TC_SECC_CMN_VTB_SupportedAppProtocol_001_infra_response_unknown.txt
+│   │       ├── build/                           # 编译产物（bin/, generated_cpp/, obj/）
+│   │       └── logs/                            # TITAN 执行日志
+│   └── generated/                               # Phase 2 生成的代码输出目录
+│       └── TC_SECC_CMN_VTB_V2GTPHeader_001/   # V2GTPHeader 测试用例完整项目
+│           ├── TC_SECC_CMN_VTB_V2GTPHeader_001.ttcn
+│           ├── TC_SECC_CMN_VTB_V2GTPHeader_001_plan.json
+│           ├── fault_analysis.json
 │           ├── build.sh
 │           ├── config/
-│           └── src/ttcn3/
+│           ├── src/ttcn3/
+│           ├── src/cpp_adapters/
+│           └── logs/
 │
-└── experiment/                                # ===== Phase 3: 评估流水线 =====
-    ├── README.md                              # 实验 Pipeline 说明
-    ├── test_cases_config.json                 # 测试用例配置文件
-    ├── run_experiment.py                      # Pipeline 主入口
-    ├── code_generator.py                     # Phase 2 包装器
-    ├── standard_extractor.py                  # 标准参考提取器
-    ├── code_comparator.py                    # 代码对比分析器
-    ├── evaluation_pipeline.py                # 端到端评估 Pipeline
-    ├── report_generator.py                   # 报告生成器
-    ├── batch_runner.py                       # 批量测试运行器
-    ├── ocn_cleaner_patterns.json             # OCR 错误修复模式库
-    ├── standard_references/                  # 提取的标准参考代码（输出）
-    │   ├── standard_reference_TC_SECC_CMN_VTB_SupportedAppProtocol_001.json
-    │   └── standard_reference_TC_SECC_CMN_VTB_SupportedAppProtocol_001_summary.txt
-    ├── results/                             # 实验结果目录（输出）
-    │   ├── standard_TC_SECC_CMN_VTB_SupportedAppProtocol_001.json
-    │   ├── batch_results.json
+└── experiment/                                  # ===== Phase 3: 评估流水线 =====
+    ├── README.md                               # 实验 Pipeline 说明
+    ├── test_cases_config.json                  # 测试用例配置文件
+    ├── run_experiment.py                       # Pipeline 主入口
+    ├── code_generator.py                       # Phase 2 包装器
+    ├── standard_extractor.py                   # 标准参考提取器（含 OCNCleaner）
+    ├── code_comparator.py                     # 代码对比分析器（5维度评分）
+    ├── evaluation_pipeline.py                 # 端到端评估 Pipeline
+    ├── report_generator.py                    # 报告生成器（TXT/MD/HTML）
+    ├── batch_runner.py                        # 批量测试运行器
+    ├── ocn_cleaner_patterns.json              # OCR 错误修复模式库
+    ├── standard_references/                    # 提取的标准参考代码（输出）
+    ├── comparison_results/                    # 对比结果（输出）
+    ├── results/                               # 实验结果目录（输出）
     │   └── TC_SECC_CMN_VTB_*/
     │       ├── comparison_report.txt
     │       ├── standard_data.json
     │       ├── summary.json
     │       └── experiment_result.json
-    ├── comparison_results/                  # 对比结果（输出）
-    ├── reports/                              # 生成的报告（输出）
-    └── logs/                                # 实验日志
+    ├── reports/                               # 生成的报告（输出）
+    └── logs/                                 # 实验日志
 ```
 
 ---
@@ -174,18 +174,18 @@ agent/
 
 **1. Python 3.8+**
 
-```powershell
+```bash
 python --version
 ```
 
 **2. Claude Code CLI + API Key**
 
-```powershell
+```bash
 # 安装
 npm install -g @anthropic-ai/claude-code
 
 # 配置 API Key
-$env:ANTHROPIC_API_KEY = "sk-ant-xxxxx-your-key-here"
+export ANTHROPIC_API_KEY="sk-ant-xxxxx-your-key-here"
 
 # 验证
 claude --version
@@ -193,9 +193,7 @@ claude --version
 
 ### 3.2 快速路径一：直接通过安全需求生成（推荐）
 
-```powershell
-cd d:\thu_conformance_test\platform\agent
-
+```bash
 # 仅生成 TTCN-3 代码（不含项目结构）
 python test_code/ttcn3_generation_pipeline.py --requirement V2G2-082
 
@@ -210,14 +208,12 @@ python test_code/ttcn3_generation_pipeline.py --requirement V2G2-082 --with-infr
 
 # 运行 Phase 3 评估
 cd experiment
-python run_experiment.py --tc-id TC_SECC_CMN_VTB_SupportedAppProtocol_001
+python run_experiment.py --tc-id TC_SECC_CMN_VTB_V2GTPHeader_001
 ```
 
 ### 3.3 快速路径二：手动控制流水线
 
-```powershell
-cd d:\thu_conformance_test\platform\agent
-
+```bash
 # Phase 1: 生成测试用例
 python test_case/test_case_generator.py --requirements V2G2-082
 
@@ -226,7 +222,7 @@ python test_code/ttcn3_generation_pipeline.py --requirement V2G2-082
 
 # Phase 3: 评估代码质量
 cd experiment
-python run_experiment.py --tc-id TC_SECC_CMN_VTB_SupportedAppProtocol_001
+python run_experiment.py --tc-id TC_SECC_CMN_VTB_V2GTPHeader_001
 ```
 
 ### 3.4 完整配置（生成 + 编译 + 运行）
@@ -248,8 +244,6 @@ wsl --install -d Ubuntu
 ## 4. 环境配置
 
 ### 4.1 Claude Code CLI 安装与配置
-
-#### 安装方式
 
 **Windows（PowerShell）：**
 
@@ -274,9 +268,7 @@ npm install -g @anthropic-ai/claude-code
 curl -fsSL https://github.com/anthropics/claude-code/releases/latest/download/claude-code.sh | bash
 ```
 
-#### API Key 配置
-
-**方式一：环境变量（推荐）：**
+**API Key 配置：**
 
 ```powershell
 # PowerShell
@@ -286,14 +278,7 @@ $env:ANTHROPIC_API_KEY = "sk-ant-xxxxx-xxxxxxxxxxxxx"
 export ANTHROPIC_API_KEY="sk-ant-xxxxx-xxxxxxxxxxxxx"
 ```
 
-**方式二：交互式配置（首次运行）：**
-
-```bash
-claude
-# 首次运行会提示输入 API Key，并保存到 ~/.claude.json
-```
-
-#### 验证安装：
+验证安装：
 
 ```bash
 claude --version
@@ -303,13 +288,14 @@ claude --version
 
 `agent/` 模块**仅依赖 Python 标准库**，无需安装任何第三方 Python 包。
 
-```powershell
+```bash
 # 方式一：使用系统 Python
 python --version  # 3.8+ 即可
 
 # 方式二：虚拟环境（推荐）
 python -m venv venv
-.\venv\Scripts\Activate.ps1
+source venv/bin/activate  # Linux/macOS
+.\venv\Scripts\Activate   # Windows PowerShell
 
 # 方式三：conda
 conda create -n platform python=3.11 -y
@@ -345,18 +331,15 @@ cd titan
 make -j$(nproc)
 make install
 
-# 4. 配置环境变量（打开配置）
+# 配置环境变量
 nano ~/.bashrc
-
-# 在文件最末尾添加以下三行
+# 添加：
 export TTCN3_DIR=$HOME/TITAN
 export PATH=$TTCN3_DIR/bin:$PATH
 export LD_LIBRARY_PATH=$TTCN3_DIR/lib:$LD_LIBRARY_PATH
-
-# 保存后使其生效
 source ~/.bashrc
 
-# 5. 验证
+# 验证
 makefilegen --version
 ttcn3-compiler --version
 ```
@@ -373,7 +356,7 @@ wsl --install -d Ubuntu
 ### 4.4 环境变量速查
 
 | 变量名 | 说明 | 必须模块 |
-|--------|------|---------|
+|--------|------|----------|
 | `ANTHROPIC_API_KEY` | Anthropic API Key | agent/（Phase 1/2/3） |
 | `TTCN3_DIR` | TITAN 安装根目录（如 `$HOME/TITAN`） | 源码编译安装后 |
 | `PATH` | 包含 `$TTCN3_DIR/bin` | demo/（编译运行） |
@@ -407,17 +390,18 @@ flowchart TB
         P2_kb["iso15118_4_ttcn_knowledge_base.json"]
         P2_orch["Orchestrator"]
         P2_sum["Summarizer"]
-        P2_core["Core Agent"]
-        P2_fc["Fault Corrector"]
+        P2_core["Core Agent\n(read_only)"]
+        P2_fc["Fault Corrector\n(read_only)"]
         P2_infra["Infrastructure Agent"]
         P2_build["TITAN Build"]
         P2_out["TC_SECC_*.ttcn\n+ *_plan.json"]
         P2_tc --> P2_orch --> P2_sum --> P2_core
         P2_kb -.-> P2_sum
         P2_sop -.-> P2_core
-        P2_core --> P2_fc --> P2_infra --> P2_build
-        P2_build -->|"编译失败\n(<=3轮)"| P2_fc
-        P2_build -->|"运行时失败\n(<=2轮)"| P2_fc
+        P2_core --> P2_fc
+        P2_fc --> P2_infra --> P2_build
+        P2_build -->|"编译失败\n(≤3轮)"| P2_fc
+        P2_build -->|"运行时失败\n(≤2轮)"| P2_fc
         P2_build -->|"成功"| P2_out
     end
 
@@ -447,7 +431,7 @@ flowchart TB
 输入：安全需求 ID（如 V2G2-082）→ 输出：ISO 15118-4 格式测试用例 JSON
 
 | Agent | 职责 | Prompt 模板 |
-|-------|------|-----------|
+|-------|------|-------------|
 | **Orchestrator** | 意图分解：解析单/多需求，确定 SUT/消息类型/测试类型 | `orchestrator_prompt.txt` |
 | **Modeler** | 低层建模：提取 Packet Field / FSM / Time Sequence / Functional testing points | `modeler_prompt.txt` |
 | **Generator** | 测试用例生成：遍历 testing points，生成 ISO 15118-4 格式 JSON | `generator_prompt.txt` |
@@ -459,22 +443,31 @@ flowchart TB
 
 输入：测试用例 JSON → 输出：完整的 TTCN-3 .ttcn 文件（含 TITAN 项目脚手架）
 
-**Agent 架构：**
+**Agent 架构（重要安全设计）：**
 
-| Agent | 职责 | Prompt 模板 |
-|-------|------|-----------|
-| **Orchestrator** | 意图分解：测试用例 JSON → generation_plan（含前置条件链、模板名、定时器参数等） | `orchestrator_prompt.txt` |
-| **Summarizer** | 知识检索：从 iso15118_4_ttcn_knowledge_base.json 中检索最相关的 TTCN-3 参考代码 | `summarizer_prompt.txt` |
-| **Core Agent** | 代码生成：基于 generation_plan + Few-shot 参考 + SOP，生成完整 TTCN-3 模块 | `core_agent_prompt.txt` |
-| **Fault Corrector** | 统一纠错：compile 模式（LLM + titan_troubleshooting_db.json） / runtime 模式（Python 双轨分析） | `fault_corrector_prompt.txt` |
-| **Infrastructure Agent** | 项目脚手架：生成完整的 TITAN 项目结构（config、TTCN-3 骨架、C++ 适配器目录） | `infrastructure_agent_prompt.txt` |
+| Agent | 职责 | Prompt 模板 | 工具权限 |
+|-------|------|-------------|---------|
+| **Orchestrator** | 意图分解：测试用例 JSON → generation_plan | `orchestrator_prompt.txt` | **Read-only** |
+| **Summarizer** | 知识检索：从 iso15118_4_ttcn_knowledge_base.json 检索参考代码 | `summarizer_prompt.txt` | **Read-only** |
+| **Core Agent** | 代码生成：基于 generation_plan + Few-shot + SOP，生成完整 TTCN-3 模块 | `core_agent_prompt.txt` | **Read-only** |
+| **Fault Corrector** | compile 模式（LLM + titan_troubleshooting_db.json）/ runtime 模式（Python 双轨分析） | `fault_corrector_prompt.txt` | **Read-only** |
+| **Infrastructure Agent** | 项目脚手架：生成完整 TITAN 项目结构（config、TTCN-3 骨架、C++ 适配器目录） | `infrastructure_agent_prompt.txt` | **Write/Edit/Bash** |
+
+> **安全设计**：Orchestrator、Summarizer、Core Agent、Fault Corrector 均以 `read_only=True` 运行，`--allowedTools` 仅包含 `Read`，禁止写入磁盘，确保只输出 JSON 文本。Infrastructure Agent 保留完整工具权限以写入项目文件。
 
 **双反馈回路（均以真实构建/运行结果为驱动）：**
 
-- **编译循环**（<=3 轮）：TITAN 编译失败 → Fault Corrector(compile) → Core Agent + Infrastructure Agent 重试
-- **运行时循环**（<=2 轮）：测试执行失败 → Fault Corrector(runtime) → auto_fix（确定性修复）/ manual_review（Core Agent + Infrastructure Agent 重试）
+- **编译循环**（≤3 轮）：TITAN 编译失败 → Fault Corrector(compile) → Core Agent + Infrastructure Agent 重试
+- **运行时循环**（≤2 轮）：测试执行失败 → Fault Corrector(runtime) → auto_fix（确定性修复）/ manual_review
 
-> **说明**：静态检查循环已被移除。TITAN 编译器已覆盖语法/命名/定时器等全部检查项，无需额外的 LLM 静态审查。
+**Prompt 大小配置：**
+
+| 阈值 | 值 | 说明 |
+|------|-----|------|
+| `PROMPT_SIZE_WARNING` | 80KB | 超过后记录 WARN 日志 |
+| `PROMPT_SIZE_HARD` | 100KB | 超过后记录 ERROR 日志（但不截断） |
+
+> 阈值已提高以支持丰富的 Few-shot 示例注入，避免误报。
 
 ### 5.4 Phase 3：评估流水线（4 步）
 
@@ -498,7 +491,7 @@ flowchart TB
 | 模块 | 职责 |
 |------|------|
 | `sniffer.py` | `V2G_Sniffer`：scapy 后台抓包，监听 V2G 端口，输出 PCAP 文件 |
-| `pcap_parser.py` | `V2GTP_Packet`、`PcapParser`：解析 PCAP → V2GTP 消息序列（protocolVersion、payloadType 等） |
+| `pcap_parser.py` | `VGTP_Packet`、`PcapParser`：解析 PCAP → V2GTP 消息序列（protocolVersion、payloadType 等） |
 | `titan_log_parser.py` | `TitanLogParser`、`TitanLogEntry`：解析 TITAN `TestExecution.log` → 结构化事件（timer、port send/receive、verdict） |
 | `correlator.py` | `CorrelatedEvent`、`AlignmentResult`：时间对齐 TTCN-3 log 事件与 PCAP 报文，报告分歧点 |
 | `fault_classifier.py` | `FaultResult`：6 类故障分类（timeout、port_mismatch、template_field_error、v2gtp_header_error、precondition_not_met、pcap_only_error） |
@@ -506,26 +499,35 @@ flowchart TB
 
 ### 6.2 Knowledge Base
 
-位于 `knowledge_base/`（Phase 1/2 共用）：
+位于 `test_code/knowledge_base/`：
 
 | 文件 | 用途 |
 |------|------|
-| `ttcn3_generation_sop.json` | 7 步 SOP + 前置条件链 + 命名规范 + 输出结构 + 反馈回路定义 |
+| `ttcn3_generation_sop.json` | 7 步 SOP + 前置条件链 + 命名规范 + 输出结构 + common_errors（含 odd-hex-digits 修复指南） |
+| `generation_patterns.json` | 代码模式库（从 SOP 提取，含 canonical_exi_payload = 140字节有效 SupportedAppProtocolReq EXI） |
 | `titan_troubleshooting_db.json` | 结构化编译错误模式库（20+ 条目，含 port_undefined、import_missing、runs_on_mismatch 等） |
+| `titan_troubleshooting.md` | TITAN 故障排查手册（人类可读） |
 | `titan_reference_summary.json` | TITAN 编译器 check/syntax/build 错误模式参考 |
 | `doc_urls.json` | Eclipse TITAN 官方文档 URL 索引 |
+
+**EXI 有效载荷规范：**
+
+> 所有生成的 TTCN-3 代码必须使用真实、完整、有效的 ISO 15118-2 EXI 编码作为 SupportedAppProtocolReq 有效载荷。canonical_exi_payload 为 140 字节（280 个十六进制字符）：
+> `'8000EBAB9371D34B9B79D189A98989C1D191D191818999D26B9B3A232B30020000000001B75726E3A64696E3A37303132313A323031323A4D73674465660040000000880000'O`
+>
+> **关键约束**：TTCN-3 要求 octetstring 的十六进制字符数必须为偶数。若原始 EXI 字符串长度为奇数，必须在末尾追加 '0' 或 '00' 使其长度为偶数后编译。详见 `common_errors` 中的 "Octetstring value contains odd number of hexadecimal digits" 条目。
 
 ### 6.3 实验评估模块
 
 位于 `experiment/`：
 
-| 模块 | 行数 | 职责 |
-|------|------|------|
-| `standard_extractor.py` | ~1435 | `KnowledgeBaseLoader`（缓存）、`StandardReferenceExtractor`（提取组件）、`OCNCleaner`（修复 OCR 错误，如 `v HAL_61851 Listener` → `v_HAL_61851_Listener`）、`TCIDParser`（解析 3 种 TC ID 格式）、`ReferenceFormatter` |
-| `code_comparator.py` | ~960 | `TTCN3Parser`（正则解析代码结构）、`NamingConventionChecker`（ISO 15118-4 命名规则）、`SemanticAnalyzer`（必需/推荐组件分析）、`CodeComparator`（difflib 相似度）、`ComparisonAnalyzer`（5 维度综合评分） |
-| `report_generator.py` | ~790 | `TextReportGenerator`（纯文本）、`MarkdownReportGenerator`（Markdown）、`HTMLReportGenerator`（带进度条可视化） |
-| `evaluation_pipeline.py` | ~860 | 端到端状态机，`StepStatus` 枚举，支持 `--extract-only`、`--compare-only` |
-| `batch_runner.py` | ~455 | 并行/串行执行、增量运行（跳过已成功）、状态持久化、JSON/CSV 导出 |
+| 模块 | 职责 |
+|------|------|
+| `standard_extractor.py` | `KnowledgeBaseLoader`（缓存）、`StandardReferenceExtractor`（提取组件）、`OCNCleaner`（修复 OCR 错误，如 `v HAL_61851 Listener` → `v_HAL_61851_Listener`）、`TCIDParser`（解析 3 种 TC ID 格式）、`ReferenceFormatter` |
+| `code_comparator.py` | `TTCN3Parser`（正则解析代码结构）、`NamingConventionChecker`（ISO 15118-4 命名规则）、`SemanticAnalyzer`（必需/推荐组件分析）、`CodeComparator`（difflib 相似度）、`ComparisonAnalyzer`（5 维度综合评分） |
+| `report_generator.py` | `TextReportGenerator`（纯文本）、`MarkdownReportGenerator`（Markdown）、`HTMLReportGenerator`（带进度条可视化） |
+| `evaluation_pipeline.py` | 端到端状态机，`StepStatus` 枚举，支持 `--extract-only`、`--compare-only` |
+| `batch_runner.py` | 并行/串行执行、增量运行（跳过已成功）、状态持久化、JSON/CSV 导出 |
 
 ---
 
@@ -592,7 +594,7 @@ SDP → SupportedAppProtocol → SessionSetup → ServiceDiscovery
 → PowerDelivery → ChargingStatus/CurrentDemand → SessionStop
 ```
 
-完整定义见 `knowledge_base/ttcn3_generation_sop.json` 的 `precondition_chains` 字段。
+完整定义见 `test_code/knowledge_base/ttcn3_generation_sop.json` 的 `precondition_chains` 字段。
 
 ### 7.6 关键注意事项
 
@@ -600,7 +602,9 @@ SDP → SupportedAppProtocol → SessionSetup → ServiceDiscovery
 2. **测试行为函数必须以 `return getverdict;` 结尾**
 3. **模板字段语义**：`omit` 表示字段不存在；`?` 表示任意值；`*` 表示可选字段
 4. **所有生成的代码必须包含需求追溯注释**（`@reference` 标注 V2G2-XXX）
-5. **参考 `test_code/examples/` 目录下的 .ttcn 文件作为代码风格参考**
+5. **EXI 有效载荷必须完整**：不得截断 EXI 字符串，必须使用完整的 140 字节有效载荷
+6. **octetstring 十六进制字符数必须为偶数**：若原始 EXI 长度为奇数，在末尾追加 '0' 或 '00'
+7. **参考 `test_code/examples/` 目录下的 .ttcn 文件作为代码风格参考**
 
 ---
 
@@ -641,7 +645,7 @@ python test_code/ttcn3_generation_pipeline.py --requirements V2G2-082,V2G2-165,V
 python test_code/ttcn3_generation_pipeline.py --requirements V2G2-082,V2G2-165 --mode single
 
 # 模式 2: 通过测试用例 ID
-python test_code/ttcn3_generation_pipeline.py --tc-id TC_SECC_CMN_VTB_SupportedAppProtocol_001
+python test_code/ttcn3_generation_pipeline.py --tc-id TC_SECC_CMN_VTB_V2GTPHeader_001
 
 # 模式 3: 直接传入测试用例 JSON
 python test_code/ttcn3_generation_pipeline.py --test-case '{"Test_Case": {...}}'
@@ -680,15 +684,15 @@ python test_code/ttcn3_generation_pipeline.py --requirement V2G2-082 --pcap ./ca
 |------|------|
 | `--requirement` | 单个安全需求 ID（如 V2G2-082） |
 | `--requirements` | 多个安全需求 ID，逗号分隔 |
-| `--tc-id` | 测试用例 ID（如 TC_SECC_CMN_VTB_SupportedAppProtocol_001） |
+| `--tc-id` | 测试用例 ID（如 TC_SECC_CMN_VTB_V2GTPHeader_001） |
 | `--test-case` | 测试用例 JSON 字符串 |
 | `--test-case-file` | 测试用例 JSON 文件路径 |
 | `--sut` | SUT 类型：`SECC` 或 `EVCC` |
 | `--mode` | 生成模式：`single`（每需求单独生成）或 `multi`（多需求合并） |
 | `--output-dir` | 指定输出目录（默认 `test_code/generated/`） |
 | `--no-auto-generate` | 未找到测试用例时不自动生成 |
-| `--with-infrastructure` | 生成完整 TITAN 项目结构（config + cpp_adapters + build.sh）并执行编译运行 |
-| `--skip-build` | 配合 `--with-infrastructure`：仅生成项目结构，跳过编译运行 |
+| `--with-infrastructure` | 生成完整 TITAN 项目结构并执行编译运行 |
+| `--skip-build` | 配合 `--with-infrastructure`：仅生成脚手架，跳过编译运行 |
 | `--sut-ip` | SUT IP 地址（用于 `titan_runtime.cfg`，默认 `ff02::01` IPv6 组播） |
 | `--titan-log` | TITAN `TestExecution.log` 路径（用于 Fault Agent 分析） |
 | `--pcap` | PCAP 文件路径（用于 Fault Agent 双轨分析） |
@@ -696,16 +700,16 @@ python test_code/ttcn3_generation_pipeline.py --requirement V2G2-082 --pcap ./ca
 ### 8.3 Phase 3 命令行用法
 
 ```bash
-cd agent/experiment
+cd experiment
 
 # 单个测试用例完整流程（代码生成 + 标准提取 + 对比 + 报告）
-python run_experiment.py --tc-id TC_SECC_CMN_VTB_SupportedAppProtocol_001
+python run_experiment.py --tc-id TC_SECC_CMN_VTB_V2GTPHeader_001
 
 # 跳过代码生成（使用已有代码）
-python run_experiment.py --tc-id TC_SECC_CMN_VTB_SupportedAppProtocol_001 --skip-generation
+python run_experiment.py --tc-id TC_SECC_CMN_VTB_V2GTPHeader_001 --skip-generation
 
 # 覆盖已有结果
-python run_experiment.py --tc-id TC_SECC_CMN_VTB_SupportedAppProtocol_001 --overwrite
+python run_experiment.py --tc-id TC_SECC_CMN_VTB_V2GTPHeader_001 --overwrite
 
 # 批量测试（从配置文件读取测试用例列表）
 python run_experiment.py --batch
@@ -715,7 +719,7 @@ python run_experiment.py --batch --config ./test_cases_config.json
 python run_experiment.py --compare-only \
     --generated /path/to/generated.ttcn \
     --standard /path/to/standard.ttcn \
-    --tc-id TC_SECC_CMN_VTB_SupportedAppProtocol_001
+    --tc-id TC_SECC_CMN_VTB_V2GTPHeader_001
 ```
 
 ### 8.4 批量测试配置
@@ -727,8 +731,8 @@ python run_experiment.py --compare-only \
   "single_test": {
     "enabled": true,
     "test_case": {
-      "tc_id": "TC_SECC_CMN_VTB_SupportedAppProtocol_001",
-      "description": "SECC SupportedAppProtocol GoodCase"
+      "tc_id": "TC_SECC_CMN_VTB_V2GTPHeader_001",
+      "description": "SECC V2GTP Header GoodCase"
     }
   },
   "batch_test": {
@@ -785,8 +789,8 @@ irm https://www.nuget.org/api/v2/package/claude-code | iex
 
 确保环境变量已设置：
 
-```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-xxxxx-xxxxxxxxxxxxx"
+```bash
+export ANTHROPIC_API_KEY="sk-ant-xxxxx-xxxxxxxxxxxxx"
 ```
 
 ### Q3: TITAN `makefilegen` 找不到？
@@ -825,6 +829,14 @@ ls -la ../document/iso15118_4_ttcn_knowledge_base.json
 
 可通过修改 `experiment/code_generator.py` 中的 `timeout` 参数调整。
 
+### Q8: "Octetstring value contains odd number of hexadecimal digits" 编译错误？
+
+在 TTCN-3 中，octetstring 的十六进制字符数必须为偶数。若原始 EXI 有效载荷的十六进制字符串长度为奇数，必须在末尾追加 `'0'` 或 `'00'` 使其长度为偶数后再编译。详见 `test_code/knowledge_base/ttcn3_generation_sop.json` 的 `common_errors` 条目。
+
+### Q9: SECC 模拟器抛出 `java.io.EOFException: Premature EOS`？
+
+确保 EXI 有效载荷是完整的 140 字节（280 个十六进制字符）。不得截断 EXI 字符串，否则 SECC EXI 解码器会因提前遇到 EOS 而抛出异常。
+
 ---
 
 ## 10. 附录
@@ -857,8 +869,9 @@ document/iso15118_2_hierarchical_tree.json  ──► Phase 1 ──► generate
                                                                          │
 document/iso15118_4_ttcn_knowledge_base.json ──┬──► Phase 2 ──► TC_SECC_*.ttcn
                                                   │              │
-knowledge_base/ttcn3_generation_sop.json ──► Core Agent   │
-knowledge_base/titan_troubleshooting_db.json ──► FC(compile)  │
+test_code/knowledge_base/ttcn3_generation_sop.json ──► Core Agent   │
+test_code/knowledge_base/generation_patterns.json ──► Core Agent    │
+test_code/knowledge_base/titan_troubleshooting_db.json ──► FC(compile)  │
 test_code/examples/*.ttcn ──► Core Agent (few-shot)                  │
 test_code/examples/demo/ ──► Infrastructure Agent (scaffold ref)      │
                                                                        │
@@ -874,7 +887,7 @@ TC_SECC_*.ttcn ──► Phase 3 ──► experiment/results/{tc_id}/
 | Tips & Troubleshooting | 12-tips_&_troubleshooting.adoc |
 | Installation Guide | installationguide.adoc |
 
-详见 `knowledge_base/doc_urls.json`。
+详见 `test_code/knowledge_base/doc_urls.json`。
 
 ### 10.4 参考资料
 
@@ -887,8 +900,8 @@ TC_SECC_*.ttcn ──► Phase 3 ──► experiment/results/{tc_id}/
 
 ## 维护信息
 
-- **Pipeline 版本**：1.1
+- **Pipeline 版本**：1.3（双 Agent 错误分类 + Read-only Agent 安全加固）
 - **创建日期**：2026-04-10
-- **更新日期**：2026-04-28
+- **更新日期**：2026-05-18
 - **依赖**：Python 3.8+（仅标准库），Claude Code CLI
 - **文档编码**：UTF-8
