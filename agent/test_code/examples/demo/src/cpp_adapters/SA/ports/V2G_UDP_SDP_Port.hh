@@ -8,7 +8,7 @@
 #include <netinet/in.h>
 #include <net/if.h>
 
-extern std::string V2G__UDP__SDP__Port__last_secc_ip_;
+extern ::std::string V2G__UDP__SDP__Port__last_secc_ip_;
 extern int V2G__UDP__SDP__Port__last_secc_port_;
 
 namespace SECC__TestSystem {
@@ -24,9 +24,9 @@ public:
     void send_data(const OCTETSTRING& send_data, const char* send_fmt, ...);
 
 private:
-    std::string port_name_;
-    std::string network_interface_;
-    std::string ipv6_multicast_;
+    ::std::string port_name_;
+    ::std::string network_interface_;
+    ::std::string ipv6_multicast_;
     int port_;
     int socket_fd_;
     bool bound_;
@@ -37,9 +37,9 @@ private:
     void close_socket();
     void receive_loop();
     bool send_sdp_request(const unsigned char* data, size_t length);
-    int parse_ipv6_address(const std::string& addr_str, ::sockaddr_in6* addr6);
+    int parse_ipv6_address(const ::std::string& addr_str, ::sockaddr_in6* addr6);
     bool parse_sdp_response(const unsigned char* data, size_t length,
-                           std::string& secc_ip, int& secc_port);
+                           ::std::string& secc_ip, int& secc_port);
 
     static void* receive_thread_func(void* arg);
 };

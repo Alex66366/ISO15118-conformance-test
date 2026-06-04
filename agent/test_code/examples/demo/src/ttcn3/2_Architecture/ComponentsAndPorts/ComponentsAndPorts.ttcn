@@ -1,12 +1,21 @@
 module SECC_TestSystem {
+    import from SECC_Types all;
 
     // ==========================================
-    // Section 1: Simple Port Types
+    // Section 1: Port Types
+    // ==========================================
+
+    // V2G_TCP_TLS_Port: V2G application messages via V2G_MessageUnion.
+    //   The C++ ExiCodecAdapter (in V2G_TCP_TLS_Port.cc) intercepts these
+    //   structured values, encodes them to EXI, and prepends the V2GTP header
+    //   before sending over TCP.
+    //
+    // V2G_UDP_SDP_Port: Raw SDP protocol (no EXI, no V2G_MessageUnion).
     // ==========================================
 
     type port V2G_TCP_TLS_Port message {
-        out octetstring;
-        in  octetstring;
+        out V2G_MessageUnion;
+        in  V2G_MessageUnion;
     }
 
     type port V2G_UDP_SDP_Port message {

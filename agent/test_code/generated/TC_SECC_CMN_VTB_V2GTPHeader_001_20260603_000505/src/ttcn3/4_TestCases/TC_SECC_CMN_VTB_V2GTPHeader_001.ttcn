@@ -1,0 +1,47 @@
+module TC_SECC_CMN_VTB_V2GTPHeader_001 {
+
+    import from SECC_TestSystem all;
+    import from SECC_Types all;
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+
+    // Aggregator imports
+    import from PreConditions_SECC_15118_2 all;
+    import from PostConditions_SECC_15118_2 all;
+
+    // Direct imports for all function modules called
+    import from PreConditions_InitConfig all;
+    import from TestBehavior_V2GTPHeader001 all;
+    import from PostConditions_InitialState all;
+    import from PostConditions_Shutdown all;
+
+    /**
+     * @desc    Test case for V2GTP header validation (GoodCase)
+     *          Verifies SECC correctly processes V2GTP messages with valid header:
+     *          ProtocolVersion=0x01, InverseProtocolVersion=0xFE,
+     *          PayloadType=0x8001, accurate PayloadLength
+     * @reference V2G2-082
+     * @requirement SECC shall accept V2GTP messages with correct header format
+     */
+    testcase TC_SECC_CMN_VTB_V2GTPHeader_001()
+        runs on SECCTester system SystemSECC
+    {
+        var verdicttype preConVerdict;
+
+        // Phase A+B: PreConditions
+        preConVerdict := f_SECC_CMN_PR_InitConfiguration_001();
+
+        // Phase C: Test Behavior
+        if (preConVerdict == pass) {
+            f_SECC_CMN_TB_VTB_V2GTPHeader_001();
+        } else {
+            log("PreCondition verdict is not pass");
+            setverdict(inconc);
+        }
+
+        // Phase D: PostConditions (unconditional)
+        f_SECC_CMN_PO_InitialState_001();
+        f_SECC_CMN_PO_ShutdownConfiguration_001();
+    }
+
+}

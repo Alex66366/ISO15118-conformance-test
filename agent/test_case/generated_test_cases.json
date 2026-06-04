@@ -1,0 +1,41 @@
+{
+  "test_cases": [
+    {
+      "Test_Case": {
+        "TC_Id": "TC_SECC_CMN_VTB_V2GTPHeader_001",
+        "Category": "CMN",
+        "Test_Purpose": "Verify V2GTP header structure construction and validation",
+        "SUT_Role": "SECC",
+        "MessageType": "V2GTP Header",
+        "Precondition": "TCP connection established",
+        "Sequence": [
+          {
+            "seq_no": "001",
+            "test_type": "GoodCase",
+            "description": "Tester sends a V2GTP message with correct header (ProtocolVersion=0x01, InverseProtocolVersion=0xFE, valid PayloadType=0x8001, accurate PayloadLength); SECC accepts and processes the message normally"
+          },
+          {
+            "seq_no": "002",
+            "test_type": "BadCase",
+            "description": "Tester sends a V2GTP message with incorrect ProtocolVersion (e.g. 0x02) and correspondingly wrong InverseProtocolVersion; SECC shall reject or close the connection"
+          },
+          {
+            "seq_no": "003",
+            "test_type": "BadCase",
+            "description": "Tester sends a V2GTP message with correct ProtocolVersion=0x01 but InverseProtocolVersion not equal to 0xFE (XOR pattern violated); SECC shall reject or close the connection"
+          },
+          {
+            "seq_no": "004",
+            "test_type": "BadCase",
+            "description": "Tester sends a V2GTP message with a reserved PayloadType value (e.g. 0x0001); SECC shall reject or close the connection"
+          }
+        ],
+        "Document_Reference": {
+          "Requirements": [
+            "V2G2-082"
+          ]
+        }
+      }
+    }
+  ]
+}

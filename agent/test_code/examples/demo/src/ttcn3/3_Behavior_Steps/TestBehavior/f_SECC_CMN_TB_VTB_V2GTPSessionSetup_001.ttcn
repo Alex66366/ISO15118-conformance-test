@@ -1,7 +1,59 @@
 module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001 {
-    import from SECC_TestSystem all;
 
-    function f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001() runs on SECCTester {
-        // Stub
+    import from SECC_TestSystem all;
+    import from SECC_Types all;
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+
+    // ================================================================
+    // Test Behavior Function: V2GTPSessionSetup GoodCase
+    //
+    // SOP for every V2G message:
+    //   STEP 1: Lookup wire_hex in exi_payload_library.json
+    //   STEP 2: Locate md_CMN_{Msg}Req_001 / mdw_SECC_{Msg}Res_001 in SECC_CmnTemplates.ttcn
+    //   STEP 3: Send via structured union: send({ msgType := md_CMN_MsgReq_001 })
+    //   STEP 4: Receive via matching template, stop timer, setverdict, return
+    //
+    // How it works:
+    //   1. TTCN-3 sends a V2G_MessageUnion value via the port.
+    //   2. The C++ V2G_TCP_TLS_Port receives it in outgoing_send(),
+    //      calls ExiCodecAdapter::encode() with the message key to look up
+    //      the pre-encoded wire_hex from exi_payload_library.json, patches
+    //      V2GTP length field, and sends it over TCP.
+    //   3. The SECC responds; the C++ adapter receives wire bytes, logs them,
+    //      and passes the raw OCTETSTRING back to TTCN-3 as the response.
+    // ================================================================
+
+    function f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001() runs on SECCTester return verdicttype {
+        timer tc_V2G_EVCC_Msg_Timer := PX_SECC_CMN_Message_Timeout;
+
+        // Phase C: Send SessionSetupReq via structured union
+        // The C++ port adapter intercepts and encodes via ExiCodecAdapter
+        log("Phase C: Sending SessionSetupReq via structured union...");
+        tc_V2G_EVCC_Msg_Timer.start(PX_SECC_CMN_Message_Timeout);
+
+        pt_V2G_TCP_TLS_ALM_SECC_Port.send(
+            { sessionSetupReq := md_CMN_SessionSetupReq_001 }
+        );
+
+        alt {
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(
+                { sessionSetupRes := ? }
+            ) {
+                tc_V2G_EVCC_Msg_Timer.stop;
+                log("SessionSetupRes received and matched");
+                log("SessionID captured (C++ adapter stores it for subsequent messages)");
+                setverdict(pass, "SessionSetup exchange successful -- SECC accepted the session");
+            }
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive {
+                tc_V2G_EVCC_Msg_Timer.stop;
+                setverdict(fail, "Unexpected message received during SessionSetup");
+            }
+            [] tc_V2G_EVCC_Msg_Timer.timeout {
+                setverdict(inconc, "SessionSetup timeout -- no response from SECC");
+            }
+        }
+
+        return getverdict;
     }
 }

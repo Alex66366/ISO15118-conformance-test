@@ -1,0 +1,1189 @@
+#!/usr/bin/env python3
+"""
+ISO 15118-2 TTCN-3 代码生成流水线
+基于 NeTestLLM 多 Agent 协作方法，使用 Claude Code CLI 作为 sub-agent。
+
+数据流:
+  需求ID/测试用例 → 测试用例获取/生成 → Orchestrator → Summarizer → Core Agent → Fault Corrector → .ttcn 文件
+
+输入模式:
+  1. 安全需求ID (--requirement/--requirements): 从 generated_test_cases.json 查找，或调用测试用例生成器
+  2. 测试用例ID (--tc-id): 从 generated_test_cases.json 查找
+  3. 测试用例JSON (--test-case): 直接传入测试用例字典
+  4. 测试用例文件 (--test-case-file): 从JSON文件读取测试用例
+
+用法:
+  # 单个安全需求
+  python ttcn3_generation_pipeline.py --requirement V2G2-082
+  python ttcn3_generation_pipeline.py --requirement V2G2-082 --sut SECC
+
+  # 多个安全需求（对应一个测试用例）
+  python ttcn3_generation_pipeline.py --requirements V2G2-082,V2G2-165,V2G2-434
+
+  # 测试用例ID
+  python ttcn3_generation_pipeline.py --tc-id TC_SECC_CMN_VTB_SupportedAppProtocol_001
+
+  # 直接传入测试用例JSON
+  python ttcn3_generation_pipeline.py --test-case '{"Test_Case": {...}}'
+
+  # 从文件读取测试用例
+  python ttcn3_generation_pipeline.py --test-case-file ./my_test_case.json
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+# === 路径常量 ===
+AGENT_DIR = Path(__file__).resolve().parent.parent  # agent/
+TEST_CODE_DIR = AGENT_DIR / "test_code"
+PROMPTS_DIR = TEST_CODE_DIR / "prompts"
+EXAMPLES_DIR = TEST_CODE_DIR / "examples"
+KB_DIR = TEST_CODE_DIR / "knowledge_base"
+GENERATED_DIR = TEST_CODE_DIR / "generated"
+DOCUMENT_DIR = AGENT_DIR / "document"
+TEST_CASE_DIR = AGENT_DIR / "test_case"
+
+# 测试用例生成器路径（第一阶段）
+TEST_CASE_GENERATOR_SCRIPT = TEST_CASE_DIR / "test_case_generator.py"
+
+# 知识库文件（仅用于参考代码检索，不用于测试用例）
+KNOWLEDGE_BASE_PATH = DOCUMENT_DIR / "iso15118_4_ttcn_knowledge_base.json"
+SOP_PATH = KB_DIR / "ttcn3_generation_sop.json"
+
+# 已生成的测试用例文件（第一阶段输出）
+GENERATED_TEST_CASES_PATH = TEST_CASE_DIR / "generated_test_cases.json"
+HIERARCHICAL_TREE_PATH = DOCUMENT_DIR / "iso15118_2_hierarchical_tree.json"
+
+# Prompt 模板
+ORCHESTRATOR_PROMPT_PATH = PROMPTS_DIR / "orchestrator_prompt.txt"
+SUMMARIZER_PROMPT_PATH = PROMPTS_DIR / "summarizer_prompt.txt"
+CORE_AGENT_PROMPT_PATH = PROMPTS_DIR / "core_agent_prompt.txt"
+FAULT_CORRECTOR_PROMPT_PATH = PROMPTS_DIR / "fault_corrector_prompt.txt"
+
+# Few-shot 样例文件
+EXAMPLE_FILES = {
+    "testcase_goodcase": EXAMPLES_DIR / "ttcn3_testcase_goodcase.ttcn",
+    "testcase_badcase": EXAMPLES_DIR / "ttcn3_testcase_badcase.ttcn",
+    "test_behavior": EXAMPLES_DIR / "ttcn3_test_behavior_function.ttcn",
+    "precondition": EXAMPLES_DIR / "ttcn3_precondition_function.ttcn",
+    "postcondition": EXAMPLES_DIR / "ttcn3_postcondition_function.ttcn",
+    "templates": EXAMPLES_DIR / "ttcn3_templates.ttcn",
+    "altstep": EXAMPLES_DIR / "ttcn3_altstep.ttcn",
+}
+
+MAX_CORRECTION_ITERATIONS = 3
+DEFAULT_AGENT_TIMEOUT = 180  # seconds
+
+
+def log(msg: str, level: str = "INFO") -> None:
+    ts = time.strftime("%H:%M:%S")
+    print(f"[{ts}] [{level}] {msg}")
+
+
+def load_json(path: Path) -> Any:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_text(path: Path) -> str:
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def load_few_shot_examples() -> Dict[str, str]:
+    """加载所有 few-shot 样例"""
+    examples = {}
+    for name, path in EXAMPLE_FILES.items():
+        if path.exists():
+            examples[name] = load_text(path)
+    return examples
+
+
+def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120) -> str:
+    """调用 Claude Code CLI 作为 sub-agent
+
+    Args:
+        prompt: 完整的 prompt 文本
+        agent_name: Agent 名称（用于日志）
+        timeout: 超时秒数
+
+    Returns:
+        Claude 的文本输出
+    """
+    log(f"调用 {agent_name} Agent...")
+
+    try:
+        result = subprocess.run(
+            ["claude", "-p", prompt, "--output-format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+        if result.returncode != 0:
+            log(f"{agent_name} Agent 返回错误码 {result.returncode}", "ERROR")
+            if result.stderr:
+                log(f"stderr: {result.stderr[:500]}", "ERROR")
+            return ""
+
+        # 解析 JSON 输出，提取 result 字段
+        try:
+            output = json.loads(result.stdout)
+            text = output.get("result", result.stdout)
+        except json.JSONDecodeError:
+            text = result.stdout
+
+        log(f"{agent_name} Agent 完成，输出 {len(text)} 字符")
+        return text.strip()
+
+    except subprocess.TimeoutExpired:
+        log(f"{agent_name} Agent 超时 ({timeout}s)", "ERROR")
+        return ""
+    except FileNotFoundError:
+        log("claude CLI 未找到，请确认已安装 Claude Code", "ERROR")
+        sys.exit(1)
+
+
+def extract_json_from_response(text: str) -> Optional[Dict]:
+    """从 Agent 响应中提取 JSON 对象"""
+    # 尝试直接解析
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 尝试从 markdown 代码块中提取
+    import re
+    json_block = re.search(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL)
+    if json_block:
+        try:
+            return json.loads(json_block.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # 尝试找到第一个 { 到最后一个 } 之间的内容
+    first_brace = text.find('{')
+    last_brace = text.rfind('}')
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        try:
+            return json.loads(text[first_brace:last_brace + 1])
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+def extract_ttcn3_from_response(text: str) -> str:
+    """从 Agent 响应中提取 TTCN-3 代码"""
+    import re
+
+    # 尝试从 markdown 代码块中提取
+    ttcn_block = re.search(r'```(?:ttcn3?|TTCN-?3?)?\s*\n(.*?)\n```', text, re.DOTALL)
+    if ttcn_block:
+        return ttcn_block.group(1).strip()
+
+    # 如果响应以 module 或 /** 开头，直接返回
+    stripped = text.strip()
+    if stripped.startswith("module ") or stripped.startswith("/**"):
+        return stripped
+
+    # 查找 module ... } 块
+    module_match = re.search(r'(/\*\*.*?)?module\s+\w+.*?\n\}', text, re.DOTALL)
+    if module_match:
+        return module_match.group(0).strip()
+
+    return stripped
+
+
+# ============================================================
+# 测试用例查找与生成
+# ============================================================
+
+def find_test_cases_in_generated_file(requirement_ids: List[str]) -> List[Dict]:
+    """从已生成的测试用例文件 (generated_test_cases.json) 中查找匹配的测试用例
+
+    支持一个测试用例对应多个安全需求的情况。
+
+    Args:
+        requirement_ids: 安全需求 ID 列表，如 ["V2G2-082", "V2G2-165"]
+
+    Returns:
+        匹配的测试用例字典列表，每个元素包含 Test_Case 键
+    """
+    if not GENERATED_TEST_CASES_PATH.exists():
+        log(f"测试用例文件不存在: {GENERATED_TEST_CASES_PATH}", "WARN")
+        return []
+
+    try:
+        data = load_json(GENERATED_TEST_CASES_PATH)
+        test_cases = data.get("test_cases", [])
+        matched_cases = []
+
+        for tc_entry in test_cases:
+            tc = tc_entry.get("Test_Case", {})
+            doc_ref = tc.get("Document_Reference", {})
+            requirements = doc_ref.get("Requirements", []) if isinstance(doc_ref, dict) else []
+
+            # 提取需求ID（去除方括号）
+            tc_req_ids = []
+            for req in requirements:
+                req_clean = req.strip("[]").strip()
+                tc_req_ids.append(req_clean)
+
+            # 检查是否所有输入的需求都在这个测试用例中
+            if all(req_id in tc_req_ids for req_id in requirement_ids):
+                matched_cases.append(tc_entry)
+
+            # 或者检查是否有任何一个需求匹配（单需求模式）
+            elif any(req_id in tc_req_ids for req_id in requirement_ids):
+                # 如果没有找到完全匹配的，添加部分匹配的
+                if not matched_cases:
+                    matched_cases.append(tc_entry)
+
+        return matched_cases
+
+    except Exception as e:
+        log(f"读取测试用例文件失败: {e}", "ERROR")
+        return []
+
+
+def find_test_case_by_tc_id(tc_id: str) -> Optional[Dict]:
+    """从 generated_test_cases.json 中通过 TC ID 查找测试用例
+
+    Args:
+        tc_id: 测试用例 ID，如 TC_SECC_CMN_VTB_SupportedAppProtocol_001
+
+    Returns:
+        匹配的测试用例字典，或 None
+    """
+    if not GENERATED_TEST_CASES_PATH.exists():
+        log(f"测试用例文件不存在: {GENERATED_TEST_CASES_PATH}", "WARN")
+        return None
+
+    try:
+        data = load_json(GENERATED_TEST_CASES_PATH)
+        test_cases = data.get("test_cases", [])
+
+        for tc_entry in test_cases:
+            tc = tc_entry.get("Test_Case", {})
+            if tc.get("TC_Id") == tc_id:
+                return tc_entry
+
+        return None
+
+    except Exception as e:
+        log(f"读取测试用例文件失败: {e}", "ERROR")
+        return None
+
+
+def call_test_case_generator(requirement_ids: List[str], mode: str = "multi") -> Optional[Dict]:
+    """调用第一阶段的测试用例生成器生成测试用例
+
+    Args:
+        requirement_ids: 安全需求 ID 列表
+        mode: 生成模式，"single" 或 "multi"（多需求合并为一个测试用例）
+
+    Returns:
+        生成的测试用例字典，或 None
+    """
+    log(f"调用测试用例生成器: requirements={requirement_ids}, mode={mode}")
+
+    if not TEST_CASE_GENERATOR_SCRIPT.exists():
+        log(f"测试用例生成器不存在: {TEST_CASE_GENERATOR_SCRIPT}", "ERROR")
+        return None
+
+    try:
+        cmd = [
+            sys.executable,
+            str(TEST_CASE_GENERATOR_SCRIPT),
+        ]
+
+        if mode == "multi" and len(requirement_ids) > 1:
+            cmd.extend(["--mode", "multi"])
+            cmd.extend(requirement_ids)
+        else:
+            cmd.extend(requirement_ids)
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 测试用例生成可能需要更长时间
+            cwd=str(AGENT_DIR),
+        )
+
+        if result.returncode != 0:
+            log(f"测试用例生成器执行失败: {result.stderr[:500]}", "ERROR")
+            return None
+
+        # 尝试从输出中解析生成的测试用例
+        # 查找最近生成的测试用例文件
+        output_dir = TEST_CASE_DIR / "output"
+        if output_dir.exists():
+            output_files = list(output_dir.glob("*.json"))
+            if output_files:
+                latest_file = max(output_files, key=lambda p: p.stat().st_mtime)
+                log(f"读取生成的测试用例: {latest_file}")
+                return load_json(latest_file)
+
+        return None
+
+    except subprocess.TimeoutExpired:
+        log("测试用例生成器超时", "ERROR")
+        return None
+    except Exception as e:
+        log(f"调用测试用例生成器失败: {e}", "ERROR")
+        return None
+
+
+def get_test_cases_for_requirements(
+    requirement_ids: List[str],
+    auto_generate: bool = True,
+    multi_mode: bool = True
+) -> List[Dict]:
+    """获取需求对应的测试用例
+
+    查找策略:
+    1. 首先从 generated_test_cases.json 中查找
+    2. 如果未找到且 auto_generate 为 True，调用测试用例生成器
+
+    Args:
+        requirement_ids: 安全需求 ID 列表
+        auto_generate: 未找到时是否自动生成
+        multi_mode: 生成模式，True 表示多需求合并为一个测试用例
+
+    Returns:
+        测试用例字典列表
+    """
+    log(f"查找测试用例: requirements={requirement_ids}")
+
+    # 尝试从已生成的测试用例中查找
+    matched_cases = find_test_cases_in_generated_file(requirement_ids)
+
+    if matched_cases:
+        log(f"找到 {len(matched_cases)} 个匹配的测试用例")
+        return matched_cases
+
+    # 未找到，尝试自动生成
+    if auto_generate:
+        log(f"未找到匹配的测试用例，尝试生成...")
+        mode = "multi" if multi_mode and len(requirement_ids) > 1 else "single"
+        generated = call_test_case_generator(requirement_ids, mode=mode)
+
+        if generated:
+            test_cases = generated.get("test_cases", [])
+            if test_cases:
+                log(f"成功生成 {len(test_cases)} 个测试用例")
+                return test_cases
+
+    log(f"无法获取需求 {requirement_ids} 对应的测试用例", "WARN")
+    return []
+
+
+def parse_test_case_from_string(test_case_str: str) -> Optional[Dict]:
+    """从字符串解析测试用例 JSON
+
+    Args:
+        test_case_str: 测试用例 JSON 字符串
+
+    Returns:
+        测试用例字典，或 None
+    """
+    try:
+        return json.loads(test_case_str)
+    except json.JSONDecodeError:
+        pass
+
+    # 尝试从代码块中提取
+    import re
+    json_block = re.search(r'```(?:json)?\s*\n(.*?)\n```', test_case_str, re.DOTALL)
+    if json_block:
+        try:
+            return json.loads(json_block.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+def load_test_case_from_file(file_path: Path) -> Optional[Dict]:
+    """从文件加载测试用例
+
+    Args:
+        file_path: 测试用例文件路径
+
+    Returns:
+        测试用例字典，或 None
+    """
+    if not file_path.exists():
+        log(f"测试用例文件不存在: {file_path}", "ERROR")
+        return None
+
+    try:
+        return load_json(file_path)
+    except Exception as e:
+        log(f"读取测试用例文件失败: {e}", "ERROR")
+        return None
+
+
+def find_requirement_context(requirement_id: str) -> str:
+    """从 ISO 15118-2 层次树中查找需求上下文"""
+    if not HIERARCHICAL_TREE_PATH.exists():
+        return ""
+
+    try:
+        tree = load_json(HIERARCHICAL_TREE_PATH)
+    except Exception:
+        return ""
+
+    # 搜索需求 ID
+    context_parts = []
+
+    def search_node(node, path=""):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                current_path = f"{path}/{key}" if path else key
+                if isinstance(value, str) and requirement_id in value:
+                    context_parts.append(f"[{current_path}]: {value[:500]}")
+                elif isinstance(value, (dict, list)):
+                    search_node(value, current_path)
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                search_node(item, f"{path}[{i}]")
+
+    search_node(tree)
+    return "\n".join(context_parts[:10])  # 限制上下文长度
+
+
+def search_knowledge_base(message_type: str, sut_type: str) -> Dict[str, Any]:
+    """从知识库中检索相关代码片段（用于 TTCN-3 代码生成的参考）
+
+    注意：这里仍然使用知识库作为 TTCN-3 代码生成的参考样例，
+    但测试用例本身必须来自 generated_test_cases.json。
+
+    优先使用 by_message_type 视图（按消息类型索引），回退到 ttcn_code_by_type（按代码类型索引）。
+    """
+    if not KNOWLEDGE_BASE_PATH.exists():
+        return {}
+
+    kb = load_json(KNOWLEDGE_BASE_PATH)
+    results = {
+        "testcases": [],
+        "functions": [],
+        "templates": [],
+        "altsteps": [],
+        "descriptions": [],
+    }
+
+    # 优先使用 by_message_type 视图
+    by_message = kb.get("by_message_type", {})
+    if by_message:
+        # 精确匹配消息类型
+        msg_view = by_message.get(message_type, {})
+        if not msg_view:
+            # 模糊匹配：查找包含 message_type 的键
+            for key in by_message:
+                if message_type.lower() in key.lower():
+                    msg_view = by_message[key]
+                    break
+
+        if msg_view:
+            results["testcases"] = [
+                tc for tc in msg_view.get("testcases", [])
+                if sut_type in tc.get("name", "")
+            ]
+            results["functions"] = (
+                msg_view.get("test_behavior_functions", []) +
+                msg_view.get("precondition_functions", []) +
+                msg_view.get("postcondition_functions", [])
+            )
+            results["templates"] = (
+                msg_view.get("send_templates", []) +
+                msg_view.get("receive_templates", [])
+            )
+            results["altsteps"] = msg_view.get("altsteps", [])
+            results["descriptions"] = msg_view.get("descriptions", [])
+
+    # 如果 by_message_type 没有结果，回退到 ttcn_code_by_type
+    if not any(results[k] for k in ["testcases", "functions", "templates"]):
+        code_by_type = kb.get("ttcn_code_by_type", {})
+
+        for tc in code_by_type.get("testcase", []):
+            if message_type.lower() in tc.get("name", "").lower():
+                results["testcases"].append(tc)
+            elif sut_type in tc.get("name", ""):
+                results["testcases"].append(tc)
+
+        for func in code_by_type.get("function", []):
+            name = func.get("name", "")
+            if message_type.lower() in name.lower():
+                results["functions"].append(func)
+
+        for tmpl in code_by_type.get("template", []):
+            name = tmpl.get("name", "")
+            if message_type.lower() in name.lower():
+                results["templates"].append(tmpl)
+
+        for alt in code_by_type.get("altstep", []):
+            if sut_type in alt.get("name", ""):
+                results["altsteps"].append(alt)
+
+    # 补充 tc_code_associations 中的关联信息
+    tc_assocs = kb.get("tc_code_associations", [])
+    related_assocs = [
+        a for a in tc_assocs
+        if a.get("message_type", "").lower() == message_type.lower()
+        and a.get("sut_type", "") == sut_type
+    ]
+    if related_assocs:
+        results["associations"] = related_assocs[:5]
+
+    # 限制每类最多 5 个
+    for key in ["testcases", "functions", "templates", "altsteps", "descriptions"]:
+        results[key] = results[key][:5]
+
+    return results
+
+
+# ============================================================
+# Agent 1: Orchestrator - 意图分解
+# ============================================================
+def run_orchestrator(test_case: Dict, requirement_context: str, sop: Dict) -> Optional[Dict]:
+    """运行 Orchestrator Agent，分解测试用例为生成计划"""
+    system_prompt = load_text(ORCHESTRATOR_PROMPT_PATH)
+
+    user_prompt = f"""{system_prompt}
+
+---
+
+## 输入数据
+
+### 测试用例 JSON:
+```json
+{json.dumps(test_case, indent=2, ensure_ascii=False)}
+```
+
+### 需求上下文 (ISO 15118-2):
+{requirement_context if requirement_context else "(无额外上下文)"}
+
+### SOP 前置条件链参考:
+```json
+{json.dumps(sop.get("precondition_chains", {}), indent=2)}
+```
+
+### SOP 命名规则:
+```json
+{json.dumps(sop.get("naming_rules", {}), indent=2)}
+```
+
+请分析以上测试用例，输出结构化的 TTCN-3 生成计划 JSON。"""
+
+    response = call_claude_agent(user_prompt, "Orchestrator", timeout=DEFAULT_AGENT_TIMEOUT)
+    if not response:
+        return None
+
+    plan = extract_json_from_response(response)
+    if not plan:
+        log("Orchestrator 输出无法解析为 JSON", "ERROR")
+        log(f"原始输出: {response[:500]}", "DEBUG")
+        return None
+
+    log(f"生成计划: tc_id={plan.get('tc_id')}, type={plan.get('test_type')}")
+    return plan
+
+
+# ============================================================
+# Agent 2: Summarizer - 知识检索
+# ============================================================
+def run_summarizer(generation_plan: Dict, kb_search_results: Dict) -> Optional[Dict]:
+    """运行 Summarizer Agent，检索相关 TTCN-3 参考代码"""
+    system_prompt = load_text(SUMMARIZER_PROMPT_PATH)
+
+    # 准备知识库摘要（避免传入过大的完整知识库）
+    kb_summary = json.dumps(kb_search_results, indent=2, ensure_ascii=False)
+    # 截断过长的代码块
+    if len(kb_summary) > 15000:
+        kb_summary = kb_summary[:15000] + "\n... (truncated)"
+
+    user_prompt = f"""{system_prompt}
+
+---
+
+## 输入数据
+
+### 生成计划 (from Orchestrator):
+```json
+{json.dumps(generation_plan, indent=2, ensure_ascii=False)}
+```
+
+### 知识库检索结果 (预筛选):
+```json
+{kb_summary}
+```
+
+请根据生成计划，从以上知识库结果中选取最相关的参考代码，输出 JSON。"""
+
+    response = call_claude_agent(user_prompt, "Summarizer", timeout=180)
+    if not response:
+        return None
+
+    references = extract_json_from_response(response)
+    if not references:
+        log("Summarizer 输出无法解析为 JSON", "WARN")
+        # 返回空引用，不阻塞流程
+        return {"reference_testcase": None, "reference_test_behavior": None,
+                "reference_templates": [], "additional_context": ""}
+
+    return references
+
+
+# ============================================================
+# Agent 3: Core Agent - TTCN-3 代码生成
+# ============================================================
+def run_core_agent(generation_plan: Dict, references: Dict,
+                   few_shot_examples: Dict[str, str], sop: Dict,
+                   error_feedback: str = "") -> str:
+    """运行 Core Agent，生成 TTCN-3 代码"""
+    system_prompt = load_text(CORE_AGENT_PROMPT_PATH)
+
+    # 选择合适的 few-shot 样例
+    test_type = generation_plan.get("test_type", "GoodCase")
+    if test_type == "GoodCase":
+        tc_example = few_shot_examples.get("testcase_goodcase", "")
+    else:
+        tc_example = few_shot_examples.get("testcase_badcase", "")
+
+    tb_example = few_shot_examples.get("test_behavior", "")
+    tmpl_example = few_shot_examples.get("templates", "")
+    pre_example = few_shot_examples.get("precondition", "")
+
+    # 构建参考代码部分
+    ref_code_parts = []
+    if references:
+        if references.get("reference_testcase"):
+            ref_tc = references["reference_testcase"]
+            if isinstance(ref_tc, dict) and ref_tc.get("code"):
+                ref_code_parts.append(f"// 参考 testcase:\n{ref_tc['code']}")
+        if references.get("reference_test_behavior"):
+            ref_tb = references["reference_test_behavior"]
+            if isinstance(ref_tb, dict) and ref_tb.get("code"):
+                ref_code_parts.append(f"// 参考 test behavior:\n{ref_tb['code']}")
+        for ref_tmpl in references.get("reference_templates", []):
+            if isinstance(ref_tmpl, dict) and ref_tmpl.get("code"):
+                ref_code_parts.append(f"// 参考 template:\n{ref_tmpl['code']}")
+
+    ref_code_section = "\n\n".join(ref_code_parts) if ref_code_parts else "(无额外参考代码)"
+
+    # 错误反馈（来自 Fault Corrector 的迭代修复）
+    error_section = ""
+    if error_feedback:
+        error_section = f"""
+## ⚠️ 上一次生成的代码存在以下问题，请修复:
+{error_feedback}
+"""
+
+    user_prompt = f"""{system_prompt}
+
+---
+{error_section}
+
+## 生成计划 (from Orchestrator):
+```json
+{json.dumps(generation_plan, indent=2, ensure_ascii=False)}
+```
+
+## 从知识库检索的参考代码 (from Summarizer):
+{ref_code_section}
+
+## Few-shot 样例
+
+### Testcase 样例:
+```ttcn3
+{tc_example}
+```
+
+### Test Behavior Function 样例:
+```ttcn3
+{tb_example}
+```
+
+### Template 样例:
+```ttcn3
+{tmpl_example}
+```
+
+### Precondition Function 样例:
+```ttcn3
+{pre_example}
+```
+
+## SOP 常见错误提醒:
+{json.dumps(sop.get("common_errors", []), indent=2, ensure_ascii=False)}
+
+请严格按照生成计划和样例格式，生成完整的 TTCN-3 模块代码。只输出代码，不要解释。"""
+
+    response = call_claude_agent(user_prompt, "Core Agent", timeout=180)
+    if not response:
+        return ""
+
+    return extract_ttcn3_from_response(response)
+
+
+# ============================================================
+# Agent 4: Fault Corrector - 代码校验与修复
+# ============================================================
+def run_fault_corrector(ttcn3_code: str, generation_plan: Dict, sop: Dict) -> Dict:
+    """运行 Fault Corrector Agent，校验并修复代码"""
+    system_prompt = load_text(FAULT_CORRECTOR_PROMPT_PATH)
+
+    user_prompt = f"""{system_prompt}
+
+---
+
+## 待校验的 TTCN-3 代码:
+```ttcn3
+{ttcn3_code}
+```
+
+## 生成计划 (from Orchestrator):
+```json
+{json.dumps(generation_plan, indent=2, ensure_ascii=False)}
+```
+
+## SOP 命名规则:
+```json
+{json.dumps(sop.get("naming_rules", {}), indent=2)}
+```
+
+## SOP 常见错误:
+```json
+{json.dumps(sop.get("common_errors", []), indent=2, ensure_ascii=False)}
+```
+
+请按照检查清单逐项校验，输出 JSON 结果。"""
+
+    response = call_claude_agent(user_prompt, "Fault Corrector", timeout=180)
+    if not response:
+        return {"status": "error", "issues_found": [], "corrected_code": ttcn3_code}
+
+    result = extract_json_from_response(response)
+    if not result:
+        log("Fault Corrector 输出无法解析为 JSON", "WARN")
+        return {"status": "pass", "issues_found": [], "corrected_code": ttcn3_code}
+
+    return result
+
+
+# ============================================================
+# 单个测试用例的代码生成
+# ============================================================
+def generate_code_for_test_case(
+    test_case: Dict,
+    sut_type: Optional[str] = None,
+    requirement_context: str = "",
+) -> Optional[str]:
+    """为单个测试用例生成 TTCN-3 代码
+
+    Args:
+        test_case: 测试用例字典（包含 Test_Case 键）
+        sut_type: SUT 类型，"SECC" 或 "EVCC"（可选，自动推断）
+        requirement_context: 需求上下文
+
+    Returns:
+        生成的 .ttcn 文件路径，失败返回 None
+    """
+    # 提取测试用例
+    tc = test_case.get("Test_Case", test_case)
+    tc_id = tc.get("TC_Id", "unknown")
+
+    log(f"\n{'=' * 60}")
+    log(f"生成 TTCN-3 代码: TC_ID={tc_id}")
+    log(f"{'=' * 60}")
+
+    # === Step 0: 加载基础数据 ===
+    log("加载基础数据...")
+    sop = load_json(SOP_PATH)
+    few_shot_examples = load_few_shot_examples()
+
+    # === Step 1: Orchestrator - 意图分解 ===
+    log("\n--- Step 1: Orchestrator (意图分解) ---")
+    generation_plan = run_orchestrator(tc, requirement_context, sop)
+    if not generation_plan:
+        log("Orchestrator 失败，流水线终止", "ERROR")
+        return None
+
+    # 如果用户指定了 SUT 类型，覆盖 Orchestrator 的推断
+    if sut_type:
+        generation_plan["sut_type"] = sut_type
+        log(f"使用用户指定的 SUT 类型: {sut_type}")
+
+    # 保存生成计划
+    plan_tc_id = generation_plan.get('tc_id', tc_id)
+    plan_path = GENERATED_DIR / f"{plan_tc_id}_plan.json"
+    with open(plan_path, "w", encoding="utf-8") as f:
+        json.dump(generation_plan, f, indent=2, ensure_ascii=False)
+    log(f"生成计划已保存: {plan_path}")
+
+    # === Step 2: Summarizer - 知识检索 ===
+    log("\n--- Step 2: Summarizer (知识检索) ---")
+    msg_type = generation_plan.get("message_type", "")
+    sut = generation_plan.get("sut_type", "SECC")
+    kb_search_results = search_knowledge_base(msg_type, sut)
+    log(f"本地预检索: testcases={len(kb_search_results.get('testcases', []))}, "
+        f"functions={len(kb_search_results.get('functions', []))}, "
+        f"templates={len(kb_search_results.get('templates', []))}")
+
+    references = run_summarizer(generation_plan, kb_search_results)
+    if not references:
+        log("Summarizer 失败，使用空引用继续", "WARN")
+        references = {}
+
+    # === Step 3 + 4: Core Agent + Fault Corrector (带迭代修复) ===
+    ttcn3_code = ""
+    error_feedback = ""
+
+    for iteration in range(1, MAX_CORRECTION_ITERATIONS + 1):
+        log(f"\n--- Step 3: Core Agent (代码生成, 迭代 {iteration}/{MAX_CORRECTION_ITERATIONS}) ---")
+        ttcn3_code = run_core_agent(
+            generation_plan, references, few_shot_examples, sop, error_feedback
+        )
+        if not ttcn3_code:
+            log("Core Agent 未生成代码", "ERROR")
+            if iteration < MAX_CORRECTION_ITERATIONS:
+                error_feedback = "上一次未生成任何代码，请重新生成完整的 TTCN-3 模块。"
+                continue
+            return None
+
+        log(f"生成代码 {len(ttcn3_code)} 字符")
+
+        # Fault Corrector 校验
+        log(f"\n--- Step 4: Fault Corrector (校验, 迭代 {iteration}/{MAX_CORRECTION_ITERATIONS}) ---")
+        fc_result = run_fault_corrector(ttcn3_code, generation_plan, sop)
+
+        status = fc_result.get("status", "pass")
+        issues = fc_result.get("issues_found", [])
+        corrected_code = fc_result.get("corrected_code", ttcn3_code)
+
+        if status == "pass":
+            log("校验通过!")
+            ttcn3_code = corrected_code if corrected_code else ttcn3_code
+            break
+
+        # 有问题需要修复
+        critical_issues = [i for i in issues if i.get("severity") == "critical"]
+        warning_issues = [i for i in issues if i.get("severity") == "warning"]
+        log(f"发现 {len(critical_issues)} 个严重问题, {len(warning_issues)} 个警告")
+
+        if critical_issues and iteration < MAX_CORRECTION_ITERATIONS:
+            # 使用 Fault Corrector 的修复版本，或将错误反馈给 Core Agent
+            if corrected_code and corrected_code != ttcn3_code:
+                log("使用 Fault Corrector 修复后的代码")
+                ttcn3_code = corrected_code
+                # 再次校验修复后的代码
+                fc_result2 = run_fault_corrector(ttcn3_code, generation_plan, sop)
+                if fc_result2.get("status") == "pass":
+                    log("修复后校验通过!")
+                    break
+                # 仍有问题，反馈给 Core Agent
+                error_feedback = "\n".join(
+                    f"- [{i.get('category')}] {i.get('description')} (位置: {i.get('location', 'N/A')})"
+                    for i in fc_result2.get("issues_found", [])
+                    if i.get("severity") == "critical"
+                )
+            else:
+                error_feedback = "\n".join(
+                    f"- [{i.get('category')}] {i.get('description')} (修复建议: {i.get('fix', 'N/A')})"
+                    for i in critical_issues
+                )
+        else:
+            # 只有警告或已达最大迭代次数，使用修复后的代码
+            if corrected_code:
+                ttcn3_code = corrected_code
+            break
+
+    # === Step 5: 保存结果 ===
+    output_filename = f"{plan_tc_id}.ttcn"
+    output_path = GENERATED_DIR / output_filename
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(ttcn3_code)
+
+    log(f"\n{'=' * 60}")
+    log(f"TTCN-3 代码已生成: {output_path}")
+    log(f"文件大小: {os.path.getsize(output_path)} bytes")
+    log(f"{'=' * 60}")
+
+    return str(output_path)
+
+
+# ============================================================
+# 主流水线
+# ============================================================
+def run_pipeline(
+    requirement_ids: Optional[List[str]] = None,
+    tc_id: Optional[str] = None,
+    test_case: Optional[Dict] = None,
+    test_case_file: Optional[Path] = None,
+    sut_type: Optional[str] = None,
+    auto_generate: bool = True,
+    multi_mode: bool = True,
+) -> List[Dict]:
+    """运行完整的 TTCN-3 代码生成流水线
+
+    支持多种输入模式:
+    1. 通过 requirement_ids: 从已生成的测试用例中查找，或调用测试用例生成器
+    2. 通过 tc_id: 通过 TC ID 查找测试用例
+    3. 通过 test_case: 直接传入测试用例字典
+    4. 通过 test_case_file: 从文件读取测试用例
+
+    Args:
+        requirement_ids: 安全需求 ID 列表，如 ["V2G2-082", "V2G2-165"]
+        tc_id: 测试用例 ID，如 TC_SECC_CMN_VTB_SupportedAppProtocol_001
+        test_case: 测试用例字典（可选）
+        test_case_file: 测试用例文件路径（可选）
+        sut_type: SUT 类型，"SECC" 或 "EVCC"（可选，自动推断）
+        auto_generate: 未找到测试用例时是否自动生成
+        multi_mode: 多需求模式，True 表示合并为一个测试用例
+
+    Returns:
+        包含生成结果的列表，每个元素包含 input、output、success 字段
+    """
+    results = []
+
+    # 确保输出目录存在
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+
+    # === 模式1: 通过测试用例字典 ===
+    if test_case:
+        log("使用直接传入的测试用例")
+        tc = test_case.get("Test_Case", test_case)
+        requirement_ids = tc.get("Document_Reference", {}).get("Requirements", [])
+        requirement_ids = [r.strip("[]").strip() for r in requirement_ids]
+        requirement_context = find_requirement_context(requirement_ids[0]) if requirement_ids else ""
+
+        output_path = generate_code_for_test_case(test_case, sut_type, requirement_context)
+        results.append({
+            "input": {"type": "test_case", "data": tc.get("TC_Id", "unknown")},
+            "output": output_path,
+            "success": output_path is not None
+        })
+        return results
+
+    # === 模式2: 通过测试用例文件 ===
+    if test_case_file:
+        log(f"从文件加载测试用例: {test_case_file}")
+        loaded_test_case = load_test_case_from_file(Path(test_case_file))
+        if loaded_test_case:
+            tc = loaded_test_case.get("Test_Case", loaded_test_case)
+            requirement_ids = tc.get("Document_Reference", {}).get("Requirements", [])
+            requirement_ids = [r.strip("[]").strip() for r in requirement_ids]
+            requirement_context = find_requirement_context(requirement_ids[0]) if requirement_ids else ""
+
+            output_path = generate_code_for_test_case(loaded_test_case, sut_type, requirement_context)
+            results.append({
+                "input": {"type": "test_case_file", "data": str(test_case_file)},
+                "output": output_path,
+                "success": output_path is not None
+            })
+            return results
+        else:
+            log("无法加载测试用例文件", "ERROR")
+            results.append({
+                "input": {"type": "test_case_file", "data": str(test_case_file)},
+                "output": None,
+                "success": False
+            })
+            return results
+
+    # === 模式3: 通过 TC ID ===
+    if tc_id:
+        log(f"通过 TC ID 查找测试用例: {tc_id}")
+        tc_entry = find_test_case_by_tc_id(tc_id)
+        if tc_entry:
+            tc = tc_entry.get("Test_Case", tc_entry)
+            requirement_ids = tc.get("Document_Reference", {}).get("Requirements", [])
+            requirement_ids = [r.strip("[]").strip() for r in requirement_ids]
+            requirement_context = find_requirement_context(requirement_ids[0]) if requirement_ids else ""
+
+            output_path = generate_code_for_test_case(tc_entry, sut_type, requirement_context)
+            results.append({
+                "input": {"type": "tc_id", "data": tc_id},
+                "output": output_path,
+                "success": output_path is not None
+            })
+            return results
+        else:
+            log(f"未找到测试用例: {tc_id}", "ERROR")
+            results.append({
+                "input": {"type": "tc_id", "data": tc_id},
+                "output": None,
+                "success": False
+            })
+            return results
+
+    # === 模式4: 通过需求 ID ===
+    if not requirement_ids:
+        log("必须提供 requirement_ids、tc_id、test_case 或 test_case_file 之一", "ERROR")
+        return results
+
+    log(f"通过需求 ID 查找测试用例: {requirement_ids}")
+
+    # 获取测试用例
+    test_cases = get_test_cases_for_requirements(
+        requirement_ids,
+        auto_generate=auto_generate,
+        multi_mode=multi_mode
+    )
+
+    if not test_cases:
+        log(f"无法获取需求 {requirement_ids} 对应的测试用例", "ERROR")
+        results.append({
+            "input": {"type": "requirements", "data": requirement_ids},
+            "output": None,
+            "success": False
+        })
+        return results
+
+    # 为每个测试用例生成代码
+    for tc_entry in test_cases:
+        tc = tc_entry.get("Test_Case", tc_entry)
+        tc_id = tc.get("TC_Id", "unknown")
+
+        # 获取需求上下文
+        doc_ref = tc.get("Document_Reference", {})
+        reqs = doc_ref.get("Requirements", []) if isinstance(doc_ref, dict) else []
+        requirement_context = find_requirement_context(reqs[0].strip("[]").strip()) if reqs else ""
+
+        output_path = generate_code_for_test_case(tc_entry, sut_type, requirement_context)
+        results.append({
+            "input": {"type": "requirements", "data": requirement_ids, "tc_id": tc_id},
+            "output": output_path,
+            "success": output_path is not None
+        })
+
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="ISO 15118-2 TTCN-3 代码生成流水线\n\n"
+                    "支持多种输入模式:\n"
+                    "  1. 安全需求ID: --requirement 或 --requirements\n"
+                    "  2. 测试用例ID: --tc-id\n"
+                    "  3. 测试用例JSON: --test-case\n"
+                    "  4. 测试用例文件: --test-case-file"
+    )
+
+    # 输入参数
+    input_group = parser.add_argument_group("输入模式 (选择其中一种)")
+    input_group.add_argument(
+        "--requirement", type=str,
+        help="单个安全需求 ID，如 V2G2-082"
+    )
+    input_group.add_argument(
+        "--requirements", type=str,
+        help="多个安全需求 ID，逗号分隔，如 V2G2-082,V2G2-165"
+    )
+    input_group.add_argument(
+        "--tc-id", type=str,
+        help="测试用例 ID，如 TC_SECC_CMN_VTB_SupportedAppProtocol_001"
+    )
+    input_group.add_argument(
+        "--test-case", type=str,
+        help="测试用例 JSON 字符串"
+    )
+    input_group.add_argument(
+        "--test-case-file", type=str,
+        help="测试用例 JSON 文件路径"
+    )
+
+    # 配置参数
+    config_group = parser.add_argument_group("配置选项")
+    config_group.add_argument(
+        "--sut", type=str, choices=["SECC", "EVCC"],
+        help="SUT 类型（可选，默认自动推断）"
+    )
+    config_group.add_argument(
+        "--mode", choices=["single", "multi"], default="single",
+        help="生成模式: single (每个需求单独生成) 或 multi (多需求合并为一个测试用例)"
+    )
+    config_group.add_argument(
+        "--no-auto-generate", action="store_true",
+        help="未找到测试用例时不自动生成"
+    )
+
+    args = parser.parse_args()
+
+    # 确保输出目录存在
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 解析输入
+    requirement_ids = None
+    tc_id = None
+    test_case = None
+    test_case_file = None
+
+    if args.test_case:
+        test_case = parse_test_case_from_string(args.test_case)
+        if not test_case:
+            log("无法解析 --test-case 参数为有效的 JSON", "ERROR")
+            return 1
+    elif args.test_case_file:
+        test_case_file = Path(args.test_case_file)
+    elif args.tc_id:
+        tc_id = args.tc_id
+    elif args.requirement:
+        requirement_ids = [args.requirement.strip()]
+    elif args.requirements:
+        requirement_ids = [r.strip() for r in args.requirements.split(",") if r.strip()]
+    else:
+        parser.error("必须指定 --requirement, --requirements, --tc-id, --test-case 或 --test-case-file 之一")
+
+    # 运行流水线
+    results = run_pipeline(
+        requirement_ids=requirement_ids,
+        tc_id=tc_id,
+        test_case=test_case,
+        test_case_file=test_case_file,
+        sut_type=args.sut,
+        auto_generate=not args.no_auto_generate,
+        multi_mode=(args.mode == "multi"),
+    )
+
+    # 打印结果报告
+    print(f"\n{'=' * 60}")
+    print("生成报告")
+    print(f"{'=' * 60}")
+
+    success_count = sum(1 for r in results if r["success"])
+    print(f"总计: {len(results)}, 成功: {success_count}, 失败: {len(results) - success_count}")
+
+    for r in results:
+        status = "✓" if r["success"] else "✗"
+        input_info = r["input"]
+        input_type = input_info["type"]
+        input_data = input_info["data"]
+        tc_id_out = input_info.get("tc_id", "")
+
+        if input_type == "requirements" and tc_id_out:
+            print(f"  {status} 需求 {input_data} → TC {tc_id_out}: {r['output'] or 'FAILED'}")
+        elif input_type == "requirements":
+            print(f"  {status} 需求 {input_data}: {r['output'] or 'FAILED'}")
+        elif input_type == "tc_id":
+            print(f"  {status} TC_ID={input_data}: {r['output'] or 'FAILED'}")
+        elif input_type == "test_case":
+            print(f"  {status} 测试用例={input_data}: {r['output'] or 'FAILED'}")
+        else:
+            print(f"  {status} {input_type}={input_data}: {r['output'] or 'FAILED'}")
+
+    return 0 if success_count == len(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

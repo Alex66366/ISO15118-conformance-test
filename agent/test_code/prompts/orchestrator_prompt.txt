@@ -81,3 +81,5 @@ You MUST output a valid JSON object (and nothing else) with this exact structure
 ```
 
 2. **Your entire response MUST end with a valid JSON block** enclosed in ` ```json ... ``` ` containing the generation plan. This is non-negotiable. If your response does not end with a JSON code block, the pipeline will fail.
+
+<!-- NeTestLLM SOP v2.0 Pure Static -->

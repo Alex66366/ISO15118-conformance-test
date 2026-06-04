@@ -1,7 +1,36 @@
 module f_SECC_CMN_TB_VTB_SupportedAppProtocol_001 {
     import from SECC_TestSystem all;
 
-    function f_SECC_CMN_TB_VTB_SupportedAppProtocol_001() runs on SECCTester {
-        // Stub
+    // ================================================================
+    // Test Behavior Function: SupportedAppProtocol Message Exchange
+    //
+    // Purpose: This is a placeholder for SupportedAppProtocol
+    //          message exchange tests.
+    //
+    // NOTE: The SupportedAppProtocol exchange is normally a precondition
+    //       (f_SECC_CMN_PR_SupportedAppProtocol_001). Implement this
+    //       test behavior function body when adding a dedicated
+    //       SupportedAppProtocol test case that is the PRIMARY test target.
+    //
+    // SOP for V2G application messages:
+    //   STEP 1: Lookup wire_hex in exi_payload_library.json
+    //   STEP 2: Locate md_CMN_SupportedAppProtocolReq_001 in SECC_CmnTemplates.ttcn
+    //   STEP 3: Send via structured union template
+    //   STEP 4: Receive via matching template, set verdict
+    //
+    // NOTE: This is a stub. Implement the test behavior function body
+    //       when adding a SupportedAppProtocol test case.
+    // ================================================================
+
+    function f_SECC_CMN_TB_VTB_SupportedAppProtocol_001()
+        runs on SECCTester
+        return verdicttype
+    {
+        // TODO: Implement SupportedAppProtocol test behavior.
+        // For SupportedAppProtocol as the primary test target:
+        //   - Send: pt_V2G_TCP_TLS_ALM_SECC_Port.send({ supportedAppProtocolReq := md_CMN_SupportedAppProtocolReq_001 })
+        //   - Receive: { supportedAppProtocolRes := md_CMN_SupportedAppProtocolRes_001 }
+        log("STUB: f_SECC_CMN_TB_VTB_SupportedAppProtocol_001 -- implement when adding SupportedAppProtocol test case");
+        return pass;
     }
 }

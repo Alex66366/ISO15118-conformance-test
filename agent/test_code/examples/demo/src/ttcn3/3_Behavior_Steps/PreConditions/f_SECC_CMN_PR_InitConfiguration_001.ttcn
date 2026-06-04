@@ -1,7 +1,11 @@
-module PreConditions_InitConfig {
+module f_SECC_CMN_PR_InitConfiguration_001 {
     import from SECC_TestSystem all;
 
-    function f_do_init() runs on SECCTester {
+    function f_SECC_CMN_PR_InitConfiguration_001() runs on SECCTester {
+        // Map test system ports before use
+        map(self:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);
+        map(self:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
+
         // SDP Discovery: Send SDP request via UDP multicast to discover SECC
         // This will trigger SECC to start its TCP server
 

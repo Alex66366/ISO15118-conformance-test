@@ -1,7 +1,29 @@
 module f_SECC_CMN_TB_VTB_SDP_001 {
     import from SECC_TestSystem all;
 
-    function f_SECC_CMN_TB_VTB_SDP_001() runs on SECCTester {
-        // Stub
+    // ================================================================
+    // Test Behavior Function: SDP Message Exchange
+    //
+    // Purpose: This is a placeholder for SDP (Service Discovery Protocol)
+    //          message exchange tests. The actual SDP exchange is performed
+    //          by f_SECC_CMN_PR_InitConfiguration_001 via UDP multicast.
+    //
+    // For SDP message tests, use raw octetstrings on pt_V2G_UDP_SDP_Port:
+    //   - SDP request:  '01FE9000000000021000'O  (V2GTP header + SDP body)
+    //   - SDP response: handled by the SECC via pt_V2G_UDP_SDP_Port.receive
+    //
+    // NOTE: This is a stub. Implement the test behavior function body
+    //       when adding a dedicated SDP test case.
+    // ================================================================
+
+    function f_SECC_CMN_TB_VTB_SDP_001()
+        runs on SECCTester
+        return verdicttype
+    {
+        // TODO: Implement SDP test behavior.
+        // For SDP tests, send raw octetstrings via pt_V2G_UDP_SDP_Port
+        // (SDP uses UDP, not TCP, and is not EXI-encoded).
+        log("STUB: f_SECC_CMN_TB_VTB_SDP_001 -- implement when adding SDP test case");
+        return pass;
     }
 }

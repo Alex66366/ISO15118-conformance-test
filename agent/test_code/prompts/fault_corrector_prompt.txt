@@ -56,8 +56,29 @@ Analyze the test execution log and (optionally) the PCAP capture to:
 | port_mismatch | Port send on {port} | Packet to different port | auto_fix |
 | template_field_error | Send template fields | Wrong payloadType in response | auto_fix |
 | v2gtp_header_error | V2GTP header send | Wrong V2GTP header in packet | auto_fix |
+| codec_serialization_error | Log: 'Failed to serialize' from ExiCodecAdapter | Packet missing or truncated at EXI layer | auto_fix |
+| codec_deserialization_error | Log: 'Failed to deserialize' from ExiCodecAdapter | Malformed response frame received | auto_fix |
 | precondition_not_met | Precondition returns non-pass | SUT error or no response | manual_review |
 | pcap_only_error | No log errors | Unexpected packets | manual_review (SUT bug) |
+
+### CODEC ERROR LOGIC (NEW)
+
+If the runtime log shows C++ adapter errors like 'Failed to serialize' or
+'Failed to deserialize' from ExiCodecAdapter:
+- **DO NOT treat this as a network connection timeout**
+- This means the TTCN-3 template you sent was missing a mandatory field
+  (e.g., an `_isUsed` flag or a required enum value)
+- Inspect the TTCN-3 template and fill in the missing required fields per ISO 15118-2
+
+Common causes:
+  - SessionID not set on follow-up messages (must match established session)
+  - Optional Notification/Signature fields not initialized when required
+  - Enum fields set to invalid values (e.g., ChargeProgress before PowerDeliveryReq)
+  - `_isUsed` flag not set for optional but present fields
+  - PayloadType mismatch between send template and test expectation
+
+Fix strategy: Generate corrected template with all mandatory fields populated.
+
 
 ### Precondition/Postcondition Parameter Reference
 
@@ -100,7 +121,7 @@ Output a single JSON object:
     }
   ],
   "corrected_code": "",
-  "fault_type": "timeout|port_mismatch|template_field_error|v2gtp_header_error|precondition_not_met|pcap_only_error|ok",
+  "fault_type": "timeout|port_mismatch|template_field_error|v2gtp_header_error|codec_serialization_error|codec_deserialization_error|precondition_not_met|pcap_only_error|ok",
   "confidence": "0.0-1.0",
   "evidence": {
     "ttcn3_side": "<log events with verdict>",
@@ -138,4 +159,6 @@ Output a single JSON object:
 
 2. **You MUST conclude your reasoning and output the JSON.** Do NOT abort before outputting the code block. Do NOT output only analysis without the final JSON. Your output must end with the JSON object described in "Runtime Output Format" above.
 
-3. **Your entire response MUST end with a valid JSON block** enclosed in ` ```json ... ``` ` containing the fault analysis. This is non-negotiable. If your response does not end with a JSON code block, the pipeline will fail.
+3. **Your entire response MUST end with a valid JSON block** enclosed in ` ```json ... ``` ` containing the fault analysis. This is non-negotiable. If your response does not end with a JSON code block, the pipeline will crash.
+
+<!-- NeTestLLM SOP v2.0 Pure Static -->

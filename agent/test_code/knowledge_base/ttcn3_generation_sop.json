@@ -1,7 +1,7 @@
 {
   "sop_name": "ISO 15118-2 TTCN-3 Test Code Generation SOP",
-  "version": "1.3",
-  "description": "Standard Operating Procedures for generating TTCN-3 conformance test code from ISO 15118-2 test cases. Uses a 5-Agent architecture (Orchestrator, Summarizer, Core Agent, Fault Corrector, Infrastructure Agent) with two-phase correction (compile/runtime), cross-platform build/run, and dual-track runtime analysis. Version 1.3 adds dual-agent error classification for more efficient compile loop iterations.",
+  "version": "2.0",
+  "description": "Standard Operating Procedures for generating TTCN-3 conformance test code from ISO 15118-2 test cases. Uses a 5-Agent architecture (Orchestrator, Summarizer, Core Agent, Fault Corrector, Infrastructure Agent) with two-phase correction (compile/runtime), cross-platform build/run, and dual-track runtime analysis. Version 2.0 introduces Pure Static Data-Driven Pipeline: StaticExiDecoder replaces ExiCodecAdapter for decoding, using pre-computed JSON patterns with anchor-based EXI message identification and dynamic field slicing. Receive templates use lenient `?` pattern to accept any dynamic field values extracted from real SECC wire bytes.",
   "_changelog": {
     "1.0_to_1.1": [
       "Upgraded from 4-Agent to 5-Agent architecture (added Summarizer, Infrastructure Agent)",
@@ -34,9 +34,36 @@
       "Added FIX MODE sections to core_agent_prompt.txt and infrastructure_agent_prompt.txt",
       "Modified compilation loop to call both agents in parallel with filtered errors",
       "Updated iteration_loops.large_loop_compile to reflect dual-agent architecture"
+    ],
+    "1.3_to_1.4": [
+      "Purged all OpenV2G/X-Macro encoding references from step 3 details",
+      "Replaced step 3 details with mechanical SOP commands (4 sub-steps)",
+      "Added step 3b: V2G Message Exchange Mechanical SOP with explicit negative_constraints",
+      "Added three new common_errors for legacy pattern violations",
+      "Added SessionSetup precondition chain (InitConfiguration + SupportedAppProtocol)",
+      "Updated protocol_constants note to reflect ExiCodecAdapter pre-encoded payload approach",
+      "Removed reference to openv2g encoder from protocol_constants description"
+    ],
+    "1.4_to_1.5": [
+      "Golden Template V2G_MessageUnion compiles and runs successfully (TITAN CRL 113 200/6 R6B)",
+      "Added ExiCodecAdapter::encode(const char*, session_id, wire_output) overload for C++ ABI compatibility",
+      "Added -D_GLIBCXX_USE_CXX11_ABI=0 to Makefile for std::string linking across object files",
+      "Added global variable V2G__UDP__SDP__Port__last_secc_ip_ definition (was declared extern, missing definition)",
+      "Updated agent prompts to reflect V2G_MessageUnion as sole encoding path",
+      "Removed BAD CASE exception escape hatch from all prompts",
+      "Added port map/unmap to f_SECC_CMN_PR_InitConfiguration_001 and f_SECC_CMN_PO_InitialState_001",
+      "Moved stdlib includes before SECC_TestSystem.hh in V2G_TCP_TLS_Port.hh to prevent namespace pollution"
+    ],
+    "1.5_to_2.0": [
+      "Replaced ExiCodecAdapter with StaticExiDecoder for pure static JSON-driven EXI decode",
+      "Updated mechanical SOP: receive templates use lenient `?` pattern for all V2G response messages",
+      "StaticExiDecoder uses anchor-based pattern matching (feature_pattern from JSON) for message identification",
+      "Dynamic fields (SessionID, ResponseCode, EVSEID) are extracted by fixed byte offsets and mapped to TTCN-3 types",
+      "V2GResponseCodeMap provides ResponseCode byte -> TTCN-3 enum integer mapping for all 27 ISO 15118-2 codes",
+      "Added SECC port behavior: dynamic port from SDP, cached peer port for reconnection, 75ms guard delay",
+      "Updated agent prompts and demo README to reflect 4-step pipeline: Receive Hex -> Match JSON Pattern -> Slice Fields -> Deliver Union"
     ]
   },
-
   "overview": {
     "input": "Structured test case JSON (from test_case_generator.py, Phase 1)",
     "output": "Complete TTCN-3 code module + optional TITAN project structure",
@@ -55,15 +82,21 @@
       "runtime": "Compile Loop (Fault Corrector compile -> Core Agent fix, <=3 rounds) -> Runtime Loop (Fault Corrector runtime -> Self-Repair, <=2 rounds)"
     }
   },
-
   "steps": [
     {
       "step_id": 1,
       "name": "Intent Decomposition (Orchestrator)",
       "description": "Analyze the test case JSON and decompose it into a structured TTCN-3 generation plan",
       "agent": "orchestrator",
-      "inputs": ["test_case_json", "requirement_context", "sop_naming_rules", "sop_precondition_chains"],
-      "outputs": ["generation_plan_json"],
+      "inputs": [
+        "test_case_json",
+        "requirement_context",
+        "sop_naming_rules",
+        "sop_precondition_chains"
+      ],
+      "outputs": [
+        "generation_plan_json"
+      ],
       "details": [
         "Identify SUT type (SECC or EVCC) from test case",
         "Determine message type and protocol layer (V2GTP, SDP, V2G Application)",
@@ -75,10 +108,20 @@
         "Extract naming convention from SOP"
       ],
       "output_fields": [
-        "tc_id", "sut_type", "category", "message_type", "test_type",
-        "protocol_layer", "precondition_chain", "timer_param", "port_name",
-        "send_template_name", "receive_template_name", "requirements_traced",
-        "test_behavior_func_name", "postcondition_chain"
+        "tc_id",
+        "sut_type",
+        "category",
+        "message_type",
+        "test_type",
+        "protocol_layer",
+        "precondition_chain",
+        "timer_param",
+        "port_name",
+        "send_template_name",
+        "receive_template_name",
+        "requirements_traced",
+        "test_behavior_func_name",
+        "postcondition_chain"
       ]
     },
     {
@@ -86,8 +129,13 @@
       "name": "Knowledge Retrieval (Summarizer)",
       "description": "Retrieve the most relevant TTCN-3 reference code from the knowledge base",
       "agent": "summarizer",
-      "inputs": ["generation_plan", "kb_search_results"],
-      "outputs": ["selected_references"],
+      "inputs": [
+        "generation_plan",
+        "kb_search_results"
+      ],
+      "outputs": [
+        "selected_references"
+      ],
       "details": [
         "Use pre-filtered results from local search by message_type and sut_type",
         "Select reference testcase matching tc_id pattern",
@@ -96,37 +144,95 @@
         "Select relevant precondition functions"
       ],
       "output_fields": [
-        "reference_testcase", "reference_test_behavior",
-        "reference_templates", "reference_preconditions"
+        "reference_testcase",
+        "reference_test_behavior",
+        "reference_templates",
+        "reference_preconditions"
       ]
     },
     {
       "step_id": 3,
       "name": "TTCN-3 Code Generation (Core Agent)",
-      "description": "Generate the complete TTCN-3 module code (testcase + precondition/postcondition function files + aggregator modules)",
+      "description": "Generate complete TTCN-3 module code (testcase + precondition/postcondition function files + aggregator modules). Follow the Mechanical SOP (step 3b) for every V2G application message exchange.",
       "agent": "core_agent",
-      "inputs": ["generation_plan", "selected_references", "few_shot_examples", "sop", "error_feedback"],
-      "outputs": ["ttcn3_module_code", "precondition_files", "postcondition_files"],
+      "inputs": [
+        "generation_plan",
+        "selected_references",
+        "few_shot_examples",
+        "sop",
+        "error_feedback"
+      ],
+      "outputs": [
+        "ttcn3_module_code",
+        "precondition_files",
+        "postcondition_files"
+      ],
       "details": [
-        "Generate main test case module with tc_id as module name",
-        "Generate precondition function files (one per entry in precondition_chain)",
-        "Generate precondition aggregator module (PreConditions_SECC_15118_2.ttcn)",
-        "Generate postcondition function files (one per entry in postcondition_chain)",
-        "Generate postcondition aggregator module (PostConditions_SECC_15118_2.ttcn)",
-        "Implement alt block with alternatives: expected response (pass), unexpected response (fail), connection status change (for BadCase), timer timeout (inconc)",
-        "Stop timer in each non-timeout alternative",
-        "Set verdict with descriptive message, end with return getverdict",
-        "Add @desc/@reference/@requirement documentation comments"
-      ]
+        "For every V2G application message: (1) lookup wire_hex in exi_payload_library.json, (2) send via structured union template, (3) receive via matching template, (4) stop timer before setverdict. NEVER manually construct V2GTP headers or raw octetstrings for V2G application messages.",
+        "Generate main test case module with tc_id as module name.",
+        "Generate precondition function files (one per entry in precondition_chain).",
+        "Generate precondition aggregator module (PreConditions_SECC_15118_2.ttcn) -- import-only, NO inline definitions.",
+        "Generate postcondition function files (one per entry in postcondition_chain).",
+        "Generate postcondition aggregator module (PostConditions_SECC_15118_2.ttcn) -- import-only, NO inline definitions.",
+        "Implement alt block: expected response (pass), unexpected response (fail), timer timeout (inconc).",
+        "Stop timer in every non-timeout alt branch. End test behavior with return getverdict.",
+        "Add @desc/@reference/@requirement documentation comments."
+      ],
+      "mechanical_sop": {
+        "substep_1_lookup": "Read exi_payload_library.json. For the message type under test, record: (a) wire_hex, (b) is_dynamic flag, (c) feature_pattern anchor bytes, (d) dynamic_field_offsets. If is_dynamic==true, note SessionID patching is automatic.",
+        "substep_2_template": "Locate md_CMN_{Msg}Req_001 (send) in SECC_CmnTemplates.ttcn. For receive, use the lenient template `{ msgRes := ? }` -- StaticExiDecoder extracts dynamic field values from wire bytes and the lenient template accepts any values from real SECCs.",
+        "substep_3_send_union": "Send via structured union ONLY: pt_V2G_TCP_TLS_ALM_SECC_Port.send({ msgType := md_CMN_MsgReq_001 }). PROHIBITED: raw octetstrings, int2oct for V2GTP headers, hex literals on TCP port.",
+        "substep_4_receive_verdict": "Receive via lenient union template: receive({ resType := ? }). Stop timer. setverdict(pass/fail). return getverdict. NOTE: The lenient `?` template accepts any field values. StaticExiDecoder extracts SessionID, ResponseCode, and EVSEID from wire bytes."
+      },
+      "negative_constraints": [
+        "MUST NOT use int2oct, '01'O, 'FE'O, '8001'O in TTCN-3 for V2GTP header construction",
+        "MUST NOT send raw octetstring literals to the TCP port for V2G application messages",
+        "MUST NOT use openv2g encoder or X-Macro mapping -- StaticExiDecoder handles encoding/decoding via static JSON patterns",
+        "MUST NOT hardcode ResponseCode, SessionID, or EVSEID values in receive templates -- use lenient `?` template",
+        "MUST NOT define functions inside aggregator modules (PreConditions/PostConditions) -- import-only",
+        "MUST NOT use transitive imports -- main TC module must directly import every function module called"
+      ],
+      "sdpremark": "SDP messages (UDP port) are the ONLY exception to substep_3: use raw octetstrings on pt_V2G_UDP_SDP_Port. NOTE: After SDP discovery, the TCP adapter reads the dynamic port from V2G__UDP__SDP__Port__last_secc_port_ and adds a 75ms guard delay before connecting."
+    },
+    {
+      "step_id": "3b",
+      "name": "V2G Message Exchange Mechanical SOP",
+      "description": "For every V2G application message exchange, execute these four sub-steps in order. Do not skip, merge, or reorder steps. SDP (UDP) is the ONLY exception to this SOP.",
+      "agent": "core_agent",
+      "mechanical_sop": {
+        "substep_1_lookup": "Read exi_payload_library.json. For the message type under test, record: (a) wire_hex, (b) is_dynamic flag, (c) json_payload field values. If is_dynamic==true, note SessionID patching is automatic by ExiCodecAdapter.",
+        "substep_2_template": "Locate md_CMN_{Msg}Req_001 (send) and md_CMN_{Msg}Res_001 (receive) in SECC_CmnTemplates.ttcn. Verify field values match json_payload from step 1.",
+        "substep_3_send_union": "Send via structured union ONLY: pt_V2G_TCP_TLS_ALM_SECC_Port.send({ msgType := md_CMN_MsgReq_001 }). PROHIBITED: raw octetstrings, int2oct for V2GTP headers, hex literals on TCP port.",
+        "substep_4_receive_verdict": "Receive via matching union: receive({ resType := mdw_SECC_MsgRes_001 }). Stop timer. setverdict(pass/fail). return getverdict."
+      },
+      "negative_constraints": [
+        "MUST NOT use int2oct, '01'O, 'FE'O, '8001'O in TTCN-3 for V2GTP header construction",
+        "MUST NOT send raw octetstring literals to the TCP port for V2G application messages",
+        "MUST NOT use openv2g encoder or X-Macro mapping -- ExiCodecAdapter handles encoding",
+        "MUST NOT define functions inside aggregator modules (PreConditions/PostConditions) -- import-only",
+        "MUST NOT use transitive imports -- main TC module must directly import every function module called"
+      ],
+      "sdpremark": "SDP messages (UDP port) are the ONLY exception to substep_3: use raw octetstrings on pt_V2G_UDP_SDP_Port."
     },
     {
       "step_id": 4,
       "name": "Infrastructure Generation (Infrastructure Agent)",
       "description": "Generate TITAN project skeleton: config files, TTCN skeleton modules, and build script. C++ adapters are copied from demo by the pipeline.",
       "agent": "infrastructure_agent",
-      "inputs": ["generation_plan", "ttcn3_code", "tc_id", "sut_ip", "demo_reference_files"],
-      "outputs": ["project_files"],
-      "platform_support": ["windows", "linux"],
+      "inputs": [
+        "generation_plan",
+        "ttcn3_code",
+        "tc_id",
+        "sut_ip",
+        "demo_reference_files"
+      ],
+      "outputs": [
+        "project_files"
+      ],
+      "platform_support": [
+        "windows",
+        "linux"
+      ],
       "details": [
         "Generate config/titan_runtime.cfg with SUT IP configuration",
         "Generate config/hardware_env.json",
@@ -158,8 +264,17 @@
       "name": "Build & Run (Pipeline)",
       "description": "Compile and execute the TITAN test project; optionally capture PCAP during execution",
       "agent": "pipeline",
-      "inputs": ["project_dir", "tc_id", "sut_ip", "pcap_output"],
-      "outputs": ["build_result", "test_result", "pcap_file"],
+      "inputs": [
+        "project_dir",
+        "tc_id",
+        "sut_ip",
+        "pcap_output"
+      ],
+      "outputs": [
+        "build_result",
+        "test_result",
+        "pcap_file"
+      ],
       "platform_detection": "auto (Windows: cmd /c build.bat, Linux: bash build.sh)",
       "details": [
         "Step 0: Check TITAN toolchain (makefilegen, ttcn3_compiler, ttcn3_executor)",
@@ -178,8 +293,15 @@
       "name": "Compile Error Repair Loop (Fault Corrector, phase=compile)",
       "description": "Analyze TITAN compilation errors with dual-agent classification; iterate: Core Agent + Infrastructure Agent fixes (max 3 rounds)",
       "agent": "pipeline + fault_corrector",
-      "inputs": ["ttcn3_code", "generation_plan", "compile_errors"],
-      "outputs": ["fixed_code", "repairs"],
+      "inputs": [
+        "ttcn3_code",
+        "generation_plan",
+        "compile_errors"
+      ],
+      "outputs": [
+        "fixed_code",
+        "repairs"
+      ],
       "phase": "compile",
       "iteration_type": "large_loop",
       "max_iterations": 3,
@@ -199,28 +321,116 @@
         "Loop until compilation succeeds or max iterations (3) reached"
       ],
       "error_classification": {
-        "infrastructure_keywords": ["makefile", "gcc", "g++", "config/", "port adapter", "build.sh", "titan_runtime.cfg", "componentsandports", "pics_", "pixit_", "timerandconstants", "cmntemplates", "types_", "cpp", "linker", "undefined reference", "src/cpp_adapters", "src/ttcn3/2_architecture", "src/ttcn3/1_data_definitions"],
-        "core_keywords": [".ttcn", "syntax error", "template", "function", "testcase", "module", "alt block", "verdict", "timer", "runs on", "import", "port", "variable", "type mismatch"],
+        "infrastructure_keywords": [
+          "makefile",
+          "gcc",
+          "g++",
+          "config/",
+          "port adapter",
+          "build.sh",
+          "titan_runtime.cfg",
+          "componentsandports",
+          "pics_",
+          "pixit_",
+          "timerandconstants",
+          "cmntemplates",
+          "types_",
+          "cpp",
+          "linker",
+          "undefined reference",
+          "src/cpp_adapters",
+          "src/ttcn3/2_architecture",
+          "src/ttcn3/1_data_definitions"
+        ],
+        "core_keywords": [
+          ".ttcn",
+          "syntax error",
+          "template",
+          "function",
+          "testcase",
+          "module",
+          "alt block",
+          "verdict",
+          "timer",
+          "runs on",
+          "import",
+          "port",
+          "variable",
+          "type mismatch"
+        ],
         "default_unknown": "both agents receive unknown errors"
       },
       "error_classifier_patterns": [
-        {"type": "port_undefined", "severity": "critical", "fix": "Define port type in ComponentsAndPorts.ttcn; match port name exactly", "agent": "infrastructure"},
-        {"type": "import_missing", "severity": "critical", "fix": "Add import from <module_name> all; at module top", "agent": "core"},
-        {"type": "type_mismatch", "severity": "warning", "fix": "Check template parameter types and function signatures", "agent": "core"},
-        {"type": "runs_on_mismatch", "severity": "critical", "fix": "Ensure runs on component type matches caller; called function must use same or parent type", "agent": "core"},
-        {"type": "timer_error", "severity": "warning", "fix": "Ensure tc_X.start() is called before referencing timeout", "agent": "core"},
-        {"type": "ttcn_syntax", "severity": "critical", "fix": "Check TTCN-3 syntax: braces, semicolons, keywords; see TITAN ReferenceGuide Ch.3", "agent": "core"},
-        {"type": "cpp_link", "severity": "critical", "fix": "Check C++ adapters in cpp_adapters/ for missing method implementations", "agent": "infrastructure"}
+        {
+          "type": "port_undefined",
+          "severity": "critical",
+          "fix": "Define port type in ComponentsAndPorts.ttcn; match port name exactly",
+          "agent": "infrastructure"
+        },
+        {
+          "type": "import_missing",
+          "severity": "critical",
+          "fix": "Add import from <module_name> all; at module top",
+          "agent": "core"
+        },
+        {
+          "type": "type_mismatch",
+          "severity": "warning",
+          "fix": "Check template parameter types and function signatures",
+          "agent": "core"
+        },
+        {
+          "type": "runs_on_mismatch",
+          "severity": "critical",
+          "fix": "Ensure runs on component type matches caller; called function must use same or parent type",
+          "agent": "core"
+        },
+        {
+          "type": "timer_error",
+          "severity": "warning",
+          "fix": "Ensure tc_X.start() is called before referencing timeout",
+          "agent": "core"
+        },
+        {
+          "type": "ttcn_syntax",
+          "severity": "critical",
+          "fix": "Check TTCN-3 syntax: braces, semicolons, keywords; see TITAN ReferenceGuide Ch.3",
+          "agent": "core"
+        },
+        {
+          "type": "cpp_link",
+          "severity": "critical",
+          "fix": "Check C++ adapters in cpp_adapters/ for missing method implementations",
+          "agent": "infrastructure"
+        }
       ],
       "fix_mode": {
         "description": "Simplified prompts for repair iterations",
         "core_agent": {
-          "includes": ["generation_plan", "error_feedback (filtered)", "previous_core_files", "local_ref_section", "sop common_errors"],
-          "excludes": ["few-shot examples", "full demo references", "verbose patterns"]
+          "includes": [
+            "generation_plan",
+            "error_feedback (filtered)",
+            "previous_core_files",
+            "local_ref_section",
+            "sop common_errors"
+          ],
+          "excludes": [
+            "few-shot examples",
+            "full demo references",
+            "verbose patterns"
+          ]
         },
         "infrastructure_agent": {
-          "includes": ["generation_plan", "error_feedback (filtered)", "previous_infra_files", "core_files (do not modify)"],
-          "excludes": ["full demo references", "verbose patterns"]
+          "includes": [
+            "generation_plan",
+            "error_feedback (filtered)",
+            "previous_infra_files",
+            "core_files (do not modify)"
+          ],
+          "excludes": [
+            "full demo references",
+            "verbose patterns"
+          ]
         }
       }
     },
@@ -229,8 +439,17 @@
       "name": "Runtime Analysis (Fault Corrector, phase=runtime)",
       "description": "Dual-track root cause analysis using TTCN-3 log and PCAP capture",
       "agent": "fault_corrector",
-      "inputs": ["ttcn3_code", "generation_plan", "titan_log", "pcap_file"],
-      "outputs": ["fault_type", "evidence", "repairs"],
+      "inputs": [
+        "ttcn3_code",
+        "generation_plan",
+        "titan_log",
+        "pcap_file"
+      ],
+      "outputs": [
+        "fault_type",
+        "evidence",
+        "repairs"
+      ],
       "phase": "runtime",
       "iteration_type": "large_loop",
       "max_self_repair_iterations": 2,
@@ -261,8 +480,16 @@
       "name": "Self-Repair (Pipeline)",
       "description": "Automatically apply auto_fix repairs from Fault Corrector runtime phase; re-compile and validate (max 2 rounds)",
       "agent": "pipeline",
-      "inputs": ["ttcn3_code", "fault_result", "tc_project_dir"],
-      "outputs": ["applied_repairs", "build_status", "kb_updates"],
+      "inputs": [
+        "ttcn3_code",
+        "fault_result",
+        "tc_project_dir"
+      ],
+      "outputs": [
+        "applied_repairs",
+        "build_status",
+        "kb_updates"
+      ],
       "details": [
         "Filter repairs by type == 'auto_fix' with both current_code and suggested_code",
         "Apply code replacements to ttcn3_code",
@@ -274,7 +501,6 @@
       ]
     }
   ],
-
   "iteration_loops": {
     "description": "The pipeline uses two iteration loops at different stages",
     "large_loop_compile": {
@@ -299,7 +525,6 @@
       "exit_condition": "Test passes, max iterations reached, or fault type requires manual review"
     }
   },
-
   "fault_corrector": {
     "description": "Unified Fault Corrector covering two phases with a single entry point",
     "entry_point": "run_fault_corrector(ttcn3_code, generation_plan, sop, phase='compile'|'runtime', ...)",
@@ -307,14 +532,35 @@
       "compile": {
         "trigger": "TITAN compilation failed (raw error output available)",
         "method": "LLM + CompileErrorClassifier + titan_troubleshooting_db.json",
-        "output": {"status": "pass|fail", "repairs": [], "corrected_code": ""},
-        "classifiers": ["port_undefined", "import_missing", "type_mismatch", "runs_on_mismatch", "timer_error", "ttcn_syntax", "cpp_link"]
+        "output": {
+          "status": "pass|fail",
+          "repairs": [],
+          "corrected_code": ""
+        },
+        "classifiers": [
+          "port_undefined",
+          "import_missing",
+          "type_mismatch",
+          "runs_on_mismatch",
+          "timer_error",
+          "ttcn_syntax",
+          "cpp_link"
+        ]
       },
       "runtime": {
         "trigger": "TITAN test execution completed (log + optional PCAP available)",
         "method": "Dual-track analysis: TTCN-3 log + PCAP + Python correlator + LLM reasoning",
-        "output": {"status": "completed|skipped", "fault_type": "", "repairs": [], "corrected_code": ""},
-        "python_analysis": ["Correlator.align()", "FaultClassifier.classify()", "RepairEngine.generate_repairs()"],
+        "output": {
+          "status": "completed|skipped",
+          "fault_type": "",
+          "repairs": [],
+          "corrected_code": ""
+        },
+        "python_analysis": [
+          "Correlator.align()",
+          "FaultClassifier.classify()",
+          "RepairEngine.generate_repairs()"
+        ],
         "python_components": {
           "correlator": "Align TTCN-3 log events with PCAP packets by timestamp",
           "fault_classifier": "Classify fault into 6 types with confidence score",
@@ -333,7 +579,6 @@
       "chapter8_alt": "https://gitlab.eclipse.org/eclipse/titan/titan.core/-/raw/master/usrguide/referenceguide/8-t_alt_blocks_and_timers.adoc"
     }
   },
-
   "naming_rules": {
     "module": {
       "pattern": "TC_{SUT}_{Category}_VTB_{MessageType}_{SeqNo}",
@@ -341,8 +586,15 @@
     },
     "testcase": {
       "pattern": "TC_{SUT}_{Category}_VTB_{MessageType}_{SeqNo}",
-      "SUT": ["SECC", "EVCC"],
-      "Category": ["CMN", "AC", "DC"],
+      "SUT": [
+        "SECC",
+        "EVCC"
+      ],
+      "Category": [
+        "CMN",
+        "AC",
+        "DC"
+      ],
       "SeqNo": "3-digit zero-padded number, 001=GoodCase, 002+=BadCase"
     },
     "aggregator_module": {
@@ -384,7 +636,6 @@
       "pattern": "vc_{Name}"
     }
   },
-
   "protocol_constants": {
     "v2gtp_header": {
       "protocolVersion": "'01'H",
@@ -394,9 +645,8 @@
       "SDP": "'9000'H",
       "V2G_Application": "'8001'H"
     },
-    "note": "SDP uses payloadType 0x9000; V2G application messages use 0x9001. These constants are referenced in core_agent_prompt.txt, sop.json common_errors, and repair_engine.py AUTO_FIX_RULES"
+    "note": "SDP uses payloadType 0x9000; V2G application messages use 0x8001. The V2GTP header is handled automatically by StaticExiDecoder inside V2G_TCP_TLS_Port. TTCN-3 code must NOT construct V2GTP headers manually. SECC listens on dynamic port (e.g., 62897) advertised via SDP -- the TCP adapter reads V2G__UDP__SDP__Port__last_secc_port_ and adds 75ms guard delay."
   },
-
   "common_errors": [
     {
       "error": "Missing timer stop in alt branch",
@@ -413,10 +663,6 @@
     {
       "error": "Using 'omit' in receive template where '?' is needed",
       "fix": "'omit' means field must be absent; '?' means any value; '*' means optional (present or absent)"
-    },
-    {
-      "error": "Using '?' wildcard with '&' concatenation in octetstring template",
-      "fix": "TTCN-3 does NOT allow ? (AnyValue) inside octetstring concatenation (&). Use receive(?) with manual substr() field checks inside the alt branch. CORRECT: pt.receive(?) -> value v { if (lengthof(v) >= 8 and substr(v,0,1) == '01'O and substr(v,2,2) == '8002'O) { ... } }. WRONG: pt.receive('01'O & 'FE'O & '8002'O & ?)"
     },
     {
       "error": "Wrong component type in runs on clause",
@@ -470,60 +716,290 @@
       "error": "Octetstring value contains odd number of hexadecimal digits",
       "fix": "In TTCN-3, an octetstring MUST have an even number of hex characters (e.g., each byte is 2 chars). If a raw EXI payload hex string has an odd length, you MUST pad it with a single '0' (or '00') at the end to make the length even before compiling. Never use dummy placeholders like '0022'O as they cause EXI decoding EOF exceptions.",
       "category": "ttcn_compile"
+    },
+    {
+      "error": "ComponentsAndPorts.ttcn uses octetstring for V2G_TCP_TLS_Port instead of V2G_MessageUnion",
+      "fix": "Change to: type port V2G_TCP_TLS_Port message { out V2G_MessageUnion; in V2G_MessageUnion; }",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "Agent constructs V2GTP header manually in TTCN-3 using int2oct or hex concatenation",
+      "fix": "Delete the manual V2GTP construction. Send via structured union template instead. The C++ port adapter (ExiCodecAdapter inside V2G_TCP_TLS_Port) handles V2GTP header and EXI encoding automatically.",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "Agent sends raw octetstring to TCP port for V2G application message",
+      "fix": "Use structured union: pt_V2G_TCP_TLS_ALM_SECC_Port.send({ msgType := md_CMN_MsgReq_001 }). Raw octetstrings are ONLY for SDP (UDP port).",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "undefined reference to `ExiCodecAdapter::encode(std::string const&, ...)`",
+      "fix": "C++ ABI mismatch between port adapter (new-ABI ExiCodecAdapter) and TITAN-generated code (old-ABI). Solution: (1) Add ExiCodecAdapter::encode(const char* key, const std::string& sid, std::vector<uint8_t>& out) overload in ExiCodecAdapter.hh/.cc, (2) Call it as encode(key_literal, session_id, wire_output) from the port adapter. This avoids passing const char* through std::string constructor.",
+      "category": "cpp_link"
+    },
+    {
+      "error": "undefined reference to `V2G__UDP__SDP__Port__last_secc_ip_`",
+      "fix": "Global variable declared as 'extern std::string' but never defined. Add the definition (not extern) in V2G_UDP_SDP_Port.cc: 'std::string V2G__UDP__SDP__Port__last_secc_ip_;' outside any namespace.",
+      "category": "cpp_link"
+    },
+    {
+      "error": "std::string ABI mismatch between object files (undefined reference with [abi:cxx11] suffix)",
+      "fix": "Force old ABI across all object files. Add -D_GLIBCXX_USE_CXX11_ABI=0 to both CXXFLAGS and LDFLAGS in Makefile. Example: sed -i 's|^CXXFLAGS = -Wall  $|CXXFLAGS = -Wall -I. -D_GLIBCXX_USE_CXX11_ABI=0 |' Makefile",
+      "category": "cpp_link"
+    },
+    {
+      "error": "no member named 'SELECTION' in SECC__Types::V2G__MessageUnion",
+      "fix": "TITAN union API uses get_selection() method, not SELECTION(). Change send_par.SELECTION() to send_par.get_selection() and use enum values like V2G__MessageUnion::ALT_sessionSetupReq.",
+      "category": "cpp_compile"
+    },
+    {
+      "error": "incomplete type 'SECC__TestSystem::ExiCodecAdapter' used in nested name specifier",
+      "fix": "ExiCodecAdapter is defined in global namespace, not SECC__TestSystem. Use ::ExiCodecAdapter::instance() instead of ExiCodecAdapter::instance(). Forward declare it inside namespace SECC__TestSystem { class ExiCodecAdapter; } before use.",
+      "category": "cpp_compile"
+    },
+    {
+      "error": "incoming_message(OCTETSTRING&) has no candidate",
+      "fix": "V2G_TCP_TLS_Port's base class expects incoming_message(V2G__MessageUnion&), not OCTETSTRING. For the demo adapter, log received bytes but do NOT call incoming_message() since decoding wire bytes to V2G_MessageUnion requires a full EXI decoder (out of scope).",
+      "category": "cpp_compile"
+    },
+    {
+      "error": "Connection refused on port 15118 after SDP discovery",
+      "fix": "The SECC listens ONLY on the dynamic port returned by SDP (e.g., 62897), NOT port 15118. The TCP adapter reads V2G__UDP__SDP__Port__last_secc_port_ (set by V2G_UDP_SDP_Port after SDP response) for the initial TCP connect. Add 75ms guard delay after SDP before TCP handshake. Cache the actual peer port via getpeername() for reconnection.",
+      "category": "runtime"
+    },
+    {
+      "error": "Receive template mismatch: hardcoded EVSEID/ResponseCode/SessionID",
+      "fix": "Use lenient template `{ msgRes := ? }` in the receive alt branch. StaticExiDecoder extracts dynamic field values (SessionID, ResponseCode, EVSEID) from wire bytes. The lenient `?` template accepts any values. Do NOT hardcode response codes like ResponseCode := 0 or EVSEID := 'EVSE12345678' in receive templates -- real SECCs use different values.",
+      "category": "ttcn_compile"
     }
   ],
-
   "precondition_chains": {
     "description": "Precondition chain for each V2G message type. Each chain must be completed in order before testing the target message.",
     "V2GTP": {
       "description": "f_{SUT}_CMN_PR_InitConfiguration_001 includes: (1) port mapping, (2) SDP discovery via UDP (mandatory -- SECC must be found before TCP connect). V2GTP/SDP tests need only this precondition. Without SDP, the SECC never opens its TCP port.",
-      "chain": ["f_{SUT}_CMN_PR_InitConfiguration_001"]
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001"
+      ]
     },
-    "SDP": ["f_{SUT}_CMN_PR_InitConfiguration_001"],
-    "SupportedAppProtocol": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001"],
-    "SessionSetup": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001"],
-    "ServiceDiscovery": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001"],
-    "ServiceDetail": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001"],
-    "PaymentServiceSelection": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001"],
-    "PaymentDetails": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001"],
-    "Authorization": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001"],
-    "ChargeParameterDiscovery": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_Authorization_001"],
-    "PowerDelivery": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_Authorization_001", "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001"],
-    "ChargingStatus": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_Authorization_001", "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001", "f_{SUT}_CMN_PR_PowerDelivery_001"],
-    "CableCheck": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_Authorization_001", "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001", "f_{SUT}_CMN_PR_PowerDelivery_001"],
-    "PreCharge": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_Authorization_001", "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001", "f_{SUT}_CMN_PR_PowerDelivery_001"],
-    "MeteringReceipt": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_Authorization_001", "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001", "f_{SUT}_CMN_PR_PowerDelivery_001", "f_{SUT}_CMN_PR_ChargingStatus_001"],
-    "CurrentDemand": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_Authorization_001", "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001", "f_{SUT}_CMN_PR_PowerDelivery_001", "f_{SUT}_CMN_PR_ChargingStatus_001"],
-    "WeldingDetection": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_Authorization_001", "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001", "f_{SUT}_CMN_PR_PowerDelivery_001", "f_{SUT}_CMN_PR_ChargingStatus_001", "f_{SUT}_CMN_PR_CurrentDemand_001"],
-    "CertificateUpdate": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_PaymentDetails_001", "f_{SUT}_CMN_PR_Authorization_001"],
-    "CertificateInstallation": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_PaymentDetails_001", "f_{SUT}_CMN_PR_CertificateUpdate_001"],
-    "SessionStop": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001", "f_{SUT}_CMN_PR_SessionSetup_001", "f_{SUT}_CMN_PR_ServiceDiscovery_001", "f_{SUT}_CMN_PR_PaymentServiceSelection_001", "f_{SUT}_CMN_PR_Authorization_001", "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001", "f_{SUT}_CMN_PR_PowerDelivery_001"]
+    "SDP": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001"
+    ],
+    "SupportedAppProtocol": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+    ],
+    "SessionSetup": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+    ],
+    "ServiceDiscovery": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001"
+    ],
+    "ServiceDetail": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001"
+    ],
+    "PaymentServiceSelection": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001"
+    ],
+    "PaymentDetails": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001"
+    ],
+    "Authorization": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001"
+    ],
+    "ChargeParameterDiscovery": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001"
+    ],
+    "PowerDelivery": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001"
+    ],
+    "ChargingStatus": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001"
+    ],
+    "CableCheck": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001"
+    ],
+    "PreCharge": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001"
+    ],
+    "MeteringReceipt": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001",
+      "f_{SUT}_CMN_PR_ChargingStatus_001"
+    ],
+    "CurrentDemand": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001",
+      "f_{SUT}_CMN_PR_ChargingStatus_001"
+    ],
+    "WeldingDetection": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001",
+      "f_{SUT}_CMN_PR_ChargingStatus_001",
+      "f_{SUT}_CMN_PR_CurrentDemand_001"
+    ],
+    "CertificateUpdate": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_PaymentDetails_001",
+      "f_{SUT}_CMN_PR_Authorization_001"
+    ],
+    "CertificateInstallation": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_PaymentDetails_001",
+      "f_{SUT}_CMN_PR_CertificateUpdate_001"
+    ],
+    "SessionStop": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "f_{SUT}_CMN_PR_SessionSetup_001",
+      "f_{SUT}_CMN_PR_ServiceDiscovery_001",
+      "f_{SUT}_CMN_PR_PaymentServiceSelection_001",
+      "f_{SUT}_CMN_PR_Authorization_001",
+      "f_{SUT}_CMN_PR_ChargeParameterDiscovery_001",
+      "f_{SUT}_CMN_PR_PowerDelivery_001"
+    ]
   },
-
   "_missing_precondition_chains": {
     "description": "Message types that are not standard V2G application layer messages but may appear in test cases. These do not require full precondition chains.",
     "V2GTP": {
       "description": "V2GTP layer tests - only InitConfiguration needed",
-      "chain": ["f_{SUT}_CMN_PR_InitConfiguration_001"],
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001"
+      ],
       "note": "V2GTP requires TCP connection, which is established by InitConfiguration (includes SDP + TCP handshake)"
     },
-    "SDP": {"description": "Service Discovery Protocol tests - only InitConfiguration needed", "chain": ["f_{SUT}_CMN_PR_InitConfiguration_001"]},
-    "SDPProvider": {"description": "SDP Provider tests - only InitConfiguration needed", "chain": ["f_{SUT}_CMN_PR_InitConfiguration_001"]},
-    "TCP": {"description": "TCP connection tests - no precondition needed", "chain": [], "note": "TCP connection tests verify basic TCP transport without V2GTP"},
-    "TLSHandshake": {"description": "TLS handshake tests - no precondition needed", "chain": [], "note": "TLS handshake tests verify TLS establishment without V2GTP"},
-    "TCP_Connected": {"description": "TCP connection established state tests - no additional precondition needed", "chain": [], "note": "TCP_Connected tests verify behavior after TCP connection is established. SDP phase completes TCP connection setup."},
-    "SLAC": {"description": "Signal Level Attenuation Characterization tests - no precondition needed in SIL mode", "chain": [], "note": "SLAC tests verify PLC/SLAC handshake for EVSE-EV communication. CombinedTesting mode enables PLC port."},
-    "EVCCMessage": {"description": "Generic EVCC message tests - fallback to SupportedAppProtocol", "chain": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001"]},
-    "SECCMessage": {"description": "Generic SECC message tests - fallback to SupportedAppProtocol", "chain": ["f_{SUT}_CMN_PR_InitConfiguration_001", "f_{SUT}_CMN_PR_SupportedAppProtocol_001"]}
+    "SDP": {
+      "description": "Service Discovery Protocol tests - only InitConfiguration needed",
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001"
+      ]
+    },
+    "SDPProvider": {
+      "description": "SDP Provider tests - only InitConfiguration needed",
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001"
+      ]
+    },
+    "TCP": {
+      "description": "TCP connection tests - no precondition needed",
+      "chain": [],
+      "note": "TCP connection tests verify basic TCP transport without V2GTP"
+    },
+    "TLSHandshake": {
+      "description": "TLS handshake tests - no precondition needed",
+      "chain": [],
+      "note": "TLS handshake tests verify TLS establishment without V2GTP"
+    },
+    "TCP_Connected": {
+      "description": "TCP connection established state tests - no additional precondition needed",
+      "chain": [],
+      "note": "TCP_Connected tests verify behavior after TCP connection is established. SDP phase completes TCP connection setup."
+    },
+    "SLAC": {
+      "description": "Signal Level Attenuation Characterization tests - no precondition needed in SIL mode",
+      "chain": [],
+      "note": "SLAC tests verify PLC/SLAC handshake for EVSE-EV communication. CombinedTesting mode enables PLC port."
+    },
+    "EVCCMessage": {
+      "description": "Generic EVCC message tests - fallback to SupportedAppProtocol",
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    "SECCMessage": {
+      "description": "Generic SECC message tests - fallback to SupportedAppProtocol",
+      "chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    }
   },
-
   "build_and_run": {
     "description": "Cross-platform TITAN build and test execution",
     "platform_detection": {
       "windows": "os.name == 'nt' -> build.bat (cmd /c)",
       "linux": "otherwise -> build.sh (bash)"
     },
-    "titan_toolchain_required": ["makefilegen", "ttcn3_compiler", "ttcn3_executor"],
+    "titan_toolchain_required": [
+      "makefilegen",
+      "ttcn3_compiler",
+      "ttcn3_executor"
+    ],
     "ttcn3_inc_detection": [
       "Environment variable TTCN3_INC",
       "Fallback paths: C:/Program Files/TITAN/include, C:/titan/include, /usr/include/titan, /usr/local/include/titan"
@@ -549,7 +1025,6 @@
       "error": "Toolchain not found or unexpected error"
     }
   },
-
   "output_structure": {
     "description": "Generated files and directories",
     "base_dir": "test_code/generated/",
@@ -572,7 +1047,6 @@
       }
     }
   },
-
   "timer_default_values": {
     "par_CMN_Transmission_Delay": 0.25,
     "par_CMN_HAL_Timeout": 2.0,

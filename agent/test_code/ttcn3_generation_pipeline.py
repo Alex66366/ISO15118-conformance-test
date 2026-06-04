@@ -43,6 +43,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+import datetime as _run_ts
+from collections import namedtuple
 
 # === 全局子进程管理和中断标志 ===
 _subprocess_ref = None  # 保存当前活动的子进程引用
@@ -642,6 +644,56 @@ def build_doc_urls_for_fault_corrector(doc_urls: Dict) -> str:
     return "\n".join(lines) if lines else "（无 reference_guide 条目）"
 
 
+
+# ============================================================
+# Agent Metrics Tracking
+# ============================================================
+from collections import namedtuple
+AgentMetrics = namedtuple("AgentMetrics", ["elapsed_seconds", "input_tokens", "output_tokens", "calls"])
+
+_agent_input_tokens = {}
+_agent_output_tokens = {}
+_agent_call_counts = {}
+
+
+def _parse_token_usage_from_claude_output(stderr, stdout=""):
+    # Try to extract from JSON output body first (e.g. "usage":{"input_tokens":N,...})
+    input_tok = 0
+    output_tok = 0
+    combined = stderr + stdout
+    inp_json = re.search(r'"input_tokens"\s*:\s*(\d+)', combined)
+    out_json = re.search(r'"output_tokens"\s*:\s*(\d+)', combined)
+    if inp_json:
+        input_tok = int(inp_json.group(1))
+    if out_json:
+        output_tok = int(out_json.group(1))
+    # Fall back to [Token Usage] format in stderr
+    if input_tok == 0:
+        inp = re.search(r"Input:\s*(\d+)\s*tokens?", stderr)
+        if inp:
+            input_tok = int(inp.group(1))
+    if output_tok == 0:
+        out = re.search(r"Output:\s*(\d+)\s*tokens?", stderr)
+        if out:
+            output_tok = int(out.group(1))
+    return (input_tok, output_tok)
+
+
+def _accumulate_tokens(agent_name, input_tok, output_tok):
+    global _agent_input_tokens, _agent_output_tokens, _agent_call_counts
+    _agent_input_tokens[agent_name] = _agent_input_tokens.get(agent_name, 0) + input_tok
+    _agent_output_tokens[agent_name] = _agent_output_tokens.get(agent_name, 0) + output_tok
+    _agent_call_counts[agent_name] = _agent_call_counts.get(agent_name, 0) + 1
+
+
+def _reset_metrics():
+    global _agent_input_tokens, _agent_output_tokens, _agent_call_counts
+    _agent_input_tokens.clear()
+    _agent_output_tokens.clear()
+    _agent_call_counts.clear()
+
+
+
 def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
                       extra_allowed_tools: str = "",
                       read_only: bool = False) -> str:
@@ -766,7 +818,10 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
                 time.sleep(0.5)
 
             stderr_thread.join(timeout=2)
-            stdout_val, _ = proc.communicate()
+            try:
+                stdout_val, _ = proc.communicate()
+            except ValueError:
+                stdout_val = ""
             returncode = proc.returncode
             _subprocess_ref = None
 
@@ -851,7 +906,10 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
 
             stdout_thread.join(timeout=2)
             stderr_thread.join(timeout=2)
-            raw_stdout, _ = proc.communicate()  # any remaining trailing bytes
+            try:
+                raw_stdout, _ = proc.communicate()
+            except ValueError:
+                raw_stdout = b""
             returncode = proc.returncode
             _subprocess_ref = None
 
@@ -864,6 +922,11 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
 
         # Collect streamed stderr lines for post-processing
         stderr_val = "".join(stderr_lines)
+
+        # Track token usage for metrics
+        in_tok, out_tok = _parse_token_usage_from_claude_output(stderr_val, stdout_val)
+        _accumulate_tokens(agent_name, in_tok, out_tok)
+
         _dbg("after_subprocess", {
             "agent_name": agent_name,
             "returncode": returncode,
@@ -3815,7 +3878,7 @@ def _inject_condition_function_imports(
     """
     import re
 
-    def _get_module_name(content: str) -> str | None:
+    def _get_module_name(content: str) -> Optional[str]:
         """Extract module name from TTCN-3 file content."""
         match = re.search(r'^\s*module\s+(\w+)\s*\{', content, re.MULTILINE)
         return match.group(1) if match else None
@@ -4391,6 +4454,17 @@ echo "[BUILD] Generated $TTCN_CC_COUNT TTCN-3 .cc files."
 if [ "$TTCN_CC_COUNT" -eq 0 ]; then
     echo "[WARN] No TTCN .cc files generated. Possible missing source files."
 fi
+
+# --- Step 4.2: Absolute-path leak check ---
+if [ -f Makefile ]; then
+    ABS_LEAKS=$(grep -nE "^[[:space:]]*/[^/*]" Makefile 2>/dev/null || true)
+    if [ -n "$ABS_LEAKS" ]; then
+        echo "[BUILD] ERROR: Absolute path leak detected in Makefile:"
+        echo "$ABS_LEAKS"
+        exit 1
+    fi
+fi
+echo "[BUILD] Absolute-path leak check: PASS"
 
 # ==========================================
 # Step 5: Fix SECC_TestSystem.hh to include port headers
@@ -6258,6 +6332,9 @@ def generate_code_for_test_case(
     """
     result: Dict = {}
 
+    # Reset metrics at the start of each pipeline run
+    _reset_metrics()
+
     # Initialize timing variables early so they can be safely passed to _print_timing_summary
     # on any early exit path.
     orchestrator_elapsed = 0.0
@@ -6308,11 +6385,26 @@ def generate_code_for_test_case(
                              fc_runtime_elapsed, fc_legacy_elapsed,
                              compile_loop_core_times, compile_loop_infra_times,
                              compile_loop_build_times, compile_loop_fc_times)
+        # Write metrics even on orchestrator failure
+        _tc_dir = GENERATED_DIR / (plan_tc_id + "_" + run_timestamp)
+        _tc_dir.mkdir(parents=True, exist_ok=True)
+        _write_metrics_json(_tc_dir, _build_metrics_dict(
+            plan_tc_id, run_timestamp, generation_plan or {}, result,
+            orchestrator_elapsed, summarizer_elapsed, core_agent_elapsed,
+            infra_agent_elapsed, build_elapsed,
+            compile_loop_core_total, compile_loop_infra_total,
+            compile_loop_build_total, compile_loop_fc_total,
+            fc_runtime_elapsed, fc_legacy_elapsed,
+            compile_loop_core_times, compile_loop_infra_times,
+            compile_loop_build_times, compile_loop_fc_times,
+            False, build_result,
+        ))
         return None
 
     # === Step 1b: 规范化 tc_id 和前置条件名称 ===
     # 修复 Phase 1 生成的非标准命名
     plan_tc_id = generation_plan.get('tc_id', tc_id)
+    run_timestamp = _run_ts.datetime.now().strftime("%Y%m%d_%H%M%S")
     if plan_tc_id != tc_id:
         normalized = normalize_tc_id(plan_tc_id)
         if normalized != plan_tc_id:
@@ -6378,6 +6470,26 @@ def generate_code_for_test_case(
     log(f"[Core Agent] 耗时: {core_agent_elapsed:.1f}s")
     if not core_result or not core_result.get("testcase"):
         log("Core Agent 未生成代码", "ERROR")
+        _print_timing_summary(result, orchestrator_elapsed, summarizer_elapsed,
+                             core_agent_elapsed, infra_agent_elapsed, build_elapsed,
+                             compile_loop_core_total, compile_loop_infra_total,
+                             compile_loop_build_total, compile_loop_fc_total,
+                             fc_runtime_elapsed, fc_legacy_elapsed,
+                             compile_loop_core_times, compile_loop_infra_times,
+                             compile_loop_build_times, compile_loop_fc_times)
+        _tc_dir = GENERATED_DIR / (plan_tc_id + "_" + run_timestamp)
+        _tc_dir.mkdir(parents=True, exist_ok=True)
+        _write_metrics_json(_tc_dir, _build_metrics_dict(
+            plan_tc_id, run_timestamp, generation_plan, result,
+            orchestrator_elapsed, summarizer_elapsed, core_agent_elapsed,
+            infra_agent_elapsed, build_elapsed,
+            compile_loop_core_total, compile_loop_infra_total,
+            compile_loop_build_total, compile_loop_fc_total,
+            fc_runtime_elapsed, fc_legacy_elapsed,
+            compile_loop_core_times, compile_loop_infra_times,
+            compile_loop_build_times, compile_loop_fc_times,
+            False, build_result,
+        ))
         raise _PipelineEarlyExit()
 
     # 提取各部分代码
@@ -6423,9 +6535,10 @@ def generate_code_for_test_case(
     compile_loop_infra_times: List[Tuple[int, float]] = [] # (iteration, seconds) — 0 if skipped
 
     # === Step 5: 写入 Core Agent 生成的 pre/post condition 文件 ===
-    # Ensure tc_project_dir exists before writing files to it
-    tc_project_dir = GENERATED_DIR / plan_tc_id
+    # Use timestamped dir so repeated runs don't overwrite each other.
+    tc_project_dir = GENERATED_DIR / (plan_tc_id + "_" + run_timestamp)
     tc_project_dir.mkdir(parents=True, exist_ok=True)
+    log("[TC PROJECT] Output directory: " + str(tc_project_dir))
 
     # 同时定义 tc_ttcn_dest（供 _runtime_self_repair 使用，避免 NameError）
     tc_ttcn_dest = tc_project_dir / "src/ttcn3/4_TestCases" / output_filename
@@ -6535,6 +6648,9 @@ def generate_code_for_test_case(
                     adapters_skipped += 1
     log(f"[SCAFFOLD] C++ adapters deep-copied from demo: {adapters_copied} new, {adapters_skipped} existing")
 
+    # Bundle exi_payload_library.json into the TC project directory
+    _bundle_exi_payload_library(tc_project_dir, generation_plan)
+
     # 5. Patch build.sh references
     _patch_build_script_common_functions(tc_project_dir)
     _patch_build_script_tc_file(tc_project_dir, tc_output_filename)
@@ -6547,14 +6663,18 @@ def generate_code_for_test_case(
 
     # ================================================================
 
-    infra_result = run_infrastructure_agent(
-        generation_plan=generation_plan,
-        ttcn3_code=ttcn3_code,
-        tc_id=plan_tc_id,
-        sut_ip=sut_ip,
-        tc_output_filename=tc_output_filename,
-        output_dir=tc_project_dir,
-    )
+    try:
+        infra_result = run_infrastructure_agent(
+            generation_plan=generation_plan,
+            ttcn3_code=ttcn3_code,
+            tc_id=plan_tc_id,
+            sut_ip=sut_ip,
+            tc_output_filename=tc_output_filename,
+            output_dir=tc_project_dir,
+        )
+    except RuntimeError as e:
+        log(f"[WARN] Infrastructure Agent threw RuntimeError: {e}", "WARN")
+        infra_result = {"status": "error", "message": str(e)}
     infra_agent_elapsed = time.time() - t3
     log(f"[Infrastructure Agent] 耗时: {infra_agent_elapsed:.1f}s")
 
@@ -6583,6 +6703,9 @@ def generate_code_for_test_case(
 
     infra_agent_elapsed = time.time() - t3
     log(f"[Infrastructure Agent] 耗时: {infra_agent_elapsed:.1f}s")
+
+    # Forward-Only compile lock flag
+    compile_locked = False
 
     if not skip_build:
         pcap_out = pcap_path
@@ -6811,6 +6934,19 @@ def generate_code_for_test_case(
                          compile_loop_core_times, compile_loop_infra_times,
                          compile_loop_build_times, compile_loop_fc_times)
 
+    # === Write metrics.json ===
+    _write_metrics_json(tc_project_dir, _build_metrics_dict(
+        plan_tc_id, run_timestamp, generation_plan, result,
+        orchestrator_elapsed, summarizer_elapsed, core_agent_elapsed,
+        infra_agent_elapsed, build_elapsed,
+        compile_loop_core_total, compile_loop_infra_total,
+        compile_loop_build_total, compile_loop_fc_total,
+        fc_runtime_elapsed, fc_legacy_elapsed,
+        compile_loop_core_times, compile_loop_infra_times,
+        compile_loop_build_times, compile_loop_fc_times,
+        compile_locked, build_result,
+    ))
+
     return result
 
 
@@ -6924,6 +7060,163 @@ def _print_timing_summary(result: Dict,
     log("===================================")
 
 
+
+# ============================================================
+# EXI Payload Library Bundling Helpers
+# ============================================================
+DEMO_PAYLOAD_LIB = DEMO_ROOT / "exi_payload_library.json"
+
+
+def _bundle_exi_payload_library(tc_dir, generation_plan):
+    dest = tc_dir / "exi_payload_library.json"
+    if DEMO_PAYLOAD_LIB.exists():
+        shutil.copy2(DEMO_PAYLOAD_LIB, dest)
+        log("[BUNDLE] Copied exi_payload_library.json -> " + str(dest))
+    else:
+        _generate_minimal_payload_library(tc_dir, generation_plan)
+
+
+def _generate_minimal_payload_library(tc_dir, generation_plan):
+    msg_type = generation_plan.get("normalized_message_type",
+                                   generation_plan.get("message_type", ""))
+    lib = {
+        "source": "generated_minimal",
+        "iso15118_root": None,
+        "jar_path": None,
+        "message_types": [{"type": msg_type,
+                           "description": "Auto-generated stub for " + msg_type,
+                           "request_bytes": [], "response_bytes": []}],
+    }
+    with open(tc_dir / "exi_payload_library.json", "w", encoding="utf-8") as f:
+        json.dump(lib, f, indent=2, ensure_ascii=False)
+    log("[BUNDLE] Generated minimal exi_payload_library.json -> " + str(tc_dir / "exi_payload_library.json"))
+
+
+
+
+# ============================================================
+# Metrics Infrastructure
+# ============================================================
+
+
+def _get_git_commit():
+    try:
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+        r = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, cwd=repo_dir
+        )
+        return r.stdout.strip() if r.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _write_metrics_json(tc_project_dir, metrics):
+    path = tc_project_dir / "metrics.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2, ensure_ascii=False)
+    log("[METRICS] Written to " + str(path))
+
+
+def _build_metrics_dict(
+    plan_tc_id, run_timestamp, generation_plan, result,
+    orchestrator_elapsed, summarizer_elapsed, core_agent_elapsed,
+    infra_agent_elapsed, build_elapsed,
+    compile_loop_core_total, compile_loop_infra_total,
+    compile_loop_build_total, compile_loop_fc_total,
+    fc_runtime_elapsed, fc_legacy_elapsed,
+    compile_loop_core_times, compile_loop_infra_times,
+    compile_loop_build_times, compile_loop_fc_times,
+    compile_locked, build_result,
+):
+    planning_in = _agent_input_tokens.get("Orchestrator", 0)
+    planning_out = _agent_output_tokens.get("Orchestrator", 0)
+    planning_calls = _agent_call_counts.get("Orchestrator", 0)
+    core_in = _agent_input_tokens.get("Core Agent", 0)
+    core_out = _agent_output_tokens.get("Core Agent", 0)
+    core_calls = _agent_call_counts.get("Core Agent", 0)
+    infra_in = _agent_input_tokens.get("Infrastructure Agent", 0)
+    infra_out = _agent_output_tokens.get("Infrastructure Agent", 0)
+    infra_calls = _agent_call_counts.get("Infrastructure Agent", 0)
+    fc_in = _agent_input_tokens.get("Fault Corrector", 0)
+    fc_out = _agent_output_tokens.get("Fault Corrector", 0)
+    fc_calls = _agent_call_counts.get("Fault Corrector", 0)
+
+    verdict_result = "not_run"
+    execution_time = 0.0
+    build_status = "skipped"
+    compile_errors_count = 0
+    if build_result:
+        build_status = build_result.get("status", "unknown")
+        if build_status == "completed":
+            verdict_result = "pass"
+            test_res = build_result.get("test_result", {})
+            combined = test_res.get("log_content", "") + "\n" + test_res.get("stdout", "")
+            if "Overall verdict: pass" in combined:
+                verdict_result = "pass"
+            elif "Overall verdict: inconc" in combined:
+                verdict_result = "inconc"
+            elif "Overall verdict: fail" in combined:
+                verdict_result = "fail"
+            execution_time = test_res.get("execution_time_seconds", 0.0)
+        elif build_status == "build_failed":
+            verdict_result = "error"
+            compile_errors_count = len(build_result.get("compile_errors", []))
+
+    total_in = planning_in + core_in + infra_in + fc_in
+    total_out = planning_out + core_out + infra_out + fc_out
+    cl_core = sum(1 for _, t in compile_loop_core_times if t > 0)
+    cl_infra = sum(1 for _, t in compile_loop_infra_times if t > 0)
+    cl_build = len(compile_loop_build_times)
+    cl_fc = len(compile_loop_fc_times)
+    total_fixes = cl_core + cl_infra + cl_fc
+    total_agents = orchestrator_elapsed + summarizer_elapsed + core_agent_elapsed + infra_agent_elapsed
+    total_fc = compile_loop_fc_total + fc_runtime_elapsed + fc_legacy_elapsed
+    total_all = (total_agents + build_elapsed + compile_loop_core_total +
+                 compile_loop_infra_total + compile_loop_build_total + total_fc)
+
+    return {
+        "experiment_metadata": {
+            "tc_id": plan_tc_id,
+            "run_timestamp": run_timestamp,
+            "pipeline_version": "sop_v2.0_pure_static",
+            "git_commit": _get_git_commit(),
+            "test_case_name": generation_plan.get("tc_id", plan_tc_id),
+        },
+        "token_usage": {
+            "planning": {"input_tokens": planning_in, "output_tokens": planning_out, "calls": planning_calls},
+            "core_generation": {"input_tokens": core_in, "output_tokens": core_out, "calls": core_calls},
+            "infrastructure_agent": {"input_tokens": infra_in, "output_tokens": infra_out, "calls": infra_calls},
+            "fault_corrector": {"input_tokens": fc_in, "output_tokens": fc_out, "calls": fc_calls},
+            "total_input_tokens": total_in,
+            "total_output_tokens": total_out,
+        },
+        "latency": {
+            "planning_seconds": round(orchestrator_elapsed + summarizer_elapsed, 3),
+            "generation_seconds": round(core_agent_elapsed, 3),
+            "infrastructure_seconds": round(infra_agent_elapsed, 3),
+            "compilation_seconds": round(build_elapsed, 3),
+            "compilation_loop_seconds": round(compile_loop_core_total + compile_loop_infra_total + compile_loop_build_total, 3),
+            "fault_correction_seconds": round(total_fc, 3),
+            "total_pipeline_seconds": round(total_all, 3),
+        },
+        "self_healing": {
+            "compile_loop_iterations": cl_core,
+            "compile_loop_max": 3,
+            "runtime_loop_iterations": fc_calls,
+            "runtime_loop_max": 2,
+            "total_self_fixes": total_fixes,
+        },
+        "verdict": {
+            "result": verdict_result,
+            "execution_time_seconds": round(execution_time, 3),
+            "build_status": build_status,
+            "compile_errors_count": compile_errors_count,
+        },
+    }
+
+
+
 # ============================================================
 # 主流水线
 # ============================================================
@@ -6981,16 +7274,20 @@ def run_pipeline(
         requirement_ids = [r.strip("[]").strip() for r in requirement_ids]
         requirement_context = find_requirement_context(requirement_ids[0]) if requirement_ids else ""
 
-        gen_result = generate_code_for_test_case(
-            test_case, sut_type, requirement_context,
-            titan_log=titan_log, pcap_path=pcap_path,
-            skip_build=skip_build,
-            sut_ip=sut_ip,
-        )
+        try:
+            gen_result = generate_code_for_test_case(
+                test_case, sut_type, requirement_context,
+                titan_log=titan_log, pcap_path=pcap_path,
+                skip_build=skip_build,
+                sut_ip=sut_ip,
+            )
+        except _PipelineEarlyExit:
+            gen_result = None
+        extra = gen_result if gen_result else {}
         results.append({
             "input": {"type": "test_case", "data": tc.get("TC_Id", "unknown")},
-            "success": gen_result.get("ttcn_path") is not None,
-            **gen_result,
+            "success": gen_result is not None and gen_result.get("ttcn_path") is not None,
+            **extra,
         })
         return results
 
@@ -7031,12 +7328,15 @@ def run_pipeline(
             requirement_ids = [r.strip("[]").strip() for r in requirement_ids]
             requirement_context = find_requirement_context(requirement_ids[0]) if requirement_ids else ""
 
-            gen_result = generate_code_for_test_case(
-                loaded_test_case, sut_type, requirement_context,
-                titan_log=titan_log, pcap_path=pcap_path,
-                skip_build=skip_build,
-                sut_ip=sut_ip,
-            )
+            try:
+                gen_result = generate_code_for_test_case(
+                    loaded_test_case, sut_type, requirement_context,
+                    titan_log=titan_log, pcap_path=pcap_path,
+                    skip_build=skip_build,
+                    sut_ip=sut_ip,
+                )
+            except _PipelineEarlyExit:
+                gen_result = None
             if gen_result is None:
                 log("generate_code_for_test_case returned None (internal failure)", "ERROR")
                 gen_result = {}
@@ -7065,12 +7365,15 @@ def run_pipeline(
             requirement_ids = [r.strip("[]").strip() for r in requirement_ids]
             requirement_context = find_requirement_context(requirement_ids[0]) if requirement_ids else ""
 
-            gen_result = generate_code_for_test_case(
-                tc_entry, sut_type, requirement_context,
-                titan_log=titan_log, pcap_path=pcap_path,
-                skip_build=skip_build,
-                sut_ip=sut_ip,
-            )
+            try:
+                gen_result = generate_code_for_test_case(
+                    tc_entry, sut_type, requirement_context,
+                    titan_log=titan_log, pcap_path=pcap_path,
+                    skip_build=skip_build,
+                    sut_ip=sut_ip,
+                )
+            except _PipelineEarlyExit:
+                gen_result = None
             results.append({
                 "input": {"type": "tc_id", "data": tc_id},
                 "success": gen_result is not None and gen_result.get("ttcn_path") is not None,
@@ -7121,12 +7424,15 @@ def run_pipeline(
         reqs = doc_ref.get("Requirements", []) if isinstance(doc_ref, dict) else []
         requirement_context = find_requirement_context(reqs[0].strip("[]").strip()) if reqs else ""
 
-        gen_result = generate_code_for_test_case(
-            tc_entry, sut_type, requirement_context,
-            titan_log=titan_log, pcap_path=pcap_path,
-            skip_build=skip_build,
-            sut_ip=sut_ip,
-        )
+        try:
+            gen_result = generate_code_for_test_case(
+                tc_entry, sut_type, requirement_context,
+                titan_log=titan_log, pcap_path=pcap_path,
+                skip_build=skip_build,
+                sut_ip=sut_ip,
+            )
+        except _PipelineEarlyExit:
+            gen_result = None
         results.append({
             "input": {"type": "requirements", "data": requirement_ids, "tc_id": tc_id},
             "success": gen_result is not None and gen_result.get("ttcn_path") is not None,

@@ -1,12 +1,29 @@
 #ifndef V2G_TCP_TLS_PORT_HH
 #define V2G_TCP_TLS_PORT_HH
 
-#include "SECC_TestSystem.hh"
+// Standard library headers MUST come BEFORE SECC_TestSystem.hh to avoid
+// namespace pollution from TITAN-generated headers defining types that
+// conflict with stdlib names (e.g., string, vector, map).
 #include <string>
 #include <cstdint>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <net/if.h>
+#include <ifaddrs.h>
+#include <vector>
+
+// Forward declarations (in global namespace, before SECC_TestSystem.hh)
+namespace SECC__TestSystem {
+class ExiCodecAdapter;
+}
+
+// ExiJniDecoder lives in the SECC__ExiJni namespace
+namespace SECC__ExiJni {
+class StaticExiDecoder;
+}
+
+// TITAN-generated header -- must come AFTER stdlib includes and forward decl.
+#include "SECC_TestSystem.hh"
 
 namespace SECC__TestSystem {
 
@@ -17,14 +34,14 @@ public:
     void set_parameter(const char *parameter_name, const char *parameter_value);
     void Handle_Message(const unsigned char *message, size_t length);
     void outgoing_message(const unsigned char *message, size_t length);
-    void outgoing_send(const OCTETSTRING& send_par) override;
-    void send_data(const OCTETSTRING& send_data, const char* send_fmt, ...);
+    void outgoing_send(const ::SECC__Types::V2G__MessageUnion& send_par) override;
+    void send_data(const ::SECC__Types::V2G__MessageUnion& send_data, const char* send_fmt, ...);
 
 private:
-    std::string port_name_;
-    std::string ip_address_;
-    std::string network_interface_;
-    std::string ipv6_multicast_;
+    ::std::string port_name_;
+    ::std::string ip_address_;
+    ::std::string network_interface_;
+    ::std::string ipv6_multicast_;
     int port_;
     bool tls_enabled_;
     bool use_ipv6_;
@@ -32,16 +49,27 @@ private:
     bool connected_;
     bool receive_thread_running_;
     pthread_t receive_thread_id_;
+    ::std::string current_session_id_;
+    ::SECC__ExiJni::StaticExiDecoder* exi_decoder_;
+    // TCP buffer: accumulate bytes across multiple recv() calls
+    ::std::vector<uint8_t> receive_buffer_;
+    // Cached port from successful connection (needed when SECC closes and we reconnect)
+    int cached_secc_port_;
 
     void connect_to_secc();
     void disconnect_from_secc();
     void receive_loop();
-    bool send_v2gtp_frame(const unsigned char* data, size_t length);
-    int parse_ipv6_address(const std::string& addr_str, ::sockaddr_in6* addr6);
+    bool send_wire_bytes(const unsigned char* data, size_t length);
+    int parse_ipv6_address(const ::std::string& addr_str, ::sockaddr_in6* addr6);
+    bool encode_union_to_wire(const ::SECC__Types::V2G__MessageUnion& msg_union,
+                               ::std::vector<uint8_t>& wire_output);
+
+    // Decode received EXI bytes into a V2G__MessageUnion and deliver to TTCN-3
+    bool decode_and_deliver(const ::std::vector<uint8_t>& wire_bytes);
 
     static void* receive_thread_func(void* arg);
 };
 
-}
+}  // namespace SECC__TestSystem
 
-#endif
+#endif  // V2G_TCP_TLS_PORT_HH

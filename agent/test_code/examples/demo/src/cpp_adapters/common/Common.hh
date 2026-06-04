@@ -10,6 +10,7 @@
 #include <iostream>
 #include <fstream>
 #include <ctime>
+#include <functional>
 
 namespace titan_adapter {
 

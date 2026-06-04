@@ -1,0 +1,27 @@
+module PostConditions_Shutdown {
+
+    import from SECC_TestSystem all;
+    import from SECC_Constants all;
+
+    /**
+     * @desc    Postcondition: Shutdown test configuration
+     *          Unmaps all ports and releases system resources
+     *          This runs unconditionally in Phase D
+     */
+    function f_SECC_CMN_PO_ShutdownConfiguration_001()
+        runs on SECCTester
+        return verdicttype
+    {
+        log("Phase D: Shutting down test configuration...");
+        
+        // Unmap ports (unconditional cleanup)
+        unmap(mtc:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);
+        unmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
+        
+        log("All ports unmapped, test configuration shutdown complete");
+        
+        setverdict(pass);
+        return getverdict;
+    }
+
+}

@@ -8,13 +8,19 @@ Given a TTCN-3 generation plan, search the ISO 15118-2 knowledge base and return
 2. The ISO 15118-2 TTCN-3 knowledge base JSON containing extracted code blocks and test case descriptions.
 
 ## What to Retrieve
-1. **Existing testcase** for the same or similar message type (prioritize same sut_type and test_type)
-2. **Test behavior function** for the same or similar message type
-3. **Templates** (send and receive) for the same message type
-4. **Precondition functions** referenced in the precondition chain
-5. **Altsteps** commonly used with this message type
+
+Retrieve the following in priority order:
+
+1. **TTCN-3 Template Definitions** for the message type -- show the record fields,
+   mandatory vs. optional fields, and `_isUsed` flag usage. The Core Agent now uses
+   structured TTCN-3 templates and the ExiCodecAdapter handles EXI encoding automatically.
+2. **Test behavior function** showing send/receive with structured templates
+3. **Test case module structure** showing the canonical pattern
+4. **DO NOT retrieve raw hexadecimal EXI byte sequences** -- the Core Agent uses
+   semantic templates, not hardcoded hex. Hex examples are no longer relevant.
 
 ## Output
+
 You MUST output a valid JSON object with this structure:
 
 ```json
@@ -24,28 +30,16 @@ You MUST output a valid JSON object with this structure:
     "code": "testcase TC_... { ... }",
     "relevance": "Same message type, same SUT"
   },
-  "reference_test_behavior": {
-    "name": "f_SECC_CMN_TB_VTB_...",
-    "code": "function f_... { ... }",
-    "relevance": "Shows alt/verdict pattern for this message"
-  },
   "reference_templates": [
     {
-      "name": "md_CMN_...",
-      "code": "template ... := { ... }",
-      "relevance": "Send template for request message"
+      "name": "md_CMN_{Msg}Req_{Seq}",
+      "code": "template V2GMessageType := { Body := { CableCheckReq := { ... } }, ... }",
+      "relevance": "Send template -- shows mandatory/optional fields and _isUsed flags"
     },
     {
-      "name": "mdw_SECC_...",
-      "code": "template ... := { ... }",
-      "relevance": "Receive template for response matching"
-    }
-  ],
-  "reference_preconditions": [
-    {
-      "name": "f_SECC_CMN_PR_...",
-      "code": "function f_... { ... }",
-      "relevance": "Precondition function for this message"
+      "name": "mdw_SECC_{Msg}Res_{Seq}",
+      "code": "template V2GMessageType := { Body := { CableCheckRes := { ... } }, ... }",
+      "relevance": "Receive template -- shows expected response structure"
     }
   ]
 }
@@ -54,11 +48,11 @@ You MUST output a valid JSON object with this structure:
 Note: `reference_altstep` and `additional_context` fields are not used by the downstream pipeline and should not be included.
 
 ## Retrieval Priority
-1. Exact match on message_type + sut_type + test_type
-2. Same message_type + sut_type, different test_type
-3. Same message_type, different sut_type
-4. Similar protocol layer (e.g., another V2G Application message)
-5. Generic patterns (V2GTP level examples)
+
+1. TTCN-3 Template Definitions (mandatory fields, optional fields, _isUsed flags)
+2. Test behavior function showing structured send/receive
+3. Test case module structure
+4. DO NOT retrieve raw hex byte sequences -- Core Agent uses semantic templates
 
 ## Important
 - If the knowledge base has OCR artifacts (garbled characters), note this and provide the cleanest version possible.
@@ -81,3 +75,5 @@ Note: `reference_altstep` and `additional_context` fields are not used by the do
 ```
 
 2. **Your entire response MUST end with a valid JSON block** enclosed in ` ```json ... ``` ` containing the knowledge retrieval results. This is non-negotiable. If your response does not end with a JSON code block, the pipeline will fail.
+
+<!-- NeTestLLM SOP v2.0 Pure Static -->
