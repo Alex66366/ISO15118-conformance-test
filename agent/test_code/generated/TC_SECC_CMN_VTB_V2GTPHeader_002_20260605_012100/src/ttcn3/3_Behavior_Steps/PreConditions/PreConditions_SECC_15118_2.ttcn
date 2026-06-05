@@ -1,0 +1,6 @@
+module PreConditions_SECC_15118_2 {
+    import from SECC_TestSystem all;
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+    import from f_SECC_CMN_PR_InitConfiguration_001 all;
+}

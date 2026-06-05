@@ -1,0 +1,55 @@
+{
+  "experiment_metadata": {
+    "tc_id": "TC_SECC_CMN_VTB_V2GTPHeader_002",
+    "run_timestamp": "20260605_012100",
+    "pipeline_version": "sop_v2.0_pure_static",
+    "git_commit": "3463ba4",
+    "test_case_name": "TC_SECC_CMN_VTB_V2GTPHeader_002"
+  },
+  "token_usage": {
+    "planning": {
+      "input_tokens": 7579,
+      "output_tokens": 543,
+      "calls": 1
+    },
+    "core_generation": {
+      "input_tokens": 26791,
+      "output_tokens": 3216,
+      "calls": 1
+    },
+    "infrastructure_agent": {
+      "input_tokens": 4709164,
+      "output_tokens": 33338,
+      "calls": 1
+    },
+    "fault_corrector": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "calls": 0
+    },
+    "total_input_tokens": 4743534,
+    "total_output_tokens": 37097
+  },
+  "latency": {
+    "planning_seconds": 16.579,
+    "generation_seconds": 54.32,
+    "infrastructure_seconds": 1441.725,
+    "compilation_seconds": 114.635,
+    "compilation_loop_seconds": 0.0,
+    "fault_correction_seconds": 0.013,
+    "total_pipeline_seconds": 1627.272
+  },
+  "self_healing": {
+    "compile_loop_iterations": 0,
+    "compile_loop_max": 3,
+    "runtime_loop_iterations": 0,
+    "runtime_loop_max": 2,
+    "total_self_fixes": 0
+  },
+  "verdict": {
+    "result": "pass",
+    "execution_time_seconds": 0.0,
+    "build_status": "completed",
+    "compile_errors_count": 0
+  }
+}

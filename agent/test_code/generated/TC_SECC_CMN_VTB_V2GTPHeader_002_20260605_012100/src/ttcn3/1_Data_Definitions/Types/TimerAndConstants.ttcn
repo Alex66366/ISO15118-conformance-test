@@ -1,0 +1,39 @@
+module SECC_Constants {
+    import from SECC_TestSystem all;
+
+    // ==========================================
+    // Section 1: ISO 15118-2 Message Timeouts
+    // ==========================================
+
+    const float PX_SECC_CMN_Message_Timeout := 60.0;
+    const float PX_SECC_CMN_Sequence_Timeout := 2.0;
+    const float PX_SECC_CMN_CommunicationSetup_Timeout := 10.0;
+    const float PX_SECC_CMN_TCP_Connection_Timeout := 5.0;
+    const float PX_SECC_CMN_TLS_Handshake_Timeout := 10.0;
+    const float PX_SECC_CMN_SDP_Response_Timeout := 1.0;
+
+    // ==========================================
+    // Section 2: Default Timer Values
+    // ==========================================
+
+    const float PX_SECC_CMN_DefaultTimer := 5.0;
+    const float PX_SECC_CMN_LongTimer := 30.0;
+    const float PX_SECC_CMN_ShortTimer := 1.0;
+
+    // ==========================================
+    // Section 3: Common Constants
+    // ==========================================
+
+    const octetstring PX_SECC_CMN_V2GTP_ProtocolVersion := '01'O;
+    const octetstring PX_SECC_CMN_V2GTP_InvVersion     := 'FE'O;
+    const octetstring PX_SECC_CMN_Default_EVCCID := '123456789ABC'O;
+    const octetstring PX_SECC_CMN_Default_SessionID := '0000000000000000'O;
+
+    // ==========================================
+    // Section 4: V2GTP Header Constants
+    // ==========================================
+
+    const octetstring PX_SECC_CMN_V2GTP_InvalidProtocolVersion := '02'O;
+    const octetstring PX_SECC_CMN_V2GTP_InvalidInvVersion := 'FD'O;
+
+} // end module SECC_Constants

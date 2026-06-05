@@ -1,0 +1,108 @@
+module SECC_CmnTemplates {
+    import from SECC_Types all;
+
+    // ==========================================
+    // Section 1: Common Timeout Altsteps
+    // ==========================================
+
+    altstep a_CMN_WaitTimeout(inout timer p_timer) {
+        [] p_timer.timeout {
+            setverdict(inconc, "Timeout occurred");
+        }
+    }
+
+    // ==========================================
+    // Section 2: Verdict Helpers
+    // ==========================================
+
+    function f_CMN_IsVerdictPass(in verdicttype p_verdict) return boolean {
+        return (p_verdict == pass);
+    }
+
+    function f_CMN_VerdictToCharstring(in verdicttype p_verdict) return charstring {
+        if (p_verdict == pass)    { return "pass"; }
+        if (p_verdict == fail)    { return "fail"; }
+        if (p_verdict == inconc)  { return "inconc"; }
+        return "none";
+    }
+
+    // ==========================================
+    // Section 3: V2GTP Header Templates (raw octetstring for BadCase)
+    // ==========================================
+    // For BadCase V2GTP header tests, we send raw octetstrings directly
+    // to test protocol-layer rejection by the SECC.
+    //
+    // md_CMN_V2GTPHeaderReq_002: V2GTP with invalid ProtocolVersion=0x02
+    // This tests that SECC rejects messages with wrong protocol version.
+    // @reference V2G2-082
+
+    // Invalid V2GTP header with ProtocolVersion=0x02 (valid is 0x01)
+    // Format: [ProtocolVersion][InvProtocolVersion][PayloadType 2B][PayloadLength 4B][Payload...]
+    // 0x02 0xFD 0x80 0x01 0x00 0x00 0x00 0x02 0x80 0x00
+    template octetstring md_CMN_V2GTPHeaderReq_002 :=
+        '02FD800100000002'O;
+
+    // Wildcard template for any response (used in receive matching)
+    template octetstring mdw_SECC_V2GTPHeaderRes_002 := ?;
+
+    // ==========================================
+    // Section 4: SupportedAppProtocol Templates
+    // ==========================================
+
+    template SupportedAppProtocolReq md_CMN_SupportedAppProtocolReq_001 := {
+        protocolArray := {
+            {
+                protocolNamespace := "urn:iso:15118:2:2013:MsgDef",
+                versionNumberMajor := 2,
+                versionNumberMinor := 0,
+                SchemaID := 1
+            }
+        }
+    }
+
+    template SupportedAppProtocolRes mdw_SECC_SupportedAppProtocolRes_001 := {
+        ResponseCode := ?,
+        SchemaID := *
+    }
+
+    // ==========================================
+    // Section 5: SessionSetup Templates
+    // ==========================================
+
+    template SessionSetupReq md_CMN_SessionSetupReq_001 := {
+        sessionId := { content := '0000000000000000'O },
+        evccId    := { content := '123456789ABC'O }
+    }
+
+    template SessionSetupRes mdw_SECC_SessionSetupRes_001 := {
+        ResponseCode := ?,
+        EVSEID       := ?,
+        EVSETimeStamp := *
+    }
+
+    // ==========================================
+    // Section 6: ServiceDiscovery Templates
+    // ==========================================
+
+    template ServiceDiscoveryReq md_CMN_ServiceDiscoveryReq_001 := {
+        ServiceScope := omit
+    }
+
+    template ServiceDiscoveryRes mdw_SECC_ServiceDiscoveryRes_001 := {
+        ResponseCode := ?
+    }
+
+    // ==========================================
+    // Section 7: PowerDelivery Templates
+    // ==========================================
+
+    template PowerDeliveryReq md_CMN_PowerDeliveryReq_001 := {
+        ChargeProgress := 0,
+        SAScheduleTupleID := 1
+    }
+
+    template PowerDeliveryRes mdw_SECC_PowerDeliveryRes_001 := {
+        ResponseCode := ?
+    }
+
+} // end module SECC_CmnTemplates

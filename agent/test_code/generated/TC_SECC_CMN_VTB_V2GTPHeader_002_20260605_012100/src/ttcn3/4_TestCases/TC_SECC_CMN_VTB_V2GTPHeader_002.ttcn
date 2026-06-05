@@ -1,0 +1,46 @@
+module TC_SECC_CMN_VTB_V2GTPHeader_002 {
+
+    /**
+     * @desc    TC_SECC_CMN_VTB_V2GTPHeader_002
+     *          BadCase: Verify SECC rejects V2GTP message with invalid ProtocolVersion (0x02)
+     * @reference ISO 15118-2:2014, Section 7.8
+     * @requirement V2G2-082
+     */
+
+    import from SECC_TestSystem all;
+    import from SECC_Types all;
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+
+    // Aggregator imports
+    import from PreConditions_SECC_15118_2 all;
+    import from PostConditions_SECC_15118_2 all;
+
+    // Direct imports for all function modules called
+    import from f_SECC_CMN_PR_InitConfiguration_001 all;
+    import from f_SECC_CMN_TB_VTB_V2GTPHeader_002 all;
+    import from f_SECC_CMN_PO_InitialState_001 all;
+    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
+
+    testcase TC_SECC_CMN_VTB_V2GTPHeader_002()
+        runs on SECCTester system SystemSECC
+    {
+        var verdicttype preConVerdict;
+
+        // Phase A+B: PreConditions
+        preConVerdict := f_SECC_CMN_PR_InitConfiguration_001();
+        if (preConVerdict != pass) {
+            setverdict(inconc, "PreCondition InitConfiguration failed");
+        }
+
+        // Phase C: Test Behavior (BadCase - send invalid V2GTP ProtocolVersion)
+        if (preConVerdict == pass) {
+            f_SECC_CMN_TB_VTB_V2GTPHeader_002();
+        }
+
+        // Phase D: PostConditions (unconditional)
+        f_SECC_CMN_PO_InitialState_001();
+        f_SECC_CMN_PO_ShutdownConfiguration_001();
+    }
+
+} // end module TC_SECC_CMN_VTB_V2GTPHeader_002

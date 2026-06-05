@@ -657,17 +657,27 @@ _agent_call_counts = {}
 
 
 def _parse_token_usage_from_claude_output(stderr, stdout=""):
-    # Try to extract from JSON output body first (e.g. "usage":{"input_tokens":N,...})
+    # Try to extract from JSON output body (Claude Code CLI uses camelCase: inputTokens, outputTokens)
     input_tok = 0
     output_tok = 0
     combined = stderr + stdout
-    inp_json = re.search(r'"input_tokens"\s*:\s*(\d+)', combined)
-    out_json = re.search(r'"output_tokens"\s*:\s*(\d+)', combined)
+    # Match camelCase (Claude Code CLI) and snake_case patterns
+    inp_json = re.search(r'"inputTokens"\s*:\s*(\d+)', combined)
+    out_json = re.search(r'"outputTokens"\s*:\s*(\d+)', combined)
     if inp_json:
         input_tok = int(inp_json.group(1))
     if out_json:
         output_tok = int(out_json.group(1))
-    # Fall back to [Token Usage] format in stderr
+    # Fallback: snake_case format
+    if input_tok == 0:
+        inp_json2 = re.search(r'"input_tokens"\s*:\s*(\d+)', combined)
+        if inp_json2:
+            input_tok = int(inp_json2.group(1))
+    if output_tok == 0:
+        out_json2 = re.search(r'"output_tokens"\s*:\s*(\d+)', combined)
+        if out_json2:
+            output_tok = int(out_json2.group(1))
+    # Fallback: [Token Usage] format in stderr (e.g. "[Token Usage] Input: 123 tokens | Output: 456 tokens")
     if input_tok == 0:
         inp = re.search(r"Input:\s*(\d+)\s*tokens?", stderr)
         if inp:
@@ -6291,6 +6301,7 @@ def generate_code_for_test_case(
     pcap_path: Optional[Path] = None,
     skip_build: bool = False,
     sut_ip: Optional[str] = None,
+    ablation_no_knowledge: bool = False,
 ) -> Dict:
     """为单个测试用例生成 TTCN-3 代码及完整项目结构
 
@@ -6431,36 +6442,48 @@ def generate_code_for_test_case(
         json.dump(generation_plan, f, indent=2, ensure_ascii=False)
     log(f"生成计划已保存: {plan_path}")
 
-    # === Step 2: Summarizer - 知识检索 ===
-    log("\n--- Step 2: Summarizer (知识检索) ---")
+    # === Step 2: Summarizer - 知识检索 (可被 ablation 禁用) ===
     msg_type = generation_plan.get("message_type", "")
     sut = generation_plan.get("sut_type", "SECC")
-    kb_search_results = search_knowledge_base(msg_type, sut)
-    log(f"本地预检索: testcases={len(kb_search_results.get('testcases', []))}, "
-        f"functions={len(kb_search_results.get('functions', []))}, "
-        f"templates={len(kb_search_results.get('templates', []))}")
 
-    t1 = time.time()
-    references = run_summarizer(generation_plan, kb_search_results)
-    summarizer_elapsed = time.time() - t1
-    log(f"[Summarizer] 耗时: {summarizer_elapsed:.1f}s")
-    if not references:
-        log("Summarizer 失败，使用空引用继续", "WARN")
+    if ablation_no_knowledge:
+        # Zero-Shot 模式：完全禁用知识库检索
+        log("\n--- Step 2: Summarizer (已禁用: --ablation-no-knowledge) ---")
+        kb_search_results = {}
         references = {}
+        summarizer_elapsed = 0.0
+        local_ref_section = ""
+        log("[Summarizer] Zero-Shot 模式: references={}, kb_search_results={}", "INFO")
+    else:
+        # 正常模式：运行 Summarizer Agent
+        log("\n--- Step 2: Summarizer (知识检索) ---")
+        kb_search_results = search_knowledge_base(msg_type, sut)
+        log(f"本地预检索: testcases={len(kb_search_results.get('testcases', []))}, "
+            f"functions={len(kb_search_results.get('functions', []))}, "
+            f"templates={len(kb_search_results.get('templates', []))}")
+
+        t1 = time.time()
+        references = run_summarizer(generation_plan, kb_search_results)
+        summarizer_elapsed = time.time() - t1
+        log(f"[Summarizer] 耗时: {summarizer_elapsed:.1f}s")
+        if not references:
+            log("Summarizer 失败，使用空引用继续", "WARN")
+            references = {}
+
+        # 构建 local_ref_section（绕过 Summarizer LLM 层）
+        local_ref_parts = []
+        for tc in kb_search_results.get("testcases", [])[:3]:
+            if tc.get("code") and len(tc["code"]) > 100:
+                local_ref_parts.append(f"// === Local Ref TC: {tc.get('name', 'unknown')} ===\n{tc['code']}")
+        for fn in kb_search_results.get("functions", [])[:3]:
+            if fn.get("code") and len(fn["code"]) > 50:
+                local_ref_parts.append(f"// === Local Ref Function: {fn.get('name', 'unknown')} ===\n{fn['code']}")
+        local_ref_section = "\n\n".join(local_ref_parts) if local_ref_parts else ""
 
     # === Step 3: Core Agent (代码生成, 单次调用) ===
     log("\n--- Step 3: Core Agent (代码生成) ---")
     # 判断 SIL/HIL 模式：没有 SUT IP 时为 SIL 模式
     effective_sut_mode = "SIL" if not sut_ip else "HIL"
-    # 构建 local_ref_section（绕过 Summarizer LLM 层）
-    local_ref_parts = []
-    for tc in kb_search_results.get("testcases", [])[:3]:
-        if tc.get("code") and len(tc["code"]) > 100:
-            local_ref_parts.append(f"// === Local Ref TC: {tc.get('name', 'unknown')} ===\n{tc['code']}")
-    for fn in kb_search_results.get("functions", [])[:3]:
-        if fn.get("code") and len(fn["code"]) > 50:
-            local_ref_parts.append(f"// === Local Ref Function: {fn.get('name', 'unknown')} ===\n{fn['code']}")
-    local_ref_section = "\n\n".join(local_ref_parts) if local_ref_parts else ""
     t2 = time.time()
     core_result = run_core_agent(
         generation_plan, references, few_shot_examples, sop, "",
@@ -7233,6 +7256,7 @@ def run_pipeline(
     pcap_path: Optional[Path] = None,
     skip_build: bool = False,
     sut_ip: Optional[str] = None,
+    ablation_no_knowledge: bool = False,
 ) -> List[Dict]:
     """运行完整的 TTCN-3 代码生成流水线
 
@@ -7334,6 +7358,7 @@ def run_pipeline(
                     titan_log=titan_log, pcap_path=pcap_path,
                     skip_build=skip_build,
                     sut_ip=sut_ip,
+                    ablation_no_knowledge=ablation_no_knowledge,
                 )
             except _PipelineEarlyExit:
                 gen_result = None
@@ -7371,6 +7396,7 @@ def run_pipeline(
                     titan_log=titan_log, pcap_path=pcap_path,
                     skip_build=skip_build,
                     sut_ip=sut_ip,
+                    ablation_no_knowledge=ablation_no_knowledge,
                 )
             except _PipelineEarlyExit:
                 gen_result = None
@@ -7430,6 +7456,7 @@ def run_pipeline(
                 titan_log=titan_log, pcap_path=pcap_path,
                 skip_build=skip_build,
                 sut_ip=sut_ip,
+                ablation_no_knowledge=ablation_no_knowledge,
             )
         except _PipelineEarlyExit:
             gen_result = None
@@ -7545,6 +7572,10 @@ def main():
         "--sut-ip", type=str,
         help="SUT IP 地址（用于 titan_runtime.cfg 配置，默认 ff02::01 IPv6 组播）"
     )
+    infra_group.add_argument(
+        "--ablation-no-knowledge", action="store_true",
+        help="禁用所有知识库注入（Summarizer + Local KB Search），执行 Zero-Shot 模式用于消融研究"
+    )
 
     # 故障分析参数
     fault_group = parser.add_argument_group("故障分析 (Fault Agent 双轨分析)")
@@ -7599,6 +7630,7 @@ def main():
         pcap_path=Path(args.pcap) if args.pcap else None,
         skip_build=args.skip_build,
         sut_ip=args.sut_ip,
+        ablation_no_knowledge=args.ablation_no_knowledge,
     )
 
     # 打印结果报告

@@ -1,0 +1,38 @@
+{
+  "tc_id": "TC_SECC_CMN_VTB_V2GTPHeader_002",
+  "sut_type": "SECC",
+  "category": "CMN",
+  "message_type": "V2GTPHeader",
+  "test_type": "BadCase",
+  "protocol_layer": "V2GTP",
+  "precondition_chain": [
+    "f_SECC_CMN_PR_InitConfiguration_001"
+  ],
+  "port_name": "pt_V2G_TCP_TLS_ALM_SECC_Port",
+  "component": "SECCTester",
+  "system_component": "SystemSECC",
+  "send_template_name": "md_CMN_V2GTPHeaderReq_002",
+  "receive_template_name": "mdw_SECC_V2GTPHeaderRes_002",
+  "request_message_type": "V2GTPHeaderReqType",
+  "response_message_type": "V2GTPHeaderResType",
+  "key_parameters": {
+    "ProtocolVersion": "0x02",
+    "InverseProtocolVersion": "0xFD",
+    "PayloadType": "0x8001",
+    "PayloadLength": "actual_payload_length"
+  },
+  "verdict_logic": {
+    "pass_condition": "SECC rejects the V2GTP message with invalid ProtocolVersion (0x02) by either closing the TCP connection or not returning any V2G application-layer response within the timeout period",
+    "fail_condition": "SECC accepts the invalid V2GTP message and returns a normal V2G application-layer response, indicating it did not enforce the ProtocolVersion=0x01 requirement",
+    "inconc_condition": "Test setup fails, TCP connection cannot be established, or an unexpected message is received that does not allow a definitive pass/fail verdict"
+  },
+  "requirements_traced": [
+    "V2G2-082"
+  ],
+  "test_behavior_func_name": "f_SECC_CMN_TB_VTB_V2GTPHeader_002",
+  "testcase_name": "TC_SECC_CMN_VTB_V2GTPHeader_002",
+  "postcondition_chain": [
+    "f_SECC_CMN_PO_InitialState_001",
+    "f_SECC_CMN_PO_ShutdownConfiguration_001"
+  ]
+}

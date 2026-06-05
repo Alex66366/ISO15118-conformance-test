@@ -1,0 +1,84 @@
+01:46:48.733775 EXECUTOR - TTCN-3 Test Executor started in single mode. Version: CRL 113 200/6 R6B.
+01:46:48.733950 EXECUTOR - Using configuration file: `/home/dmc/桌面/platform/agent/test_code/generated/TC_SECC_CMN_VTB_V2GTPHeader_002_20260605_012100/config/titan_runtime.cfg'.
+01:46:48.733958 EXECUTOR - Maximum number of open file descriptors: 1048576,   FD_SETSIZE = 1024
+01:46:48.740991 EXECUTOR - TTCN Logger v2.2 options: TimeStampFormat:=Time; LogEntityName:=Yes; LogEventTypes:=Yes; SourceInfoFormat:=Single; *.FileMask:=LOG_ALL; *.ConsoleMask:=ACTION | ERROR | TESTCASE | STATISTICS_VERDICT | STATISTICS_UNQUALIFIED | WARNING; LogFileSize:=0; LogFileNumber:=1; DiskFullAction:=Error
+01:46:48.741015 EXECUTOR - Initializing module PostConditions_SECC_15118_2.
+01:46:48.741034 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initializing module SECC_CmnTemplates.
+01:46:48.741053 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn:0 Initializing module SECC_Types.
+01:46:48.741070 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn:0 Initialization of module SECC_Types finished.
+01:46:48.741109 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initialization of module SECC_CmnTemplates finished.
+01:46:48.741126 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initializing module SECC_Constants.
+01:46:48.741142 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn:0 Initializing module SECC_TestSystem.
+01:46:48.741159 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn:0 Initialization of module SECC_TestSystem finished.
+01:46:48.741174 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initialization of module SECC_Constants finished.
+01:46:48.741189 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initializing module f_SECC_CMN_PO_InitialState_001.
+01:46:48.741203 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initialization of module f_SECC_CMN_PO_InitialState_001 finished.
+01:46:48.741217 EXECUTOR - Initialization of module PostConditions_SECC_15118_2 finished.
+01:46:48.741230 EXECUTOR - Initializing module PreConditions_SECC_15118_2.
+01:46:48.741243 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn:0 Initializing module f_SECC_CMN_PR_InitConfiguration_001.
+01:46:48.741258 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn:0 Initialization of module f_SECC_CMN_PR_InitConfiguration_001 finished.
+01:46:48.741272 EXECUTOR - Initialization of module PreConditions_SECC_15118_2 finished.
+01:46:48.741284 EXECUTOR - Initializing module PreGenRecordOf.
+01:46:48.741298 EXECUTOR - Initialization of module PreGenRecordOf finished.
+01:46:48.741310 EXECUTOR - Initializing module SECC_PICS.
+01:46:48.741323 EXECUTOR - Initialization of module SECC_PICS finished.
+01:46:48.741335 EXECUTOR - Initializing module TC_SECC_CMN_VTB_V2GTPHeader_002.
+01:46:48.741349 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:0 Initializing module f_SECC_CMN_TB_VTB_V2GTPHeader_002.
+01:46:48.741365 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:0 Initialization of module f_SECC_CMN_TB_VTB_V2GTPHeader_002 finished.
+01:46:48.741380 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:0 Initializing module f_SECC_CMN_PO_ShutdownConfiguration_001.
+01:46:48.741415 EXECUTOR /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:0 Initialization of module f_SECC_CMN_PO_ShutdownConfiguration_001 finished.
+01:46:48.741436 EXECUTOR - Initialization of module TC_SECC_CMN_VTB_V2GTPHeader_002 finished.
+01:46:48.741449 EXECUTOR - Initializing module TestCases_SECC.
+01:46:48.741462 EXECUTOR - Initialization of module TestCases_SECC finished.
+01:46:48.741474 EXECUTOR - Initializing module TitanLoggerApi.
+01:46:48.741487 EXECUTOR - Initialization of module TitanLoggerApi finished.
+01:46:48.741500 EXECUTOR - Initializing module TitanLoggerControl.
+01:46:48.741512 EXECUTOR - Initialization of module TitanLoggerControl finished.
+01:46:48.741528 STATISTICS /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn:5(controlpart:TestCases_SECC) Execution of control part in module TestCases_SECC started.
+01:46:48.743871 TESTCASE /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:25(testcase:TC_SECC_CMN_VTB_V2GTPHeader_002) Test case TC_SECC_CMN_VTB_V2GTPHeader_002 started.
+01:46:48.745333 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:25(testcase:TC_SECC_CMN_VTB_V2GTPHeader_002) Initializing variables, timers and ports of component type SECC_TestSystem.SECCTester inside testcase TC_SECC_CMN_VTB_V2GTPHeader_002.
+01:46:48.746623 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:25(testcase:TC_SECC_CMN_VTB_V2GTPHeader_002) Port pt_V2G_TCP_TLS_ALM_SECC_Port was started.
+01:46:48.746674 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:25(testcase:TC_SECC_CMN_VTB_V2GTPHeader_002) Port pt_V2G_UDP_SDP_Port was started.
+01:46:48.746693 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:25(testcase:TC_SECC_CMN_VTB_V2GTPHeader_002) Component type SECC_TestSystem.SECCTester was initialized.
+01:46:48.746718 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:18(function:f_SECC_CMN_PR_InitConfiguration_001) Mapping port mtc:pt_V2G_TCP_TLS_ALM_SECC_Port to system:pt_V2G_TCP_TLS_ALM_SECC_Port.
+01:46:48.746746 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:18(function:f_SECC_CMN_PR_InitConfiguration_001) Port pt_V2G_TCP_TLS_ALM_SECC_Port was mapped to system:pt_V2G_TCP_TLS_ALM_SECC_Port.
+01:46:48.748086 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:18(function:f_SECC_CMN_PR_InitConfiguration_001) Map operation of mtc:pt_V2G_TCP_TLS_ALM_SECC_Port to system:pt_V2G_TCP_TLS_ALM_SECC_Port finished.
+01:46:48.748139 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:19(function:f_SECC_CMN_PR_InitConfiguration_001) Mapping port mtc:pt_V2G_UDP_SDP_Port to system:pt_V2G_UDP_SDP_Port.
+01:46:48.748166 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:19(function:f_SECC_CMN_PR_InitConfiguration_001) Port pt_V2G_UDP_SDP_Port was mapped to system:pt_V2G_UDP_SDP_Port.
+01:46:48.748187 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:19(function:f_SECC_CMN_PR_InitConfiguration_001) Map operation of mtc:pt_V2G_UDP_SDP_Port to system:pt_V2G_UDP_SDP_Port finished.
+01:46:48.748215 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:24(function:f_SECC_CMN_PR_InitConfiguration_001) Sent on pt_V2G_UDP_SDP_Port to system octetstring : '01FE9000000000021000'O
+01:46:48.752025 TIMEROP /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:27(function:f_SECC_CMN_PR_InitConfiguration_001) Start timer t_sdp: 1 s
+01:46:48.840143 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:29(function:f_SECC_CMN_PR_InitConfiguration_001) Message enqueued on pt_V2G_UDP_SDP_Port from system octetstring : '01FE900100000014FE80000000000000D5B356EBB195AEC6CF381000'O id 1
+01:46:49.752352 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:30(function:f_SECC_CMN_PR_InitConfiguration_001) Receive operation on port pt_V2G_UDP_SDP_Port succeeded, message from system(): octetstring: '01FE900100000014FE80000000000000D5B356EBB195AEC6CF381000'O id 1
+01:46:49.752493 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:30(function:f_SECC_CMN_PR_InitConfiguration_001) Message with id 1 was extracted from the queue of pt_V2G_UDP_SDP_Port.
+01:46:49.752526 TIMEROP /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:31(function:f_SECC_CMN_PR_InitConfiguration_001) Stop timer t_sdp: 1 s
+01:46:49.752560 USER /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:32(function:f_SECC_CMN_PR_InitConfiguration_001) SDP discovery: SECC found via UDP multicast
+01:46:49.752580 USER /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:39(function:f_SECC_CMN_PR_InitConfiguration_001) InitConfiguration complete: port mapping and SDP discovery done
+01:46:49.752603 TIMEROP /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_TB_VTB_V2GTPHeader_002.ttcn:34(function:f_SECC_CMN_TB_VTB_V2GTPHeader_002) Start timer tc_V2G_SECC_Msg_Timer: 60 s
+01:46:49.752627 USER /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_TB_VTB_V2GTPHeader_002.ttcn:37(function:f_SECC_CMN_TB_VTB_V2GTPHeader_002) Sending V2GTP message with invalid ProtocolVersion=0x02 (should be 0x01)
+01:46:49.752693 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_TB_VTB_V2GTPHeader_002.ttcn:38(function:f_SECC_CMN_TB_VTB_V2GTPHeader_002) Sent on pt_V2G_TCP_TLS_ALM_SECC_Port to system @SECC_Types.V2G_MessageUnion : { v2gtpHeaderReq := { protocolVersion := '02'O, inverseProtocolVersion := 'FD'O, payloadType := '8001'O, payloadLength := '00000002'O, payload := '0000'O } }
+01:47:49.811378 TIMEROP /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_TB_VTB_V2GTPHeader_002.ttcn:51(function:f_SECC_CMN_TB_VTB_V2GTPHeader_002) Timeout tc_V2G_SECC_Msg_Timer: 60 s
+01:47:49.811515 USER /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_TB_VTB_V2GTPHeader_002.ttcn:52(function:f_SECC_CMN_TB_VTB_V2GTPHeader_002) PASS: SECC did not respond to invalid ProtocolVersion=0x02 (timeout)
+01:47:49.811549 VERDICTOP /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_TB_VTB_V2GTPHeader_002.ttcn:53(function:f_SECC_CMN_TB_VTB_V2GTPHeader_002) setverdict(pass): none -> pass reason: "SECC correctly ignored V2GTP message with invalid ProtocolVersion=0x02", new component reason: "SECC correctly ignored V2GTP message with invalid ProtocolVersion=0x02"
+01:47:49.821647 VERDICTOP /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_TB_VTB_V2GTPHeader_002.ttcn:57(function:f_SECC_CMN_TB_VTB_V2GTPHeader_002) getverdict: pass
+01:47:49.821678 USER /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn:13(function:f_SECC_CMN_PO_InitialState_001) PostCondition: Resetting to initial state
+01:47:49.821698 TIMEROP /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn:16(function:f_SECC_CMN_PO_InitialState_001) Start timer t_flush: 0.5 s
+01:47:50.322210 TIMEROP /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn:21(function:f_SECC_CMN_PO_InitialState_001) Timeout t_flush: 0.5 s
+01:47:50.322306 USER /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn:22(function:f_SECC_CMN_PO_InitialState_001) PostCondition: Port flushed, initial state restored
+01:47:50.322318 USER /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn:13(function:f_SECC_CMN_PO_ShutdownConfiguration_001) PostCondition: Shutting down configuration, unmapping ports
+01:47:50.322331 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn:14(function:f_SECC_CMN_PO_ShutdownConfiguration_001) Unmapping port mtc:pt_V2G_TCP_TLS_ALM_SECC_Port from system:pt_V2G_TCP_TLS_ALM_SECC_Port.
+01:47:50.322348 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn:14(function:f_SECC_CMN_PO_ShutdownConfiguration_001) Port pt_V2G_TCP_TLS_ALM_SECC_Port was unmapped from system:pt_V2G_TCP_TLS_ALM_SECC_Port.
+01:47:50.322367 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn:14(function:f_SECC_CMN_PO_ShutdownConfiguration_001) Unmap operation of mtc:pt_V2G_TCP_TLS_ALM_SECC_Port from system:pt_V2G_TCP_TLS_ALM_SECC_Port finished.
+01:47:50.322381 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn:15(function:f_SECC_CMN_PO_ShutdownConfiguration_001) Unmapping port mtc:pt_V2G_UDP_SDP_Port from system:pt_V2G_UDP_SDP_Port.
+01:47:50.322391 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn:15(function:f_SECC_CMN_PO_ShutdownConfiguration_001) Port pt_V2G_UDP_SDP_Port was unmapped from system:pt_V2G_UDP_SDP_Port.
+01:47:50.322400 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn:15(function:f_SECC_CMN_PO_ShutdownConfiguration_001) Unmap operation of mtc:pt_V2G_UDP_SDP_Port from system:pt_V2G_UDP_SDP_Port finished.
+01:47:50.322410 USER /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn:16(function:f_SECC_CMN_PO_ShutdownConfiguration_001) PostCondition: All ports unmapped, shutdown complete
+01:47:50.322424 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:43(testcase:TC_SECC_CMN_VTB_V2GTPHeader_002) Terminating component type SECC_TestSystem.SECCTester.
+01:47:50.322436 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:43(testcase:TC_SECC_CMN_VTB_V2GTPHeader_002) Port pt_V2G_TCP_TLS_ALM_SECC_Port was stopped.
+01:47:50.322446 PORTEVENT /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:43(testcase:TC_SECC_CMN_VTB_V2GTPHeader_002) Port pt_V2G_UDP_SDP_Port was stopped.
+01:47:50.322454 PARALLEL /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:43(testcase:TC_SECC_CMN_VTB_V2GTPHeader_002) Component type SECC_TestSystem.SECCTester was shut down inside testcase TC_SECC_CMN_VTB_V2GTPHeader_002.
+01:47:50.322465 TESTCASE /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TC_SECC_CMN_VTB_V2GTPHeader_002.ttcn:43(testcase:TC_SECC_CMN_VTB_V2GTPHeader_002) Test case TC_SECC_CMN_VTB_V2GTPHeader_002 finished. Verdict: pass reason: SECC correctly ignored V2GTP message with invalid ProtocolVersion=0x02
+01:47:50.322528 STATISTICS /tmp/titan_build_J6FQWS/tc_build_6508/src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn:6(controlpart:TestCases_SECC) Execution of control part in module TestCases_SECC finished.
+01:47:50.322566 STATISTICS - Verdict statistics: 0 none (0.00 %), 1 pass (100.00 %), 0 inconc (0.00 %), 0 fail (0.00 %), 0 error (0.00 %).
+01:47:50.322588 STATISTICS - Test execution summary: 1 test case was executed. Overall verdict: pass
+01:47:50.322596 EXECUTOR - TTCN-3 Test Executor finished in single mode.
