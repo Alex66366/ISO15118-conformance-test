@@ -1,0 +1,52 @@
+[
+  {
+    "tc_id": "TC_SECC_CMN_VTB_SDP_001",
+    "family": "SDP",
+    "rationale": "V2GTP layer; SDP discovery exchange"
+  },
+  {
+    "tc_id": "TC_SECC_CMN_VTB_SupportedAppProtocol_001",
+    "family": "SupportedAppProtocol",
+    "rationale": "V2GTP layer; first app-layer message"
+  },
+  {
+    "tc_id": "TC_SECC_CMN_VTB_V2GTPSessionSetup_001",
+    "family": "V2GTPSessionSetup",
+    "rationale": "Session ID establishment (validated TTCN code in KB)"
+  },
+  {
+    "tc_id": "TC_SECC_CMN_VTB_ServiceDiscovery_001",
+    "family": "ServiceDiscovery",
+    "rationale": "Service list query"
+  },
+  {
+    "tc_id": "TC_SECC_CMN_VTB_PaymentServiceSelection_001",
+    "family": "PaymentServiceSelection",
+    "rationale": "Service selection by EVCC"
+  },
+  {
+    "tc_id": "TC_SECC_CMN_VTB_Authorization_001",
+    "family": "Authorization",
+    "rationale": "EIM/PnC authorization setup"
+  },
+  {
+    "tc_id": "TC_SECC_CMN_VTB_CertificateInstallation_001",
+    "family": "CertificateInstallation",
+    "rationale": "Contract cert provisioning"
+  },
+  {
+    "tc_id": "TC_SECC_AC_VTB_PowerDelivery_001",
+    "family": "PowerDelivery_AC",
+    "rationale": "AC charging start/stop"
+  },
+  {
+    "tc_id": "TC_SECC_AC_VTB_MeteringReceipt_001",
+    "family": "MeteringReceipt_AC",
+    "rationale": "AC meter data exchange"
+  },
+  {
+    "tc_id": "TC_SECC_DC_VTB_CableCheck_001",
+    "family": "CableCheck_DC",
+    "rationale": "DC isolation pre-charge check"
+  }
+]

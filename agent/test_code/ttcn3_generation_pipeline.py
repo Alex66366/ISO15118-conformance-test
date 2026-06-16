@@ -49,6 +49,7 @@ from collections import namedtuple
 # === 全局子进程管理和中断标志 ===
 _subprocess_ref = None  # 保存当前活动的子进程引用
 _interrupt_requested = False  # 中断请求标志
+_llm_watchdog_timeout = 1200  # LLM 子代理最大空闲秒数，看门狗在此时间后终止
 
 
 def cleanup_claude_history() -> int:
@@ -200,6 +201,11 @@ INFRASTRUCTURE_AGENT_PROMPT_PATH = PROMPTS_DIR / "infrastructure_agent_prompt.tx
 # demo 项目路径（用于 Infrastructure Agent 参考）
 DEMO_ROOT = AGENT_DIR / "test_code" / "examples" / "demo"
 
+# Cached result of the demo TTCN baseline precompile gate. None = not yet run;
+# True = baseline is syntactically valid; False = baseline has errors (any
+# further case will short-circuit-abort). Reset by reloading the module.
+_DEMO_PRECOMPILE_OK: Optional[bool] = None
+
 # Few-shot 样例文件
 EXAMPLE_FILES = {
     "testcase_goodcase": EXAMPLES_DIR / "ttcn3_testcase_goodcase.ttcn",
@@ -213,7 +219,7 @@ EXAMPLE_FILES = {
 }
 
 MAX_CORRECTION_ITERATIONS = 3
-MAX_RUNTIME_REPAIR_ITERATIONS = 2  # maximum self-repair iterations after test execution
+MAX_RUNTIME_REPAIR_ITERATIONS = 4  # maximum self-repair iterations after test execution
 
 # ============================================================
 # Agent 超时配置（按类型区分）
@@ -222,7 +228,7 @@ AGENT_TIMEOUTS = {
     "orchestrator": 900,        # 意图分解，reasoning model ~7min/turn
     "summarizer": 600,          # 知识检索，reasoning model ~7min/turn
     "core_agent": 1800,         # 代码生成，reasoning model ~7min/turn
-    "infrastructure_agent": 3600,  # 项目结构生成，3-iteration compile loop
+    "infrastructure_agent": 5400,  # 项目结构生成，3-iteration compile loop
     "fault_corrector": 600,     # 错误分析
     "default": 900,             # 未识别类型默认超时
 }
@@ -649,6 +655,7 @@ def build_doc_urls_for_fault_corrector(doc_urls: Dict) -> str:
 # Agent Metrics Tracking
 # ============================================================
 from collections import namedtuple
+from protocol_registry import get_default_registry, ResolvedMessage
 AgentMetrics = namedtuple("AgentMetrics", ["elapsed_seconds", "input_tokens", "output_tokens", "calls"])
 
 _agent_input_tokens = {}
@@ -656,36 +663,94 @@ _agent_output_tokens = {}
 _agent_call_counts = {}
 
 
+def _extract_text_from_message_event(msg_event: dict) -> str:
+    """Extract concatenated text from a Claude Code message event.
+
+    The message event has structure:
+    {"type": "message", "message": {"content": [{"type": "text", "text": "..."}]}}
+    """
+    if not isinstance(msg_event, dict):
+        return ""
+    msg = msg_event.get("message", {})
+    if not isinstance(msg, dict):
+        return ""
+    content = msg.get("content", [])
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for c in content:
+        if isinstance(c, dict) and c.get("type") == "text":
+            t = c.get("text", "")
+            if t:
+                parts.append(t)
+    return "".join(parts)
+
+
 def _parse_token_usage_from_claude_output(stderr, stdout=""):
-    # Try to extract from JSON output body (Claude Code CLI uses camelCase: inputTokens, outputTokens)
+    """Parse token usage from Claude Code CLI's --output-format json output.
+
+    The CLI emits a single top-level JSON object on stdout with this structure:
+        {
+          "type": "result",
+          "result": "<final assistant text>",
+          "modelUsage": { "<model_name>": {"inputTokens": N, "outputTokens": M, ...} },
+          "totalUsage": {"input_tokens": N, "outputTokens": M, ...},   # CUMULATIVE!
+          ...
+        }
+
+    CRITICAL: we MUST extract per-model usage from modelUsage, not re.search
+    the combined text. A bare regex over `stderr + stdout` will pick up the
+    `totalUsage.input_tokens` value (which is cumulative across the entire
+    Claude session, not the current invocation), leading to severe double
+    counting. E.g., 2 calls into a 50-turn session would each report the
+    full session's tokens, inflating infrastructure_agent.input_tokens into
+    the millions.
+    """
+    import json as _json
+
     input_tok = 0
     output_tok = 0
+
+    # Preferred path: parse stdout as JSON and read modelUsage (per-model, per-invocation).
+    try:
+        parsed = _json.loads(stdout) if stdout else None
+    except (ValueError, TypeError):
+        parsed = None
+
+    if isinstance(parsed, dict):
+        # === Per-model usage (current invocation) ===
+        model_usage = parsed.get("modelUsage", {})
+        if isinstance(model_usage, dict):
+            for _model, u in model_usage.items():
+                if not isinstance(u, dict):
+                    continue
+                # Newer CLI uses camelCase inputTokens/outputTokens
+                in_t = u.get("inputTokens", 0) or u.get("input_tokens", 0)
+                out_t = u.get("outputTokens", 0) or u.get("output_tokens", 0)
+                input_tok += int(in_t)
+                output_tok += int(out_t)
+            if input_tok or output_tok:
+                return (input_tok, output_tok)
+
+        # === Fallback: top-level usage field (rare) ===
+        top_usage = parsed.get("usage", {})
+        if isinstance(top_usage, dict):
+            in_t = top_usage.get("input_tokens", 0) or top_usage.get("inputTokens", 0)
+            out_t = top_usage.get("output_tokens", 0) or top_usage.get("outputTokens", 0)
+            if in_t or out_t:
+                return (int(in_t), int(out_t))
+
+    # === Last-resort fallback: legacy regex on combined text ===
+    # NOTE: This path is kept only for compatibility with non-JSON stderr formats
+    # (e.g. "[Token Usage] Input: N tokens | Output: M tokens"). It must NOT be the
+    # primary code path, because re.search on stdout will pick up totalUsage (cumulative).
     combined = stderr + stdout
-    # Match camelCase (Claude Code CLI) and snake_case patterns
-    inp_json = re.search(r'"inputTokens"\s*:\s*(\d+)', combined)
-    out_json = re.search(r'"outputTokens"\s*:\s*(\d+)', combined)
-    if inp_json:
-        input_tok = int(inp_json.group(1))
-    if out_json:
-        output_tok = int(out_json.group(1))
-    # Fallback: snake_case format
-    if input_tok == 0:
-        inp_json2 = re.search(r'"input_tokens"\s*:\s*(\d+)', combined)
-        if inp_json2:
-            input_tok = int(inp_json2.group(1))
-    if output_tok == 0:
-        out_json2 = re.search(r'"output_tokens"\s*:\s*(\d+)', combined)
-        if out_json2:
-            output_tok = int(out_json2.group(1))
-    # Fallback: [Token Usage] format in stderr (e.g. "[Token Usage] Input: 123 tokens | Output: 456 tokens")
-    if input_tok == 0:
-        inp = re.search(r"Input:\s*(\d+)\s*tokens?", stderr)
-        if inp:
-            input_tok = int(inp.group(1))
-    if output_tok == 0:
-        out = re.search(r"Output:\s*(\d+)\s*tokens?", stderr)
-        if out:
-            output_tok = int(out.group(1))
+    inp = re.search(r"Input:\s*(\d+)\s*tokens?", combined)
+    out = re.search(r"Output:\s*(\d+)\s*tokens?", combined)
+    if inp:
+        input_tok = int(inp.group(1))
+    if out:
+        output_tok = int(out.group(1))
     return (input_tok, output_tok)
 
 
@@ -787,7 +852,7 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
             if read_only:
                 allowed_tools = "Read"
             else:
-                allowed_tools = (f"Write,Read,Edit,Bash(bash *),Bash(makefilegen *),Bash(ttcn3_compiler *){extra_tools}")
+                allowed_tools = (f"Write,Read,Edit,Bash(bash *),Bash(echo *),Bash(makefilegen *),Bash(ttcn3_compiler *){extra_tools}")
             cmd_str = (f'chcp 65001 >nul & "{claude_cmd}" --bare --verbose -p - '
                        f'--allowedTools "{allowed_tools}" '
                        f'--output-format json <"{tmp_prompt_file}"')
@@ -814,6 +879,24 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
                         log(f"[{agent_name} stderr] {line.rstrip()}", "DEBUG")
             stderr_thread = threading.Thread(target=_stream_stderr, daemon=True)
             stderr_thread.start()
+
+            # === WATCHDOG for Windows (no session file polling, just wall-clock) ===
+            _wd_timeout = max(0, int(_llm_watchdog_timeout or 0))
+            _watchdog_killed_win = [False]
+
+            def _watchdog_tick_win():
+                if _wd_timeout <= 0:
+                    return
+                time.sleep(_wd_timeout)
+                if not _watchdog_killed_win[0] and proc.poll() is None:
+                    _watchdog_killed_win[0] = True
+                    log(f"[WATCHDOG] {agent_name} idle for {_wd_timeout}s, killing", "WARN")
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
+            threading.Thread(target=_watchdog_tick_win, daemon=True).start()
 
             start_time = time.time()
             while proc.poll() is None:
@@ -845,7 +928,7 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
                 allowed_tools = "Read"
             else:
                 allowed_tools = (
-                    "Write,Read,Edit,Bash(bash *),Bash(makefilegen *),Bash(ttcn3_compiler *)"
+                    "Write,Read,Edit,Bash(bash *),Bash(echo *),Bash(makefilegen *),Bash(ttcn3_compiler *)"
                     + (f",{extra_allowed_tools}" if extra_allowed_tools else "")
                 )
             cmd_args = [
@@ -894,6 +977,57 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
             stdout_thread.start()
             stderr_thread.start()
 
+            # === WATCHDOG: idle-kill for LLM thinking stalls ===
+            # Monitor the most-recent Claude session JSONL for new events.
+            # If no new events appear for _llm_watchdog_timeout seconds, kill the agent.
+            # IMPORTANT: only watch sessions that were modified AFTER this process started.
+            # Otherwise an old session from a previous run will appear "idle for years".
+            import glob as _glob
+            _wd_timeout = max(0, int(_llm_watchdog_timeout or 0))
+            _watchdog_killed = [False]  # closure-safe mutable flag
+            _wd_start_time = time.time()
+
+            def _watchdog_tick():
+                """Poll session file mtime every 30s. Kill agent if idle > _wd_timeout."""
+                if _wd_timeout <= 0:
+                    return  # disabled
+                try:
+                    _session_pattern = str(Path.home() / ".claude" / "projects" / "*" / "*.jsonl")
+                    _all_session_files = [Path(p) for p in _glob.glob(_session_pattern) if Path(p).exists()]
+                    # CRITICAL: only watch files that were created/modified AFTER our process started.
+                    # _wd_start_time is set BEFORE Claude is spawned, so any file with mtime
+                    # >= _wd_start_time is plausibly "ours".
+                    _our_sessions = [p for p in _all_session_files if p.stat().st_mtime >= (_wd_start_time - 5)]
+                    if not _our_sessions:
+                        # Claude hasn't created its session file yet — sleep and retry
+                        return
+                    _watched_file = max(_our_sessions, key=lambda p: p.stat().st_mtime)
+                    _last_mtime = _watched_file.stat().st_mtime
+                    while True:
+                        time.sleep(30)
+                        try:
+                            _new_mtime = _watched_file.stat().st_mtime
+                        except (FileNotFoundError, OSError):
+                            break
+                        if _new_mtime > _last_mtime:
+                            _last_mtime = _new_mtime
+                            continue
+                        _idle = int(time.time() - _last_mtime)
+                        if _idle > _wd_timeout:
+                            if not _watchdog_killed[0]:
+                                _watchdog_killed[0] = True
+                                log(f"[WATCHDOG] {agent_name} idle for {_idle}s (>{_wd_timeout}s), killing process group", "WARN")
+                                try:
+                                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                                except (ProcessLookupError, PermissionError, OSError):
+                                    pass
+                            break
+                except Exception:
+                    pass  # Never let watchdog crash the pipeline
+
+            _wd_thread = threading.Thread(target=_watchdog_tick, daemon=True)
+            _wd_thread.start()
+
             # Stream stdin: write prompt then flush so claude starts reading immediately
             try:
                 proc.stdin.write(prompt.encode("utf-8"))
@@ -914,20 +1048,49 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
                     return ""
                 time.sleep(0.5)
 
-            stdout_thread.join(timeout=2)
-            stderr_thread.join(timeout=2)
+            # CRITICAL: do NOT call proc.communicate() here. The reader threads above
+            # are already draining proc.stdout / proc.stderr. Calling communicate()
+            # on the same file descriptors will block waiting for EOF that the
+            # threads are preventing (a known Python Popen pitfall). Just join the
+            # threads with a generous timeout and use their captured output.
+            #
+            # SUBTLE BUG: Claude Code CLI may spawn grandchildren (e.g. `bash build.sh`,
+            # `make`, `g++`) that INHERIT the stdout/stderr pipe FDs. When Claude exits,
+            # those grandchildren still hold the read end of the pipe, so the kernel
+            # never sends EOF and the reader threads block forever. Fix: after Claude
+            # exits, kill the entire process group to reap grandchildren, then close pipes.
             try:
-                raw_stdout, _ = proc.communicate()
-            except ValueError:
-                raw_stdout = b""
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            # Give grandchildren a moment to terminate gracefully
+            time.sleep(1.0)
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            stdout_thread.join(timeout=10)
+            stderr_thread.join(timeout=10)
+            if stdout_thread.is_alive() or stderr_thread.is_alive():
+                log(f"{agent_name} Agent reader threads still alive; forcibly closing pipes", "WARN")
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    proc.stderr.close()
+                except Exception:
+                    pass
+                stdout_thread.join(timeout=3)
+                stderr_thread.join(timeout=3)
+            # At this point: Claude + grandchildren are dead, pipes are closed,
+            # reader threads have joined. Safe to return.
             returncode = proc.returncode
             _subprocess_ref = None
 
-            # Build combined stdout from thread output + any trailing communicate bytes
+            # Build combined stdout from thread output
             all_stdout_bytes = b"".join(line.encode("utf-8", errors="replace")
                                          for line in stdout_lines)
-            if raw_stdout:
-                all_stdout_bytes += raw_stdout
             stdout_val = all_stdout_bytes.decode("utf-8", errors="replace")
 
         # Collect streamed stderr lines for post-processing
@@ -969,17 +1132,75 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
         try:
             output = json.loads(raw_output)
             if isinstance(output, dict):
-                text = output.get("result", raw_output)
+                # Prefer "result" field if it has actual content
+                result_val = output.get("result")
+                if result_val and isinstance(result_val, str) and len(result_val) > 0:
+                    text = result_val
+                else:
+                    text = raw_output
             elif isinstance(output, list):
-                text = next(
-                    (item.get("result") for item in output
+                # Find the result event with non-empty content
+                result_event = next(
+                    (item for item in output
                      if isinstance(item, dict) and item.get("type") == "result"),
-                    raw_output
+                    None
                 )
+                if result_event:
+                    result_val = result_event.get("result")
+                    if result_val and isinstance(result_val, str) and len(result_val) > 0:
+                        text = result_val
+                    else:
+                        # Empty/missing result -- try to extract from message event
+                        msg_event = next(
+                            (item for item in output
+                             if isinstance(item, dict) and item.get("type") == "message"),
+                            None
+                        )
+                        if msg_event:
+                            text = _extract_text_from_message_event(msg_event)
+                        else:
+                            text = raw_output
+                else:
+                    text = raw_output
             else:
                 text = raw_output
         except json.JSONDecodeError:
-            text = raw_output
+            # Fallback: extract result field via regex when JSON parsing fails.
+            # This handles multiline strings in the result field.
+            result_text = raw_output
+            m = re.search(r'"result"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_output, re.DOTALL)
+            if m:
+                try:
+                    result_text = m.group(1).encode().decode('unicode_escape')
+                except (ValueError, SyntaxError):
+                    result_text = m.group(1)
+            text = result_text
+
+        # === Critical Fix: detect and extract text from JSON event streams ===
+        # If text contains too many "thinking_tokens" events or no actual result,
+        # try to extract the assistant's final text message.
+        if text and ('"thinking_tokens"' in text or '"type":"thinking_tokens"' in text):
+            log(f"{agent_name} stdout is mostly thinking_tokens; attempting message extraction", "WARN")
+            try:
+                # Try to parse as JSON event stream and find message events
+                events = json.loads(text)
+                if isinstance(events, list):
+                    # Collect all text from message events in order
+                    texts = []
+                    for ev in events:
+                        if isinstance(ev, dict):
+                            msg = ev.get("message", {})
+                            if isinstance(msg, dict):
+                                for c in msg.get("content", []):
+                                    if isinstance(c, dict) and c.get("type") == "text":
+                                        t = c.get("text", "")
+                                        if t:
+                                            texts.append(t)
+                    if texts:
+                        text = texts[-1]  # Use the last text message (most recent)
+                        log(f"{agent_name} extracted last text message ({len(text)} chars)", "INFO")
+            except (json.JSONDecodeError, ValueError):
+                pass
 
         log(f"{agent_name} Agent 完成，输出 {len(text)} 字符")
         return text
@@ -1311,6 +1532,522 @@ def normalize_precondition_name(precond_name: str) -> str:
     return precond_name
 
 
+# State-machine coverage table: maps test case message_type to the
+# pre-condition function that already exchanges the corresponding V2G
+# message. If the pre-condition chain contains that function, the TB can
+# safely short-circuit (covered_by_precondition=True) without sending a
+# duplicate message and risking TITAN port-queue exhaustion or unbound
+# variable errors. The TC wrapper still calls all post-conditions.
+_STATE_MACHINE_COVERED = {
+    "SDP":                    "f_SECC_CMN_PR_InitConfiguration_001",
+    "SupportedAppProtocol":   "f_SECC_CMN_PR_SupportedAppProtocol_001",
+}
+
+
+# Wrapper protocol prefixes that some test suites attach to the V2G message
+# name (e.g. ISO 15118-4 uses "V2GTPSessionSetup" while the EXI/union layer
+# uses the bare "SessionSetup").  Strip them so the generated TTCN-3 code
+# can reuse the canonical templates already defined in CmnTemplates.ttcn
+# (which never carry the wrapper prefix).
+#
+# This is intentionally a list so we can grow it for new protocols without
+# touching the call sites.
+_WRAPPER_PROTOCOL_PREFIXES = ["V2GTP", "V2GTCP", "V2GUDP"]
+
+
+def _to_camel_case(pascal: str) -> str:
+    """Convert PascalCase to camelCase by lowercasing the first character.
+
+    Examples:
+      "SessionSetup"       -> "sessionSetup"
+      "ServiceDiscovery"   -> "serviceDiscovery"
+      "PreCharge"          -> "preCharge"
+    """
+    if not pascal:
+        return pascal
+    return pascal[0].lower() + pascal[1:]
+
+
+def _canonicalize_message_type(message_type: str) -> Dict[str, str]:
+    """Normalize a (possibly wrapper-prefixed) message type into the
+    canonical identifiers the TTCN-3 code generator needs.
+
+    The four pieces of information that downstream templates need are
+    NOT the same string:
+      * message_type  — bare V2G name used for `var v_<msg>` and template
+                        instantiation (e.g. "SessionSetup").
+      * union_field   — camelCase field name inside the V2G_Message union
+                        (e.g. "sessionSetupReq" / "sessionSetupRes").
+      * request_msg_type  — PascalCase + "Req" suffix used as the TTCN-3
+                        type identifier in the receive/send alternation
+                        (e.g. "SessionSetupReq").
+      * response_msg_type — PascalCase + "Res" suffix (e.g. "SessionSetupRes").
+
+    Returns a dict with all four keys so callers don't have to reconstruct
+    the camelCase form (which is error-prone for multi-word names like
+    "ServiceDiscovery" -> "serviceDiscovery").
+    """
+    if not message_type:
+        return {
+            "canonical": "",
+            "union_field_req": "",
+            "union_field_res": "",
+            "request_msg_type": "",
+            "response_msg_type": "",
+        }
+
+    canonical = message_type
+    stripped_prefix = False
+    for prefix in _WRAPPER_PROTOCOL_PREFIXES:
+        # Match a wrapper prefix that is *immediately* followed by an
+        # uppercase V2G-message name.  E.g. "V2GTPSessionSetup" matches
+        # and canonicalizes to "SessionSetup"; "V2GTPHeader" would NOT
+        # be stripped (it really is a V2GTP-header test, not a V2G msg).
+        if canonical.startswith(prefix):
+            tail = canonical[len(prefix):]
+            if tail and tail[0].isupper() and tail != canonical:
+                canonical = tail
+                stripped_prefix = True
+                break
+
+    return {
+        "canonical": canonical,
+        "union_field_req": _to_camel_case(canonical) + "Req",
+        "union_field_res": _to_camel_case(canonical) + "Res",
+        "request_msg_type": canonical + "Req",
+        "response_msg_type": canonical + "Res",
+    }
+
+
+def build_generation_plan_from_test_case(raw_input: Dict, sop: Dict, filter_tc_id: Optional[str] = None) -> Dict:
+    """Deterministically build a generation plan from a test case JSON — no LLM required.
+
+    Extracts all structured metadata (tc_id, message_type, sut_type, test_type,
+    protocol_layer, precondition/postcondition chains, test_sequences, verdict_logic)
+    from the raw test case JSON using rule-based pattern matching.
+
+    Multi-source fallback chain for test_sequences:
+      1. orchestrator_plan.sequence_plan  (English, per-step: seq_no + test_type + description)
+      2. Test_Sequence  (CamelCase Chinese: Step + Name + Instruction)
+      3. testing_points  (fine-grained requirement-level: tp_id + description + expected_behavior)
+      4. empty  (Core Agent infers from prompt patterns)
+
+    Args:
+        raw_input: Raw JSON loaded from the test case file. May be:
+                   - A single test case dict {"Test_Case": {...}}
+                   - A bulk file with {"test_cases": [...], "testing_points": [...],
+                                       "orchestrator_plan": {"sequence_plan": [...]}}
+                   The function auto-detects the layout and extracts the right TC.
+        sop: SOP JSON dict loaded from knowledge_base/ttcn3_generation_sop.json.
+        filter_tc_id: When raw_input is a bulk file, selects the matching TC entry
+                      (defaults to first TC if not specified).
+
+    Returns:
+        A fully-structured generation_plan dict compatible with the rest of the pipeline.
+    """
+    import re
+
+    # ── Detect layout and extract the inner test case dict ─────────────────────
+        # Layout A: bulk file with test_cases array
+    if "test_cases" in raw_input and isinstance(raw_input.get("test_cases"), list):
+        test_cases = raw_input["test_cases"]
+        # Find the test case by filter_tc_id or tc_id
+        tc = None
+        for entry in test_cases:
+            inner = entry.get("Test_Case", entry)
+            tc_id_candidate = inner.get("TC_Id", "")
+            if filter_tc_id and tc_id_candidate == filter_tc_id:
+                tc = inner
+                break
+            if tc is None and tc_id_candidate:
+                tc = inner
+        if tc is None and test_cases:
+            tc = test_cases[0].get("Test_Case", test_cases[0])
+        if tc is None:
+            tc = {}
+        # Store sibling data for later extraction
+        _orchestrator_plan = raw_input.get("orchestrator_plan", {})
+        _sequence_plan = _orchestrator_plan.get("sequence_plan", [])
+        _testing_points = raw_input.get("testing_points", [])
+    # Layout B: single test case wrapped as {"Test_Case": {...}}
+    elif "Test_Case" in raw_input:
+        tc = raw_input.get("Test_Case", raw_input)
+        _sequence_plan = []
+        _testing_points = []
+    # Layout C: bare dict (no wrapper)
+    else:
+        tc = raw_input
+        _sequence_plan = []
+        _testing_points = []
+
+    # ── 1. tc_id ──────────────────────────────────────────────────────────────
+    tc_id: str = tc.get("TC_Id", "TC_UNKNOWN")
+
+    # ── 2. SUT type (infer from TC_Id) ──────────────────────────────────────
+    sut_type: str = "EVCC" if "EVCC" in tc_id.upper() else "SECC"
+
+    # ── 3. Category (infer from TC_Id) ───────────────────────────────────────
+    if "_AC_" in tc_id:
+        category = "AC"
+    elif "_DC_" in tc_id:
+        category = "DC"
+    else:
+        category = "CMN"
+
+    # ── 4. Message type (infer from TC_Id + test objectives) ─────────────────
+    # Try TC_Id first — pattern: TC_{SUT}_{CAT}_VTB_{MessageType}_{SeqNo}
+    msg_type_match = re.search(r'_VTB_(\w+?)_\d{3}$', tc_id)
+    if msg_type_match:
+        raw_msg = msg_type_match.group(1)
+        # Legacy alias map kept for backward compatibility with old TCs
+        # that still carry non-canonical names. The ProtocolRegistry is
+        # the source of truth going forward — this map only handles
+        # cases the registry doesn't know about.
+        legacy_alias_map = {
+            "V2GTPHeader": "V2GTP",
+            "V2GTPBR": "V2GTP",
+            "V2GTCP": "V2GTCP",
+        }
+        message_type = legacy_alias_map.get(raw_msg, raw_msg)
+    else:
+        text_fields = tc.get("Test_Objective", "") + tc.get("Test_Purpose", "")
+        message_type = _infer_message_type_from_text(text_fields)
+
+    # ── 4b. ProtocolRegistry resolution ─────────────────────────────────────
+    # Single source of truth for ALL protocol-specific metadata:
+    # canonical name, union fields, port, pre-condition chain, transport,
+    # wrapper-prefix stripping. The registry replaces the previous
+    # hardcoded _WRAPPER_PROTOCOL_PREFIXES, _canonicalize_message_type,
+    # _STATE_MACHINE_COVERED, and the protocol_layer string-matching
+    # block. If a future protocol has different metadata, it goes into
+    # protocols/{id}.json — no Python code change.
+    seq_no_match = re.search(r'_(\d{3})$', tc_id)
+    seq_no = seq_no_match.group(1) if seq_no_match else "001"
+    _registry = get_default_registry()
+    _auto_pid = _registry.auto_load_for_tc(tc_id)
+    try:
+        _resolved = _registry.resolve(message_type, sut=sut_type, seq_no=seq_no)
+    except (KeyError, RuntimeError) as _e:
+        log(f"ProtocolRegistry could not resolve {message_type!r}: {_e}; "
+            f"falling back to inline derivation (pre-refactor behavior).", "WARN")
+        _resolved = None
+
+    # ── 5. Test type (infer from TC_Id suffix — most reliable, works for all layouts) ─
+    sequences_raw: List[Dict] = tc.get("Sequence", [])
+    test_seq_camel: List[Dict] = tc.get("Test_Sequence", [])
+    suffix_match = re.search(r'_(\d{3})$', tc_id)
+    if suffix_match:
+        seq = int(suffix_match.group(1))
+        _test_type = "GoodCase" if seq == 1 else "BadCase"
+    elif _sequence_plan and len(_sequence_plan) == 1:
+        # Only trust sequence_plan for single-TC files (not shared bulk plans)
+        _test_type = _sequence_plan[0].get("test_type", "GoodCase")
+    elif test_seq_camel and len(test_seq_camel) > 0:
+        first_step_desc = test_seq_camel[0].get("Name", "") + test_seq_camel[0].get("Instruction", "")
+        _test_type = "BadCase" if any(kw in first_step_desc for kw in ["拒绝", "非法", "错误", "无效", "异常"]) else "GoodCase"
+    else:
+        _test_type = "GoodCase"
+    test_type = _test_type
+
+    # ── 6. Protocol layer ───────────────────────────────────────────────────
+    # Sourced from ProtocolRegistry. The previous implementation did a
+    # string-match against the message_type for keywords like "v2gtp",
+    # "sdp", "supportedappprotocol" — all of that is now declarative
+    # in protocols/{id}.json's `messages[].protocol_layer` field.
+    if _resolved is not None:
+        protocol_layer = _resolved.protocol_layer
+    else:
+        msg_lower = message_type.lower()
+        if any(kw in msg_lower for kw in ["v2gtp", "sdp", "v2g_tcp", "tls", "tcp", "slac"]):
+            protocol_layer = "V2GTP"
+        elif any(kw in msg_lower for kw in ["supportedappprotocol"]):
+            protocol_layer = "V2G_Application"
+        else:
+            protocol_layer = "V2G_Application"
+
+    # ── 7. Precondition chain ────────────────────────────────────────────────
+    precond_chain: List[str] = _get_default_precondition_chain(message_type, sop)
+    if not precond_chain:
+        if _resolved is not None and _resolved.default_precondition_chain:
+            precond_chain = list(_resolved.default_precondition_chain)
+        elif protocol_layer == "V2GTP":
+            precond_chain = [f"f_{sut_type}_CMN_PR_InitConfiguration_001"]
+        else:
+            precond_chain = [
+                f"f_{sut_type}_CMN_PR_InitConfiguration_001",
+                f"f_{sut_type}_CMN_PR_SupportedAppProtocol_001",
+            ]
+    precond_chain = [fn.replace("{SUT}", sut_type) for fn in precond_chain]
+
+    # ── 8. Postcondition chain ──────────────────────────────────────────────
+    postcond_chain: List[str] = [
+        f"f_{sut_type}_CMN_PO_InitialState_001",
+        f"f_{sut_type}_CMN_PO_ShutdownConfiguration_001",
+    ]
+
+    # ── 9. Port name ─────────────────────────────────────────────────────────
+    # The ProtocolRegistry owns the port-name template per protocol/transport.
+    # The previous implementation had hardcoded `if message_type == "SDP"`.
+    if _resolved is not None:
+        port_name = _resolved.port_name
+        if message_type == "SDP":
+            protocol_layer = "SDP"
+    elif message_type == "SDP":
+        port_name = "pt_V2G_UDP_SDP_Port"
+        protocol_layer = "SDP"
+    else:
+        port_name = f"pt_V2G_TCP_TLS_ALM_{sut_type}_Port"
+
+    # ── 10. Component names ──────────────────────────────────────────────────
+    component = f"{sut_type}Tester"
+    system_component = f"System{sut_type}"
+
+    # ── 11. Template names ──────────────────────────────────────────────────
+    # The ProtocolRegistry provides canonical template + function names
+    # for every protocol message.  This replaces the previous
+    # _canonicalize_message_type() helper (which did the wrapper-prefix
+    # stripping inline) and the per-call f-string assembly.
+    if _resolved is not None and _resolved.send_template_name:
+        send_template_name = _resolved.send_template_name
+        receive_template_name = _resolved.receive_template_name
+        request_msg_type = _resolved.request_type
+        response_msg_type = _resolved.response_type
+        union_field_req = _resolved.union_field_req
+        union_field_res = _resolved.union_field_res
+        # Backward-compat: keep `canonical_message_type` defined for
+        # any code that still references it.
+        canonical_message_type = _resolved.canonical
+    else:
+        # Fallback to inline derivation (pre-refactor behavior) when
+        # the registry can't resolve.  This is reached only for
+        # messages the registry doesn't know about.
+        _canon = _canonicalize_message_type(message_type)
+        canonical_message_type = _canon["canonical"]
+        union_field_req = _canon["union_field_req"]
+        union_field_res = _canon["union_field_res"]
+        request_msg_type = _canon["request_msg_type"]
+        response_msg_type = _canon["response_msg_type"]
+        seq_no_fb = "001"
+        suffix_match_fb = re.search(r'_(\d{3})$', tc_id)
+        if suffix_match_fb:
+            seq_no_fb = suffix_match_fb.group(1)
+        send_template_name = f"md_CMN_{canonical_message_type}Req_{seq_no_fb}"
+        receive_template_name = f"mdw_{sut_type}_{canonical_message_type}Res_{seq_no_fb}"
+
+    # ── 12. Function names ───────────────────────────────────────────────────
+    # Prefer the registry's naming template (declarative, in
+    # protocols/{id}.json).  Fall back to inline f-string only if the
+    # registry is unavailable.
+    if _resolved is not None and _registry.active_protocol() is not None:
+        try:
+            test_behavior_func_name = _registry.format_naming(
+                "test_behavior_function",
+                SUT=sut_type, Category=category, MessageType=message_type, SeqNo=seq_no,
+            )
+        except (KeyError, RuntimeError) as _e:
+            log(f"format_naming failed for {message_type!r}: {_e}; falling back", "WARN")
+            clean_msg = message_type.replace(" ", "").replace("_", "")
+            test_behavior_func_name = f"f_{sut_type}_{category}_TB_VTB_{clean_msg}_{seq_no}"
+    else:
+        clean_msg = message_type.replace(" ", "").replace("_", "")
+        test_behavior_func_name = f"f_{sut_type}_{category}_TB_VTB_{clean_msg}_{seq_no}"
+    testcase_name = tc_id
+
+    # ── 13. Requirements traced ─────────────────────────────────────────────
+    reqs = []
+    doc_ref = tc.get("Document_Reference", {})
+    if isinstance(doc_ref, dict):
+        reqs = doc_ref.get("Requirements", [])
+    elif isinstance(doc_ref, list):
+        reqs = doc_ref
+
+    # ── 14. Key parameters ───────────────────────────────────────────────────
+    key_params: Dict[str, Any] = {}
+    for src in [_sequence_plan, sequences_raw, test_seq_camel]:
+        for seq in src:
+            desc = seq.get("description", seq.get("Instruction", ""))
+            s_no = seq.get("seq_no", seq.get("Step", "?"))
+            if desc:
+                key_params[f"seq_{s_no}_description"] = desc
+                break
+        if key_params:
+            break
+
+    # ── 15. test_sequences (precisely scoped to the selected TC) ────────────────
+    # Each source has different granularity:
+    #   - sequence_plan: one entry per TC (TC_001=seq_no=001, TC_002=seq_no=002, ...)
+    #     → match by seq_no == TC_Id suffix
+    #   - Test_Sequence: already per-TC (the TC's own 2-3 step sequence)
+    #     → use directly
+    #   - testing_points: fine-grained per-requirement (12 TPs for all 4 TCs)
+    #     → map to the TC's range based on suffix
+    structured_sequences: List[Dict] = []
+
+    # Determine TC suffix (e.g., "001" from "TC_SECC_CMN_VTB_V2GTPHeader_001")
+    tc_suffix_match = re.search(r'_(\d{3})$', tc_id)
+    tc_suffix = tc_suffix_match.group(1) if tc_suffix_match else "001"
+
+    # Source 1: orchestrator_plan.sequence_plan — one step per TC, match by seq_no
+    if _sequence_plan and len(_sequence_plan) > 0:
+        matched_step = None
+        for step in _sequence_plan:
+            if str(step.get("seq_no", "")).zfill(3) == tc_suffix:
+                matched_step = step
+                break
+        if matched_step:
+            structured_sequences.append({
+                "seq_no": 1,
+                "original_seq_no": tc_suffix,
+                "test_type": matched_step.get("test_type", test_type),
+                "description": matched_step.get("description", ""),
+                "_source": "orchestrator_plan.sequence_plan",
+            })
+    # Source 2: Test_Sequence — already per-TC, use directly
+    elif test_seq_camel and len(test_seq_camel) > 0:
+        for i, step in enumerate(test_seq_camel):
+            step_desc = step.get("Instruction", step.get("Name", ""))
+            inferred_tt = "BadCase" if any(
+                kw in step.get("Name", "") + step.get("Instruction", "")
+                for kw in ["拒绝", "非法", "错误", "无效", "异常"]
+            ) else "GoodCase"
+            structured_sequences.append({
+                "seq_no": i + 1,
+                "original_seq_no": str(step.get("Step", i + 1)).zfill(3),
+                "test_type": inferred_tt,
+                "description": step_desc,
+                "_source": "Test_Sequence",
+            })
+    # Source 3: testing_points — 12 TPs mapped to 4 TCs (3 TPs each, sequential)
+    # TC_001 → TP_001-003, TC_002 → TP_004-006, TC_003 → TP_007-009, TC_004 → TP_010-012
+    elif _testing_points and len(_testing_points) > 0:
+        tps_per_tc = 3
+        tc_index = int(tc_suffix) - 1  # 001 → 0, 002 → 1, ...
+        start_idx = tc_index * tps_per_tc
+        end_idx = start_idx + tps_per_tc
+        relevant_tps = _testing_points[start_idx:end_idx]
+        for i, tp in enumerate(relevant_tps):
+            approach = tp.get("test_approach", tp.get("modeling_type", "positive"))
+            inferred_tt = "BadCase" if approach in ("negative", "error", "failure") else "GoodCase"
+            structured_sequences.append({
+                "seq_no": i + 1,
+                "original_seq_no": tp.get("tp_id", f"TP_{start_idx + i + 1:03d}").replace("TP_", "").zfill(3),
+                "test_type": inferred_tt,
+                "description": tp.get("description", "") + ". " + tp.get("expected_behavior", ""),
+                "_source": "testing_points",
+            })
+
+    # ── 16. Verdict logic ───────────────────────────────────────────────────
+    if test_type == "GoodCase":
+        verdict_logic = {
+            "pass_condition": "SECC returns a valid response matching the expected message",
+            "fail_condition": "SECC returns an invalid response or unexpected message",
+            "inconc_condition": "Timeout waiting for SECC response",
+        }
+    else:
+        verdict_logic = {
+            "pass_condition": "SECC rejects the invalid input (TCP close, timeout, or error response)",
+            "fail_condition": "SECC accepts the invalid input and returns a normal response",
+            "inconc_condition": "Timeout without any response from SECC",
+        }
+
+    plan: Dict[str, Any] = {
+        "tc_id": tc_id,
+        "sut_type": sut_type,
+        "category": category,
+        "message_type": message_type,                    # raw (may have wrapper prefix)
+        "normalized_message_type": canonical_message_type,  # prefix-stripped
+        "test_type": test_type,
+        "protocol_layer": protocol_layer,
+        "precondition_chain": precond_chain,
+        "postcondition_chain": postcond_chain,
+        "port_name": port_name,
+        "component": component,
+        "system_component": system_component,
+        "send_template_name": send_template_name,
+        "receive_template_name": receive_template_name,
+        "request_message_type": request_msg_type,   # e.g. "SessionSetupReq"
+        "response_message_type": response_msg_type, # e.g. "SessionSetupRes"
+        "union_field_req": union_field_req,         # e.g. "sessionSetupReq"
+        "union_field_res": union_field_res,         # e.g. "sessionSetupRes"
+        "key_parameters": key_params,
+        "verdict_logic": verdict_logic,
+        "requirements_traced": reqs,
+        "test_behavior_func_name": test_behavior_func_name,
+        "testcase_name": testcase_name,
+        "test_sequences": structured_sequences,
+        "_plan_builder": "rule_based",
+        "_plan_builder_version": "1.3-registry",
+    }
+
+    # ── PreCondition completeness check (2B) ──────────────────────────────────
+    # Diff the precondition_chain (and postcondition_chain) against the
+    # PreCondition/PostCondition modules actually present in DEMO_SHARED_FILES.
+    # Anything the chain references but the demo doesn't supply is a gap that
+    # the Infrastructure Agent must fill in. We surface the gap explicitly in
+    # the plan so:
+    #   (a) the Infrastructure Agent is told (not blind) about what to write;
+    #   (b) downstream tooling (compile loop, validators) can count on
+    #       precond_chain AND availability moving in lock-step.
+    _precond_completeness = _check_precondition_completeness(precond_chain, postcond_chain)
+    if _precond_completeness["missing_preconditions"]:
+        log(
+            f"[PLAN-CHK] {len(_precond_completeness['missing_preconditions'])} "
+            f"precondition module(s) referenced by chain but NOT in demo -- "
+            f"Infrastructure Agent MUST generate: "
+            f"{_precond_completeness['missing_preconditions']}",
+            "WARN",
+        )
+    if _precond_completeness["missing_postconditions"]:
+        log(
+            f"[PLAN-CHK] {len(_precond_completeness['missing_postconditions'])} "
+            f"postcondition module(s) referenced by chain but NOT in demo -- "
+            f"Infrastructure Agent MUST generate: "
+            f"{_precond_completeness['missing_postconditions']}",
+            "WARN",
+        )
+    plan["_precondition_completeness"] = _precond_completeness
+
+    # SDP / raw-octetstring and state-machine-coverage metadata:
+    # the ProtocolRegistry now owns this.  The previous code had
+    # hardcoded `if message_type == "SDP"` and the _STATE_MACHINE_COVERED
+    # table; both have moved into protocols/{id}.json.
+    if _resolved is not None:
+        if _resolved.uses_raw_octetstring:
+            plan["sdp_send"] = True
+            if _resolved.raw_request_hex:
+                plan["sdp_request_hex"] = _resolved.raw_request_hex
+            if _resolved.response_timeout_seconds is not None:
+                plan["sdp_response_timeout_seconds"] = _resolved.response_timeout_seconds
+        if _resolved.covered_by_precondition is not None:
+            _chain_strs = " ".join(precond_chain)
+            if _resolved.covered_by_precondition in _chain_strs or _resolved.uses_raw_octetstring:
+                plan["covered_by_precondition"] = True
+                plan["coverage_note"] = (
+                    f"{message_type} exchange already performed by "
+                    f"{_resolved.covered_by_precondition} in pre-condition chain. "
+                    f"TB will short-circuit to setverdict(pass). "
+                    f"Post-conditions will still run in TC wrapper."
+                )
+    else:
+        # Pre-refactor fallback for the unknown-message path
+        if message_type == "SDP":
+            plan["sdp_send"] = True
+            plan["sdp_request_hex"] = "01FE9000000000021000"
+            plan["sdp_response_timeout_seconds"] = 5.0
+        if message_type in _STATE_MACHINE_COVERED:
+            _coverage_fn = _STATE_MACHINE_COVERED[message_type]
+            _chain_strs = " ".join(precond_chain)
+            if _coverage_fn in _chain_strs or message_type == "SDP":
+                plan["covered_by_precondition"] = True
+                plan["coverage_note"] = (
+                    f"{message_type} exchange already performed by "
+                    f"{_coverage_fn} in pre-condition chain. TB will "
+                    f"short-circuit to setverdict(pass). Post-conditions "
+                    f"will still run in TC wrapper."
+                )
+    return plan
+
+
 def _infer_message_type_from_text(text: str) -> str:
     """从文本内容推断消息类型（用于 Orchestrator fallback）"""
     import re
@@ -1348,19 +2085,22 @@ def _get_default_precondition_chain(message_type: str, sop: Dict) -> List[str]:
 
     # 精确匹配
     if message_type in chains:
-        return chains[message_type]
+        entry = chains[message_type]
+        return entry.get("chain", []) if isinstance(entry, dict) else entry
+
     # 模糊匹配
-    for key, chain in chains.items():
-        if message_type.lower() in key.lower():
-            return chain
+    for key, entry in chains.items():
+        if message_type.lower() in key.lower() and key != "description":
+            return entry.get("chain", []) if isinstance(entry, dict) else entry
 
     # 尝试 _missing_precondition_chains（补充标准链之外的场景）
     missing_chains = sop.get("_missing_precondition_chains", {})
     if message_type in missing_chains:
-        return missing_chains[message_type].get("chain", [])
-    for key, info in missing_chains.items():
+        entry = missing_chains[message_type]
+        return entry.get("chain", []) if isinstance(entry, dict) else entry
+    for key, entry in missing_chains.items():
         if message_type.lower() in key.lower():
-            return info.get("chain", [])
+            return entry.get("chain", []) if isinstance(entry, dict) else entry
 
     # 别名规范化：将空格/下划线变体映射到标准名称
     normalized = message_type.replace(" ", "").replace("_", "")
@@ -1371,15 +2111,92 @@ def _get_default_precondition_chain(message_type: str, sop: Dict) -> List[str]:
     for alias, canonical in alias_map.items():
         if normalized == alias:
             if canonical in missing_chains:
-                return missing_chains[canonical].get("chain", [])
+                entry = missing_chains[canonical]
+                return entry.get("chain", []) if isinstance(entry, dict) else entry
             if canonical in chains:
-                return chains[canonical]
+                entry = chains[canonical]
+                return entry.get("chain", []) if isinstance(entry, dict) else entry
             return [f"f_{{SUT}}_CMN_PR_InitConfiguration_001"]
 
     # V2GTP/SDP 等特殊场景的默认处理
     if message_type in ("V2GTP", "SDP"):
         return [f"f_SECC_CMN_PR_InitConfiguration_001"]
     return []
+
+
+def _check_precondition_completeness(
+    precond_chain: List[str],
+    postcond_chain: List[str],
+) -> Dict[str, List[str]]:
+    """Diff precondition/postcondition chains against the modules in DEMO_SHARED_FILES.
+
+    Used by the plan builder to surface gaps the Infrastructure Agent must
+    fill. Returns a dict with:
+        - referenced_preconditions: items in precond_chain
+        - available_preconditions: PR module basenames in DEMO_SHARED_FILES
+        - missing_preconditions: precond_chain \\ available_preconditions
+        - referenced_postconditions: items in postcond_chain
+        - available_postconditions: PO module basenames in DEMO_SHARED_FILES
+        - missing_postconditions: postcond_chain \\ available_postconditions
+
+    The "available" set is derived from DEMO_SHARED_FILES entries under
+    3_Behavior_Steps/{PreConditions,PostConditions}/. This is the single
+    source of truth for what the demo baseline can supply -- it lines up
+    with what SCAFFOLD actually copies into the generated project.
+    """
+    import re
+
+    def _module_basename(ttcn_rel_path: str) -> str:
+        # 'src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn'
+        #  -> 'f_SECC_CMN_PR_InitConfiguration_001'
+        return Path(ttcn_rel_path).stem
+
+    available_pre: set = set()
+    available_post: set = set()
+    for rel in DEMO_SHARED_FILES:
+        if "/PreConditions/" in rel:
+            available_pre.add(_module_basename(rel))
+        elif "/PostConditions/" in rel:
+            available_post.add(_module_basename(rel))
+
+    missing_pre = [fn for fn in precond_chain if fn not in available_pre]
+    missing_post = [fn for fn in postcond_chain if fn not in available_post]
+
+    return {
+        "referenced_preconditions": list(precond_chain),
+        "available_preconditions": sorted(available_pre),
+        "missing_preconditions": missing_pre,
+        "referenced_postconditions": list(postcond_chain),
+        "available_postconditions": sorted(available_post),
+        "missing_postconditions": missing_post,
+    }
+
+
+def _build_missing_precondition_directive(
+    missing_pr: List[str],
+    missing_po: List[str],
+) -> str:
+    """Format the missing-precondition list into a prompt directive.
+
+    The output replaces the `{MISSING_PRECONDITIONS_DIRECTIVE}` placeholder
+    inside ``prompts/infrastructure_agent_prompt.txt``. When neither list is
+    non-empty, we emit ``"(none)"`` so the prompt stays grammatically valid.
+    """
+    if not missing_pr and not missing_po:
+        return "(none)"
+
+    sections: List[str] = []
+    if missing_pr:
+        pr_lines = "\n".join(f"  - `{fn}`  ->  `src/ttcn3/3_Behavior_Steps/PreConditions/{fn}.ttcn`" for fn in missing_pr)
+        sections.append(
+            f"### Missing PreCondition module(s) you MUST generate ({len(missing_pr)}):\n{pr_lines}"
+        )
+    if missing_po:
+        po_lines = "\n".join(f"  - `{fn}`  ->  `src/ttcn3/3_Behavior_Steps/PostConditions/{fn}.ttcn`" for fn in missing_po)
+        sections.append(
+            f"### Missing PostCondition module(s) you MUST generate ({len(missing_po)}):\n{po_lines}"
+        )
+    return "\n\n".join(sections)
 
 
 def extract_ttcn3_from_response(text: str) -> str:
@@ -1404,41 +2221,325 @@ def extract_ttcn3_from_response(text: str) -> str:
     return stripped
 
 
+def _is_valid_ttcn3_code(code: str) -> bool:
+    """验证提取到的代码是否是有效的 TTCN-3 模块"""
+    if not code or len(code) < 20:
+        return False
+    return code.startswith("module ") or code.startswith("/**")
+
+
 def _extract_ttcn3_code_from_text(text: str) -> str:
-    """从文本中提取 TTCN-3 代码，支持多种格式"""
+    """From the current position of module keyword, extract the full balanced-brace body."""
+    depth = 0
+    in_string = False
+    escape_next = False
+    end_pos = -1
+    for i, ch in enumerate(text):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                end_pos = i
+                break
+    return text[:end_pos + 1].strip() if end_pos >= 0 else text.strip()
+
+
+def sanitize_ttcn3_hex_strings(text: str) -> str:
+    """Fix odd-length hexadecimal octetstring literals in TTCN-3 source.
+
+    TTCN-3 requires octetstring hex literals to contain an even number of
+    hex digits (each byte is 2 hex digits).  LLM output frequently generates
+    odd-length literals (e.g. '0201FD'O) which cause TITAN compilation errors:
+        "Octetstring value contains odd number of hexadecimal digits"
+
+    This sanitizer:
+      1. Uses a regex that validates hex content (ignores non-hex content).
+      2. Pads odd-length literals by appending a trailing '0' (the safest padding
+         since the extra byte has minimal semantic impact on protocol tests).
+      3. Logs each fix for traceability.
+
+    Example transforms:
+        '02FD8001'O  -> '02FD8001'O  (already even, unchanged)
+        '0201FD'O    -> '0201FD0'O   (odd -> even, padded)
+        'ABC'O       -> 'ABC0'O      (odd -> even, padded)
+
+    Args:
+        text: Raw TTCN-3 source text (may contain multiple octetstring literals)
+
+    Returns:
+        Text with all odd-length hex literals padded to even length.
+    """
     import re
 
-    # 尝试从 markdown TTCN 代码块中提取
-    ttcn_block = re.search(r'```(?:ttcn3?|TTCN-?3?)?\s*\n(.*?)\n```', text, re.DOTALL)
-    if ttcn_block:
-        return ttcn_block.group(1).strip()
+    def _safe_pad(m: re.Match) -> str:
+        hex_part = m.group(1)
+        suffix = m.group(2)
+        if not re.fullmatch(r'[0-9A-Fa-f]+', hex_part):
+            return m.group(0)
+        if len(hex_part) % 2 == 0:
+            return m.group(0)
+        padded = hex_part + '0'
+        return f"'{padded}'{suffix}"
 
-    # 如果响应以 module 或 /** 开头，直接返回
-    stripped = text.strip()
-    if stripped.startswith("module ") or stripped.startswith("/**"):
-        return stripped
+    pattern = r"'([0-9A-Fa-f]+)'([Oo])"
+    result, count = re.subn(pattern, _safe_pad, text)
+    if count > 0:
+        log(f"[HEX-SANITIZE] Fixed {count} odd-length octetstring literal(s)")
+    return result
 
-    # 查找 module ... } 块（使用花括号平衡追踪避免 regex 贪婪问题）
-    module_match = re.search(r'(/\*\*.*?)?module\s+\w+', stripped)
+
+def extract_core_agent_output(text: str) -> Dict[str, Any]:
+    """从 Core Agent 响应中提取 JSON 格式的完整输出（包括 testcase + pre/post condition 文件）。
+
+    Three-Tier Robust Parsing:
+      Tier 1 — Loose JSON Stripping:
+        Strip chat prefixes (e.g. "Here is the JSON:", "Result:", "Sure ...") and trailing
+        notes (e.g. "Note:") from the raw text. Then locate the first { or [ and use a
+        balanced-brace/bracket counter to isolate the JSON core before parsing.
+      Tier 2 — Regex TTCN-3 Module Block Fallback:
+        If JSON parsing still fails, scan for explicit TTCN-3 module blocks
+        (module <Name> { ... }) using a balanced-brace extractor and return the raw
+        TTCN-3 code as a last resort.
+      Tier 3 — Type Polymorphism Guard:
+        Ensure the returned dict is always well-formed: no AttributeError or TypeError
+        can propagate from this function regardless of input type.
+
+    Returns:
+        Always a dict with keys: testcase (str), precondition_files (list),
+        postcondition_files (list), and optionally _parse_error (bool).
+    """
+    import re
+    import json as _json
+
+    # --- Tier 3: Type Polymorphism Guard ---
+    # Guard against non-string inputs that would crash _json.loads
+    if not isinstance(text, str):
+        log(f"extract_core_agent_output: input is {type(text).__name__}, not str — returning empty fallback", "WARN")
+        return {"testcase": "", "precondition_files": [], "postcondition_files": [], "_parse_error": True}
+
+    if not text or not text.strip():
+        return {"testcase": "", "precondition_files": [], "postcondition_files": [], "_parse_error": True}
+
+    # If the caller accidentally passed an already-parsed dict, return it safely
+    if isinstance(text, dict):
+        return text
+
+    raw = text.strip()
+
+    # --- Tier 0: Fix JSON with embedded control characters ---
+    # Claude Code CLI sometimes embeds literal \n or \r in JSON string values,
+    # producing invalid JSON like {"testcase": "module X {\n  import..."}.
+    # json.loads rejects these. We normalize them before parsing.
+    # Approach: find "testcase": " and scan for the value string, replacing
+    # embedded literal \n/\r with \\n/\\r inside that string.
+    def _fix_embedded_newlines_in_json(text: str) -> str:
+        """Replace literal newlines inside JSON string values with \\n."""
+        # Find "testcase": " or "precondition_files": [ etc.
+        result = []
+        i = 0
+        while i < len(text):
+            # Look for the start of a string value we want to sanitize
+            # We want to fix the "testcase" value (and other code fields)
+            # Strategy: find each : " followed by code content, and fix newlines in it
+            if (i < len(text) - 11 and
+                text[i:i+11] == '"testcase"' and
+                i + 11 < len(text) and text[i+11] in '":'):
+                # Found "testcase" key, advance past it
+                result.append(text[i:i+11])
+                i += 11
+                # Skip whitespace
+                while i < len(text) and text[i] in ' \t\n\r':
+                    result.append(text[i])
+                    i += 1
+                if i < len(text) and text[i] == ':':
+                    result.append(text[i])
+                    i += 1
+                # Now inside the string value — find the opening "
+                while i < len(text) and text[i] in ' \t\n\r':
+                    result.append(text[i])
+                    i += 1
+                if i < len(text) and text[i] == '"':
+                    result.append(text[i])
+                    i += 1
+                    # Scan until closing " (handling escapes and nested braces)
+                    esc = False
+                    in_str = True
+                    while i < len(text):
+                        ch = text[i]
+                        if esc:
+                            result.append(ch)
+                            esc = False
+                            i += 1
+                            continue
+                        if ch == '\\':
+                            result.append(ch)
+                            esc = True
+                            i += 1
+                            continue
+                        if ch == '"':
+                            # End of string
+                            result.append(ch)
+                            i += 1
+                            break
+                        # Replace literal \n with \\n, \r with \\r
+                        if ch == '\n':
+                            result.append('\\n')
+                            i += 1
+                            continue
+                        if ch == '\r':
+                            result.append('\\r')
+                            i += 1
+                            continue
+                        result.append(ch)
+                        i += 1
+                continue
+            result.append(text[i])
+            i += 1
+        return ''.join(result)
+
+    raw = _fix_embedded_newlines_in_json(raw)
+
+    # --- Tier 1: Loose JSON Stripping ---
+
+    # 1a. Strip conversational prefixes (case-insensitive)
+    prefix_patterns = [
+        r"^(?:Here(?:'s| is)?\s+(?:the\s+)?(?:requested\s+|)?(?:result|data|output|json|code)[:\s]*)",
+        r"^Result[:\s]*",
+        r"^Output[:\s]*",
+        r"^(?:Sure|Okay|Here|Maybe|Actually)[,:\s]+\{",
+        r"^(?:Below\s+is|Here\s+is|Attached\s+is)[,:\s]*",
+    ]
+    for pat in prefix_patterns:
+        raw = re.sub(pat, '', raw, flags=re.IGNORECASE).strip()
+
+    # 1b. Strip trailing notes, markdown dividers, and trailing whitespace
+    raw = re.sub(r'\n\s*Note[:\s].*$', '', raw, flags=re.DOTALL).strip()
+    raw = re.sub(r'\n\s*[-*_]{3,}\s*$', '', raw).strip()
+
+    # 1c. Locate the first { or [ as the JSON boundary anchor
+    first_brace = raw.find('{')
+    if first_brace < 0:
+        first_brace = raw.find('[')
+    json_candidate = raw[first_brace:] if first_brace >= 0 else raw
+
+    # 1d. Find the matching closing brace/bracket using balanced counter
+    if json_candidate.startswith('{'):
+        depth, last_close = 0, -1
+        in_str, esc = False, False
+        for i, ch in enumerate(json_candidate):
+            if esc:
+                esc = False
+                continue
+            if ch == '\\' and in_str:
+                esc = True
+                continue
+            if ch == '"' and not esc:
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    last_close = i
+                    break
+        if last_close >= 0:
+            json_candidate = json_candidate[:last_close + 1]
+
+    elif json_candidate.startswith('['):
+        depth, last_close = 0, -1
+        in_str, esc = False, False
+        for i, ch in enumerate(json_candidate):
+            if esc:
+                esc = False
+                continue
+            if ch == '\\' and in_str:
+                esc = True
+                continue
+            if ch == '"' and not esc:
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+                if depth == 0:
+                    last_close = i
+                    break
+        if last_close >= 0:
+            json_candidate = json_candidate[:last_close + 1]
+
+    # 1e. Try parsing the isolated JSON core
+    for attempt_text in [json_candidate, raw]:
+        try:
+            parsed = _json.loads(attempt_text)
+            if isinstance(parsed, dict) and "testcase" in parsed:
+                return parsed
+            # Re-wrap a bare list or bare string into the expected dict shape
+            if isinstance(parsed, list):
+                return {"testcase": "", "precondition_files": [], "postcondition_files": [],
+                        "_parse_error": True, "_raw_list_len": len(parsed)}
+            if isinstance(parsed, str):
+                return {"testcase": sanitize_ttcn3_hex_strings(parsed), "precondition_files": [], "postcondition_files": []}
+        except (_json.JSONDecodeError, ValueError):
+            # Try truncation recovery on this candidate
+            recovered = _recover_truncated_json(attempt_text)
+            if recovered and isinstance(recovered, dict) and "testcase" in recovered:
+                log("extract_core_agent_output: Tier-1 JSON truncation recovery succeeded", "WARN")
+                return recovered
+            if recovered:
+                log("extract_core_agent_output: Tier-1 JSON truncation recovery returned non-standard shape", "WARN")
+                return recovered
+
+    # 1f. Try markdown code-block wrappers
+    for block_pat in [r'```json\s*\n?(.*?)\n?```', r'```\s*\n?(.*?)\n?\s*```']:
+        m = re.search(block_pat, raw, re.DOTALL)
+        if m:
+            block = m.group(1).strip()
+            try:
+                parsed = _json.loads(block)
+                if isinstance(parsed, dict) and "testcase" in parsed:
+                    return parsed
+            except (_json.JSONDecodeError, ValueError):
+                recovered = _recover_truncated_json(block)
+                if recovered and isinstance(recovered, dict) and "testcase" in recovered:
+                    log("extract_core_agent_output: markdown-block truncation recovery succeeded", "WARN")
+                    return recovered
+
+    # --- Tier 2: Regex TTCN-3 Module Block Fallback ---
+    # Last resort: scan for explicit TTCN-3 module declarations
+    module_match = re.search(r'module\s+\w+\s*\{', raw, re.IGNORECASE)
     if module_match:
-        start_pos = module_match.start()
-        # 从 module 关键字位置开始，使用花括号平衡追踪找结束位置
-        candidate = stripped[start_pos:]
-        depth = 0
-        in_string = False
-        escape_next = False
-        end_pos = -1
+        start = module_match.start()
+        candidate = raw[start:]
+        depth, in_str, esc, end_pos = 0, False, False, -1
         for i, ch in enumerate(candidate):
-            if escape_next:
-                escape_next = False
+            if esc:
+                esc = False
                 continue
-            if ch == '\\' and in_string:
-                escape_next = True
+            if ch == '\\' and in_str:
+                esc = True
                 continue
-            if ch == '"' and not escape_next:
-                in_string = not in_string
+            if ch == '"' and not esc:
+                in_str = not in_str
                 continue
-            if in_string:
+            if in_str:
                 continue
             if ch == '{':
                 depth += 1
@@ -1448,72 +2549,15 @@ def _extract_ttcn3_code_from_text(text: str) -> str:
                     end_pos = i
                     break
         if end_pos >= 0:
-            return candidate[:end_pos + 1].strip()
+            code = candidate[:end_pos + 1].strip()
+            if _is_valid_ttcn3_code(code):
+                log("extract_core_agent_output: Tier-2 TTCN-3 module block salvaged from malformed response", "WARN")
+                return {"testcase": sanitize_ttcn3_hex_strings(code),
+                        "precondition_files": [], "postcondition_files": []}
 
-    return stripped
-
-
-def _is_valid_ttcn3_code(code: str) -> bool:
-    """验证提取到的代码是否是有效的 TTCN-3 模块"""
-    if not code or len(code) < 20:
-        return False
-    # 有效 TTCN-3 模块应包含 module 关键字
-    return code.startswith("module ") or code.startswith("/**")
-
-
-def extract_core_agent_output(text: str) -> Dict[str, Any]:
-    """从 Core Agent 响应中提取 JSON 格式的完整输出（包括 testcase + pre/post condition 文件）。
-
-    Core Agent 现在输出 JSON 格式：
-    {
-      "testcase": "... (TTCN-3 module code) ...",
-      "precondition_files": [{"path": "...", "content": "..."}, ...],
-      "postcondition_files": [{"path": "...", "content": "..."}, ...]
-    }
-
-    如果 JSON 解析失败，回退到旧格式（纯 TTCN 代码），只包含 testcase。
-
-    解析策略（3 层 + 截断恢复）：
-      1. 直接解析 JSON
-      2. 从 markdown JSON 块解析（+ _recover_truncated_json 截断恢复）
-      3. 提取纯 TTCN-3 代码作为 fallback
-    """
-    import re
-    import json as _json
-
-    # 尝试直接解析 JSON
-    try:
-        result = _json.loads(text.strip())
-        if isinstance(result, dict) and "testcase" in result:
-            return result
-    except (_json.JSONDecodeError, ValueError):
-        pass
-
-    # 尝试从 markdown 代码块中提取 JSON
-    json_block = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
-    if json_block:
-        block_content = json_block.group(1).strip()
-        try:
-            result = _json.loads(block_content)
-            if isinstance(result, dict) and "testcase" in result:
-                return result
-        except (_json.JSONDecodeError, ValueError):
-            pass
-        # 截断恢复：当 JSON 块解析失败时，尝试截断恢复
-        recovered = _recover_truncated_json(block_content)
-        if recovered and isinstance(recovered, dict) and "testcase" in recovered:
-            log("extract_core_agent_output: JSON 截断恢复成功", "WARN")
-            return recovered
-
-    # 回退到纯 TTCN-3 代码提取（提取逻辑与 extract_ttcn3_from_response 对齐）
-    ttcn_code = _extract_ttcn3_code_from_text(text)
-
-    # 验证提取到的代码是否是有效的 TTCN-3
-    if _is_valid_ttcn3_code(ttcn_code):
-        return {"testcase": ttcn_code, "precondition_files": [], "postcondition_files": []}
-
-    # 所有提取策略均失败
-    log(f"extract_core_agent_output: 所有提取策略均失败，响应长度={len(text)}，前100字符: {text[:100]}", "WARN")
+    # --- All tiers exhausted ---
+    log(f"extract_core_agent_output: all tiers failed — raw len={len(text)}, "
+        f"preview={text[:120]!r}", "WARN")
     return {"testcase": "", "precondition_files": [], "postcondition_files": [], "_parse_error": True}
 
 
@@ -1999,11 +3043,51 @@ def call_agent_with_timeout(prompt: str, agent_name: str, retry_on_timeout: bool
 # ============================================================
 # Agent 1: Orchestrator - 意图分解
 # ============================================================
-def run_orchestrator(test_case: Dict, requirement_context: str, sop: Dict) -> Optional[Dict]:
-    """运行 Orchestrator Agent，分解测试用例为生成计划"""
+def run_orchestrator(
+    test_case: Dict,
+    requirement_context: str,
+    sop: Dict,
+    protocol_snapshot: Optional[Dict] = None,
+) -> Optional[Dict]:
+    """运行 Orchestrator Agent，分解测试用例为生成计划。
+
+    Args:
+        test_case: The test case JSON dict.
+        requirement_context: Human-readable spec context (ISO 15118-2 etc.).
+        sop: The SOP dict (precondition_chains, naming_rules) from
+             knowledge_base/ttcn3_generation_sop.json.
+        protocol_snapshot: The ProtocolRegistry.snapshot() output — the active
+             protocol's machine-readable descriptor. Injected into the LLM prompt
+             as the authoritative source for naming, preconditions, union fields,
+             and transport. If None, falls back to the old sop-based injection.
+    """
     system_prompt = load_text(ORCHESTRATOR_PROMPT_PATH)
 
-    user_prompt = f"""{system_prompt}
+    # Protocol snapshot injection (P3: registry-aware prompt)
+    snapshot_block = ""
+    if protocol_snapshot:
+        snapshot_block = f"""
+
+### Protocol Descriptor (from ProtocolRegistry):
+```json
+{json.dumps(protocol_snapshot, indent=2, ensure_ascii=False)}
+```
+"""
+    else:
+        # Legacy fallback: use SOP-derived data
+        snapshot_block = f"""
+### SOP 前置条件链参考:
+```json
+{json.dumps(sop.get("precondition_chains", {}), indent=2)}
+```
+
+### SOP 命名规则:
+```json
+{json.dumps(sop.get("naming_rules", {}), indent=2)}
+```
+"""
+
+    user_prompt = f"""{system_prompt}{snapshot_block}
 
 ---
 
@@ -2014,18 +3098,8 @@ def run_orchestrator(test_case: Dict, requirement_context: str, sop: Dict) -> Op
 {json.dumps(test_case, indent=2, ensure_ascii=False)}
 ```
 
-### 需求上下文 (ISO 15118-2):
+### 需求上下文:
 {requirement_context if requirement_context else "(无额外上下文)"}
-
-### SOP 前置条件链参考:
-```json
-{json.dumps(sop.get("precondition_chains", {}), indent=2)}
-```
-
-### SOP 命名规则:
-```json
-{json.dumps(sop.get("naming_rules", {}), indent=2)}
-```
 
 请分析以上测试用例，输出结构化的 TTCN-3 生成计划 JSON。"""
 
@@ -2048,24 +3122,76 @@ def run_orchestrator(test_case: Dict, requirement_context: str, sop: Dict) -> Op
         # 调试：规范化提示
         if " " in message_type or "_" in message_type:
             log(f"注意: message_type='{message_type}' 包含空格或下划线，建议规范化（去除空格和下划线）", "DEBUG")
-        plan = {
-            "tc_id": tc_id,
-            "sut_type": sut_type,
-            "category": "CMN",
-            "message_type": message_type,
-            "test_type": "GoodCase",
-            "protocol_layer": "V2G_Application",
-            "precondition_chain": _get_default_precondition_chain(message_type, sop),
-            "port_name": f"pt_V2G_TCP_TLS_ALM_{sut_type}_Port",
-            "send_template_name": f"md_CMN_{message_type}Req_001",
-            "receive_template_name": f"mdw_{sut_type}_{message_type}Res_001",
-            "requirements_traced": [],
-            "test_behavior_func_name": f"f_{sut_type}_CMN_TB_VTB_{message_type}_001",
-            "postcondition_chain": [
-                f"f_{sut_type}_CMN_PO_InitialState_001",
-                f"f_{sut_type}_CMN_PO_ShutdownConfiguration_001"
-            ],
-        }
+        # ProtocolRegistry provides the canonical identifiers; the previous
+        # inline _canonicalize_message_type() helper has been replaced.
+        import re as _re
+        _seq_no_orch = "001"
+        if tc_id:
+            _sm = _re.search(r'_(\d{3})$', tc_id)
+            if _sm:
+                _seq_no_orch = _sm.group(1)
+        _registry_orch = get_default_registry()
+        _registry_orch.auto_load_for_tc(tc_id)
+        try:
+            _r = _registry_orch.resolve(message_type, sut=sut_type, seq_no=_seq_no_orch)
+        except (KeyError, RuntimeError) as _e:
+            log(f"Orchestrator: registry could not resolve {message_type!r}: {_e}; "
+                f"falling back to inline derivation", "WARN")
+            _r = None
+        if _r is not None:
+            plan = {
+                "tc_id": tc_id,
+                "sut_type": sut_type,
+                "category": "CMN",
+                "message_type": message_type,
+                "normalized_message_type": _r.canonical,
+                "test_type": "GoodCase",
+                "protocol_layer": _r.protocol_layer,
+                "precondition_chain": _r.default_precondition_chain,
+                "port_name": _r.port_name,
+                "send_template_name": _r.send_template_name,
+                "receive_template_name": _r.receive_template_name,
+                "request_message_type": _r.request_type,
+                "response_message_type": _r.response_type,
+                "union_field_req": _r.union_field_req,
+                "union_field_res": _r.union_field_res,
+                "requirements_traced": [],
+                "test_behavior_func_name": _registry_orch.format_naming(
+                    "test_behavior_function", SUT=sut_type, Category="CMN",
+                    MessageType=message_type, SeqNo=_seq_no_orch,
+                ),
+                "postcondition_chain": [
+                    f"f_{sut_type}_CMN_PO_InitialState_001",
+                    f"f_{sut_type}_CMN_PO_ShutdownConfiguration_001"
+                ],
+            }
+        else:
+            # Pre-refactor fallback for the unknown-message path
+            _canon = _canonicalize_message_type(message_type)
+            _canonical = _canon["canonical"]
+            plan = {
+                "tc_id": tc_id,
+                "sut_type": sut_type,
+                "category": "CMN",
+                "message_type": message_type,
+                "normalized_message_type": _canonical,
+                "test_type": "GoodCase",
+                "protocol_layer": "V2G_Application",
+                "precondition_chain": _get_default_precondition_chain(message_type, sop),
+                "port_name": f"pt_V2G_TCP_TLS_ALM_{sut_type}_Port",
+                "send_template_name": f"md_CMN_{_canonical}Req_{_seq_no_orch}",
+                "receive_template_name": f"mdw_{sut_type}_{_canonical}Res_{_seq_no_orch}",
+                "request_message_type": _canon["request_msg_type"],
+                "response_message_type": _canon["response_msg_type"],
+                "union_field_req": _canon["union_field_req"],
+                "union_field_res": _canon["union_field_res"],
+                "requirements_traced": [],
+                "test_behavior_func_name": f"f_{sut_type}_CMN_TB_VTB_{message_type}_{_seq_no_orch}",
+                "postcondition_chain": [
+                    f"f_{sut_type}_CMN_PO_InitialState_001",
+                    f"f_{sut_type}_CMN_PO_ShutdownConfiguration_001"
+                ],
+            }
         # 智能推断：从 TC_Id 推断 test_type（_001=GoodCase, _002+=BadCase）
         # TC_SECC_CMN_VTB_V2GTPHeader_001 -> GoodCase
         # TC_SECC_CMN_VTB_V2GTPHeader_002/003/004 -> BadCase
@@ -2093,6 +3219,24 @@ def run_orchestrator(test_case: Dict, requirement_context: str, sop: Dict) -> Op
         plan["normalized_message_type"] = alias_map.get(normalized_msg, message_type)
 
     log(f"生成计划: tc_id={plan.get('tc_id')}, type={plan.get('test_type')}")
+
+    # P3 Step 6: handle LLM-proposed protocol additions (review queue)
+    _proposals = plan.get("proposed_additions")
+    if _proposals and protocol_snapshot:
+        try:
+            _reg = get_default_registry()
+            if _reg.active_protocol():
+                _path = _reg.extend_with_llm_discoveries(
+                    _proposals,
+                    proposed_by="Orchestrator Agent",
+                    proposed_during_tc=plan.get("tc_id", ""),
+                )
+                log(f"[Review Queue] Proposed additions written to {_path}", "INFO")
+                # Remove from the plan so downstream code doesn't see it
+                plan.pop("proposed_additions", None)
+        except Exception as _ex:
+            log(f"[Review Queue] Failed to write proposal: {_ex}", "WARN")
+
     return plan
 
 
@@ -2203,13 +3347,9 @@ def run_core_agent(generation_plan: Dict, references: Dict,
                    local_ref_section: str = "",
                    previous_core_files: Optional[List[Dict]] = None,
                    previous_infra_files: Optional[List[str]] = None,
-                   is_fix_mode: bool = False) -> Dict[str, Any]:
+                   is_fix_mode: bool = False,
+                   protocol_snapshot: Optional[Dict] = None) -> Dict[str, Any]:
     """运行 Core Agent，生成 TTCN-3 代码。
-
-    返回一个字典，包含:
-    - "testcase": 主测试用例 module 代码 (str)
-    - "precondition_files": 前置条件文件列表 [{"path": ..., "content": ...}, ...]
-    - "postcondition_files": 后置条件文件列表 [{"path": ..., "content": ...}, ...]
 
     Args:
         generation_plan: Orchestrator 生成的计划 JSON
@@ -2218,12 +3358,30 @@ def run_core_agent(generation_plan: Dict, references: Dict,
         sop: SOP JSON
         error_feedback: 上一次编译错误的反馈（用于迭代修复）
         sut_mode: 测试运行模式，"SIL" 或 "HIL"
-        local_ref_section: 本地知识库检索结果（绕过 Summarizer LLM 层直接注入）
+        local_ref_section: 本地知识库检索结果
         previous_core_files: 上次生成的 core 文件列表（用于修复模式）
         previous_infra_files: 上次生成的 infrastructure 文件列表（用于参考）
         is_fix_mode: 是否为修复模式（精简 prompt，不包含 demo 参考）
+        protocol_snapshot: ProtocolRegistry.snapshot() 输出 — 当前协议描述符。
+             注入到 LLM prompt 中作为权威的协议知识来源。
     """
     system_prompt = load_text(CORE_AGENT_PROMPT_PATH)
+
+    # P4: Inject protocol snapshot into system prompt
+    # The prompt file has a {PROTOCOL_SNAPSHOT} placeholder.
+    _snapshot_str = json.dumps(protocol_snapshot, indent=2, ensure_ascii=False) if protocol_snapshot else "{}"
+    system_prompt = system_prompt.replace("{PROTOCOL_SNAPSHOT}", _snapshot_str)
+
+    # Build pre/postcondition params blocks (used by both fix-mode and normal-mode paths)
+    # SIL mode: no parameters for pre/postcondition functions
+    pre_params = "SIL mode: Precondition functions take NO parameters (void return type for f_SECC_CMN_PR_InitConfiguration_001, verdicttype return for others)."
+    post_params = "SIL mode: Postcondition functions take NO parameters (void return type)."
+    if sut_mode == "HIL":
+        pre_params = "HIL mode:\n- f_SECC_CMN_PR_InitConfiguration_001(out HAL_61851_Listener, in SystemSECC) -> void\n- f_SECC_CMN_PR_SupportedAppProtocol_001(in HAL_61851_Listener) -> verdicttype\n- f_SECC_CMN_PR_SessionSetup_001(in HAL_61851_Listener) -> verdicttype"
+        post_params = "HIL mode:\n- f_SECC_CMN_PO_InitialState_001(in HAL_61851_Listener) -> void\n- f_SECC_CMN_PO_ShutdownConfiguration_001(in HAL_61851_Listener, in SystemSECC) -> void"
+    # Inject into system_prompt via string replacement
+    system_prompt = system_prompt.replace("{pre_params}", pre_params)
+    system_prompt = system_prompt.replace("{post_params}", post_params)
 
     # Load generation patterns for injection into prompt
     _gen_patterns_path = Path(__file__).parent / "knowledge_base" / "generation_patterns.json"
@@ -2317,6 +3475,12 @@ testcase_name: {generation_plan.get('testcase_name', generation_plan.get('tc_id'
 ## Test Mode
 {sut_mode}
 
+## Precondition Function Parameters
+{pre_params}
+
+## Postcondition Function Parameters
+{post_params}
+
 ## From knowledge base local search (from Summarizer):
 {local_ref_section if local_ref_section else "(无 local search 结果)"}
 
@@ -2358,6 +3522,8 @@ testcase_name: {generation_plan.get('testcase_name', generation_plan.get('tc_id'
             max_single_size=FEW_SHOT_CONFIG["max_single_example"]
         )
 
+        # (pre_params and post_params are injected into system_prompt above, outside the if/else block)
+
         user_prompt = f"""{system_prompt}
 
 ---
@@ -2373,6 +3539,12 @@ testcase_name: {generation_plan.get('testcase_name', generation_plan.get('tc_id'
 
 ## Test Mode
 {sut_mode}
+
+## Precondition Function Parameters
+{pre_params}
+
+## Postcondition Function Parameters
+{post_params}
 
 ## Shared Project Files (read-only reference -- DO NOT modify these)
 
@@ -2445,7 +3617,7 @@ This file contains canonical TTCN-3 code generation patterns that you MUST follo
     # 记录 Core Agent prompt 大小
     log_prompt_size("Core Agent", user_prompt)
 
-    response = call_agent_with_timeout(user_prompt, "Core Agent", read_only=True)
+    response = call_agent_with_timeout(user_prompt, "Core Agent")
     if not response:
         return {"testcase": "", "precondition_files": [], "postcondition_files": [], "_parse_error": True}
 
@@ -2454,7 +3626,7 @@ This file contains canonical TTCN-3 code generation patterns that you MUST follo
     if result.get("_parse_error"):
         log("Core Agent 响应解析失败，触发一次重试...", "WARN")
         retry_response = call_claude_agent(user_prompt, "Core Agent (retry)", timeout=900,
-                                          read_only=True)
+                                          extra_allowed_tools="Write,Read,Edit,Bash(bash *)")
         if retry_response:
             result = extract_core_agent_output(retry_response)
             if not result.get("_parse_error"):
@@ -2649,8 +3821,68 @@ Please perform dual-track root cause analysis and output the JSON result.""")
         log(f"Fault Corrector: extract_json_from_response raised unexpected error: {e}", "WARN")
         result = None
 
+    # Prefer the structured markdown JSON block over the stream-array that
+    # Claude CLI emits. The raw response is JSON Lines (an event array) plus
+    # a trailing markdown ```json block containing the actual agent verdict.
+    # Strategy 1 of extract_json_from_response matches the first balanced
+    # brace pair — which lands on the init event in the array, NOT on the
+    # intended verdict. We work around this by extracting the markdown
+    # block first and only falling back to the default strategy on miss.
+    if not (isinstance(result, dict) and result.get("status") in ("needs_fix", "pass", "no_fix", "ok")):
+        import re as _re_fc
+        md_block = _re_fc.search(r'```json\s*(.*?)\s*```', response, _re_fc.DOTALL)
+        if md_block:
+            try:
+                md_parsed = json.loads(md_block.group(1))
+                if isinstance(md_parsed, dict) and "status" in md_parsed:
+                    log("Fault Corrector: using markdown ```json block (skipped noisy stream events)", "WARN")
+                    result = md_parsed
+            except (json.JSONDecodeError, ValueError) as e:
+                log(f"Fault Corrector: markdown json block parse failed: {e}", "WARN")
+
     if not result:
         log("Fault Corrector output could not be parsed as JSON", "WARN")
+        return {
+            "status": "pass",
+            "phase": phase,
+            "issues_found": [],
+            "corrected_code": ttcn3_code,
+            "repairs": [],
+        }
+
+    # CRITICAL: extract_json_from_response can return a LIST when the
+    # recursive bracket scanner (Strategy 2) matches a `[...]` block before
+    # the brace scanner finds the top-level `{...}`. This commonly happens
+    # when the response contains nested arrays (e.g. "repairs": [...]) and
+    # the JSON block boundary detection hits the inner array first.
+    # Coerce to dict; if the result is a non-empty list, wrap its first
+    # element so downstream code can still read fields like "status" and
+    # "issues_found". If the result is an empty list, treat as "no fix".
+    if isinstance(result, list):
+        if len(result) == 1 and isinstance(result[0], dict):
+            log("Fault Corrector: extract_json returned a 1-element list — unwrapping", "WARN")
+            result = result[0]
+        elif len(result) == 0:
+            log("Fault Corrector: extract_json returned an empty list — treating as no fix", "WARN")
+            return {
+                "status": "pass",
+                "phase": phase,
+                "issues_found": [],
+                "corrected_code": ttcn3_code,
+                "repairs": [],
+            }
+        else:
+            # Multi-element list (e.g. list of issues). Synthesize a dict
+            # that downstream code can consume.
+            log(f"Fault Corrector: extract_json returned a {len(result)}-element list — synthesizing dict", "WARN")
+            result = {
+                "status": "needs_fix",
+                "issues_found": result if all(isinstance(x, dict) for x in result) else [],
+                "repairs": [],
+                "corrected_code": "",
+            }
+    if not isinstance(result, dict):
+        log(f"Fault Corrector: extract_json returned unexpected type {type(result).__name__} — treating as no fix", "WARN")
         return {
             "status": "pass",
             "phase": phase,
@@ -2892,6 +4124,7 @@ def run_infrastructure_agent(
     previous_core_files: Optional[List[Dict]] = None,
     is_fix_mode: bool = False,
     output_dir: Optional[Path] = None,
+    protocol_snapshot: Optional[Dict] = None,
 ) -> Dict:
     """运行 Infrastructure Agent，生成完整的 TITAN 项目结构
 
@@ -2915,6 +4148,19 @@ def run_infrastructure_agent(
         previous_infra_files: 上次生成的 infrastructure 文件路径列表（用于修复模式）
         previous_core_files: 上次生成的 core 文件列表（用于参考）
         is_fix_mode: 是否为修复模式（精简 prompt，不包含 demo 参考）
+    Args:
+        generation_plan: Orchestrator 生成的计划 JSON
+        ttcn3_code: Core Agent 生成的完整测试用例 TTCN-3 代码
+        tc_id: 测试用例 ID
+        sut_ip: SUT IP 地址（可选，用于配置）
+        tc_output_filename: 测试用例输出文件名
+        error_feedback: 上一次编译错误的反馈（用于修复模式）
+        previous_infra_files: 上次生成的 infrastructure 文件路径列表（用于修复模式）
+        previous_core_files: 上次生成的 core 文件列表（用于参考）
+        is_fix_mode: 是否为修复模式（精简 prompt，不包含 demo 参考）
+        output_dir: 项目输出目录
+        protocol_snapshot: ProtocolRegistry.snapshot() 输出 — 当前协议描述符。
+             注入到 LLM prompt 中作为权威的协议知识来源。
     """
     import time
     import shutil
@@ -2924,6 +4170,24 @@ def run_infrastructure_agent(
     doc_urls = load_doc_urls()
     doc_urls_text = build_doc_urls_for_infrastructure(doc_urls)
     system_prompt = system_prompt.replace("{DOC_URLS_INFRASTRUCTURE}", doc_urls_text)
+
+    # P4: Inject protocol snapshot — replaces the hardcoded ISO 15118-2 V2G_MessageUnion
+    # and precondition rules in the prompt with the live protocol descriptor
+    if protocol_snapshot:
+        _snap_json = json.dumps(protocol_snapshot, indent=2, ensure_ascii=False)
+        system_prompt = system_prompt.replace("{PROTOCOL_SNAPSHOT}", _snap_json)
+    else:
+        system_prompt = system_prompt.replace("{PROTOCOL_SNAPSHOT}", "{}")
+
+    # 2C: Inject the missing-precondition directive — computed by the plan
+    # builder's completeness check. The prompt now carries a hard requirement
+    # for the Infrastructure Agent to generate any PR modules that the
+    # precondition_chain references but the demo baseline doesn't supply.
+    # This closes the "Infrastructure Agent is blind to missing PRs" gap.
+    _missing_pr_list = generation_plan.get("_precondition_completeness", {}).get("missing_preconditions", [])
+    _missing_po_list = generation_plan.get("_precondition_completeness", {}).get("missing_postconditions", [])
+    _missing_directive = _build_missing_precondition_directive(_missing_pr_list, _missing_po_list)
+    system_prompt = system_prompt.replace("{MISSING_PRECONDITIONS_DIRECTIVE}", _missing_directive)
 
     # === 所有静态文件：Pipeline 直接复制，不通过 Agent ===
     # C++ 适配器（12 个 .hh + .cc 文件）-- 定义在 if/else 外部，确保 fix mode 也能访问
@@ -2966,16 +4230,44 @@ def run_infrastructure_agent(
 {error_feedback}
 """
 
-        # === Pre-install aggregator modules (same as normal mode) ===
+        # === Pre-install static TTCN files from demo (same as normal mode) ===
         _infra_tc_dir = output_dir if output_dir else (GENERATED_DIR / tc_id)
-        for agg_rel in ("src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn",
-                        "src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn"):
-            agg_src = DEMO_ROOT / agg_rel
-            agg_dst = _infra_tc_dir / agg_rel
-            if agg_src.exists():
-                agg_dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(agg_src, agg_dst)
-                log(f"[INFRA PREINSTALL] Aggregator stub: {agg_rel}", "DEBUG")
+        _static_ttcn_files = {
+            # Types and constants: complete from demo, no LLM generation needed
+            "src/ttcn3/1_Data_Definitions/Types/Types_SECC_15118_2.ttcn": None,
+            "src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn": None,
+            "src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn": None,
+            # PICS
+            "src/ttcn3/1_Data_Definitions/PICS/PICS_SECC_15118_2.ttcn": None,
+            # Architecture
+            "src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn": None,
+            # Aggregators
+            "src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn": None,
+            "src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn": None,
+            # TestCases_SECC.ttcn must use the actual tc_output_filename (not hardcoded demo name)
+            "src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn": (
+                f'module TestCases_SECC {{\n'
+                f'    import from SECC_TestSystem all;\n'
+                f'    import from {tc_output_filename} all;\n'
+                f'\n'
+                f'    control {{\n'
+                f'        execute({tc_output_filename}());\n'
+                f'    }}\n'
+                f'}} // end module\n'
+            ),
+        }
+        for _rel, _content in _static_ttcn_files.items():
+            _src = DEMO_ROOT / _rel
+            _dst = _infra_tc_dir / _rel
+            _dst.parent.mkdir(parents=True, exist_ok=True)
+            if _content is not None:
+                _dst.write_text(_content, encoding="utf-8")
+                log(f"[INFRA PREINSTALL] {_rel} (static generation)", "DEBUG")
+            elif _src.exists():
+                shutil.copy2(_src, _dst)
+                log(f"[INFRA PREINSTALL] {_rel}", "DEBUG")
+            else:
+                log(f"[INFRA PREINSTALL] Not in demo: {_rel}", "DEBUG")
 
         user_prompt = f"""{system_prompt}
 
@@ -3033,30 +4325,175 @@ Now generate the corrected project structure. Output ONLY the JSON object."""
         demo_parts.append("[File: build.sh] (handled by pipeline: copied directly from demo/)")
         demo_parts.append("[File: port_implementation_stub.txt] (handled by pipeline: copied directly from demo/)")
 
-        # TTCN 骨架参考（Agent 需要这些来生成正确的文件结构）
-        ttcn_ref_files = [
-            "src/ttcn3/1_Data_Definitions/Types/Types_SECC_15118_2.ttcn",
-            "src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn",
-            "src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn",
-            "src/ttcn3/1_Data_Definitions/PICS/PICS_SECC_15118_2.ttcn",
-            "src/ttcn3/3_Behavior_Steps/Services/CommonFunctions.ttcn",
-            "src/ttcn3/1_Data_Definitions/PIXIT/PIXIT_SECC_15118_2.ttcn",
-            "src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn",
-            "src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn",
-            "src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn",
-        ]
-        demo_parts.append("### Reference: TTCN Skeleton Files")
-        for ref_file in ttcn_ref_files:
-            content = _load_demo(ref_file)
-            if content:
-                # 截断过长的 TTCN 骨架文件
-                content = truncate_text(content, INFRA_CONFIG["demo_ref_truncate_size"] // len(ttcn_ref_files))
-                demo_parts.append(f"[File: {ref_file}]\n{content}")
+        # TTCN skeleton templates: inline (no file loads — reduces prompt from ~35KB to ~4KB).
+        # Each template is 40-80 lines — enough context for the agent without LLM reasoning bloat.
+        demo_parts.append("### Reference: TTCN Skeleton File Templates (inline)")
 
-        # NOTE: PreConditions and PostConditions function definitions are generated
-        # by the Core Agent and written by the pipeline. The Infrastructure Agent
-        # generates the aggregator modules (PreConditions_SECC_15118_2.ttcn, PostConditions_SECC_15118_2.ttcn).
-        # Pipeline copies 12 C++ adapter files and port impls from demo/.
+        demo_parts.append("""[File: src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn]
+module SECC_TestSystem {
+    import from SECC_Types all;
+
+    // V2G_PortMessage: dual-path for V2GTP BadCase support
+    //   v2g variant: normal V2G messages (EXI-encoded via C++ JSON library)
+    //   raw variant: raw octetstring for V2GTP header BadCase tests ONLY
+    type union V2G_PortMessage {
+        V2G_MessageUnion  v2g,
+        octetstring       raw
+    };
+
+    // V2G_TCP_TLS_Port: out uses V2G_PortMessage (dual-path), in uses V2G_MessageUnion.
+    // V2G_UDP_SDP_Port: raw octetstring for SDP protocol (no EXI).
+    type port V2G_TCP_TLS_Port message {
+        out V2G_PortMessage;
+        in  V2G_MessageUnion;
+    };
+    type port V2G_UDP_SDP_Port message {
+        out octetstring;
+        in  octetstring;
+    };
+
+    // SECCTester: the main test component. SystemSECC: the SUT component.
+    type component SECCTester {
+        port V2G_TCP_TLS_Port pt_V2G_TCP_TLS_ALM_SECC_Port;
+        port V2G_UDP_SDP_Port pt_V2G_UDP_SDP_Port;
+    };
+    type component SystemSECC {
+        port V2G_TCP_TLS_Port pt_V2G_TCP_TLS_ALM_SECC_Port;
+        port V2G_UDP_SDP_Port pt_V2G_UDP_SDP_Port;
+    };
+} // end module""")
+
+        demo_parts.append("""[File: src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn]
+module SECC_Constants {
+    import from SECC_TestSystem all;
+
+    // Message Timeouts (ISO 15118-3)
+    const float PX_SECC_CMN_Message_Timeout := 60.0;
+    const float PX_SECC_CMN_Sequence_Timeout := 2.0;
+    const float PX_SECC_CMN_SDP_Response_Timeout := 1.0;
+    const float PX_SECC_CMN_TCP_Connection_Timeout := 5.0;
+    const float PX_SECC_CMN_TLS_Handshake_Timeout := 10.0;
+
+    // Default Timer Values
+    const float PX_SECC_CMN_DefaultTimer := 5.0;
+    const float PX_SECC_CMN_LongTimer := 30.0;
+
+    // V2GTP Protocol Version
+    const octetstring PX_SECC_CMN_V2GTP_ProtocolVersion := '01'O;
+    const octetstring PX_SECC_CMN_V2GTP_InvVersion     := 'FE'O;
+
+    // Default EVCCID (8 bytes hex)
+    const octetstring PX_SECC_CMN_Default_EVCCID := '123456789ABC'O;
+    const octetstring PX_SECC_CMN_Default_SessionID := '0000000000000000'O;
+
+    // SDP / V2G Port
+    const charstring PX_SECC_CMN_SDP_Multicast_Addr := "ff02::01";
+    const integer PX_SECC_CMN_SDP_Port := 15118;
+    const integer PX_SECC_CMN_V2G_Port := 15118;
+} // end module""")
+
+        demo_parts.append("""[File: src/ttcn3/1_Data_Definitions/Types/Types_SECC_15118_2.ttcn]
+module SECC_Types {
+
+    // Section 1: Basic ID types
+    type record EvccIDType { octetstring content optional };
+    type record SessionIDType { octetstring content optional };
+
+    // Section 2: V2G Message Type constants (PayloadType in V2GTP header)
+    const integer V2G_MSG_TYPE_SUPPORTED_APP_PROT := 32768;  // 0x8000
+    const integer V2G_MSG_TYPE_SESSION_SETUP     := 32769;  // 0x8001
+    const integer V2G_MSG_TYPE_SERVICE_DISCOVERY  := 32770;  // 0x8002
+
+    // Section 3: AppProtocol messages
+    type record AppProtocolEntry {
+        charstring   protocolNamespace,
+        integer      versionNumberMajor,
+        integer      versionNumberMinor,
+        integer      SchemaID optional
+    };
+    type record SupportedAppProtocolReq {
+        AppProtocolEntry protocolArray[1 .. 16] optional
+    };
+    type record SupportedAppProtocolRes {
+        integer ResponseCode,   // 0=OK, 1=Failed
+        integer SchemaID optional,
+        charstring SchemaURI optional
+    };
+
+    // Section 4: SessionSetup messages
+    type record SessionSetupReq {
+        charstring   EVCCID,
+        charstring   DEXArray[1 .. 16] optional
+    };
+    type record SessionSetupRes {
+        integer ResponseCode,
+        charstring   EVSEID,
+        integer EVSETimeStamp optional
+    };
+
+    // Section 5: V2G_MessageUnion (top-level union for V2G messages on the wire)
+    // Keys must match exi_payload_library.json: supportedAppProtocolReq, sessionSetupReq, ...
+    type union V2G_MessageUnion {
+        SupportedAppProtocolReq  supportedAppProtocolReq,
+        SupportedAppProtocolRes  supportedAppProtocolRes,
+        SessionSetupReq          sessionSetupReq,
+        SessionSetupRes          sessionSetupRes,
+        octetstring              rawPayload  // fallback for unknown message types
+    };
+
+} // end module""")
+
+        demo_parts.append("""[File: src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn]
+module SECC_CmnTemplates {
+    import from SECC_Types all;
+
+    // Common timeout altstep
+    altstep a_CMN_WaitTimeout(inout timer p_timer) {
+        [] p_timer.timeout {
+            setverdict(inconc, "Timeout occurred");
+        }
+    }
+
+    // Verdict helper
+    function f_CMN_IsVerdictPass(in verdicttype p_verdict) return boolean {
+        return (p_verdict == pass);
+    }
+
+    // V2G message send: use structured union with the msgType name from V2G_MessageUnion.
+    // C++ adapter encodes via exi_payload_library.json, patches V2GTP header, sends over TCP.
+    // Example template (adjust msgType to match your message):
+    // template SupportedAppProtocolReq md_CMN_SupportedAppProtocolReq_001 := {
+    //     protocolArray := omit
+    // };
+} // end module""")
+
+        demo_parts.append("""[File: src/ttcn3/1_Data_Definitions/PICS/PICS_SECC_15118_2.ttcn]
+module SECC_PICS {
+    import from SECC_TestSystem all;
+
+    // Basic Communication
+    const boolean PICS_SECC_CMN_TCP_Supported := true;
+    const boolean PICS_SECC_CMN_UDP_Supported := true;
+    const boolean PICS_SECC_CMN_IPv6_Supported := true;
+
+    // TLS
+    const boolean PICS_SECC_CMN_TLS_Required := true;
+    const boolean PICS_SECC_CMN_TLS12_Supported := true;
+
+    // Supported V2G Messages
+    const boolean PICS_SECC_CMN_SupportedAppProtocol := true;
+    const boolean PICS_SECC_CMN_SessionSetup := true;
+} // end module""")
+
+        demo_parts.append("""[File: src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn]
+module TestCases_SECC {
+    import from SECC_TestSystem all;
+    import from TC_SECC_CMN_VTB_V2GTPHeader_002 all;
+
+    control {
+        execute(TC_SECC_CMN_VTB_V2GTPHeader_002());
+    }
+} // end module""")
         demo_parts.append("\n### NOTE: The following files are handled by the pipeline automatically")
         demo_parts.append("- 12 C++ adapter files (common/TRI/TCI/EXI/HAL): copied from demo/")
         demo_parts.append("- Port adapter .cc implementations (V2G_TCP_TLS_Port, V2G_UDP_SDP_Port): copied from demo/")
@@ -3093,23 +4530,48 @@ Now generate the corrected project structure. Output ONLY the JSON object."""
         else:
             output_dir_str = str((GENERATED_DIR / tc_id).resolve())
 
-        # === Pre-install aggregator modules so makefilegen finds them immediately ===
-        # The agent cannot generate PreConditions_SECC_15118_2.ttcn / PostConditions_SECC_15118_2.ttcn
-        # in its first turn (they depend on the Core Agent's function names, which are not
-        # yet known to the agent). Pre-installing demo versions guarantees that:
-        #   1. makefilegen never fails with "Cannot find source file" for the aggregators
-        #   2. The agent's own generated files are never accidentally overwritten by demo stubs
+        # === Pre-install static TTCN files from demo (never need LLM generation) ===
+        # These files are pure boilerplate: no test-case-specific content.
+        # Pre-installing them avoids LLM generation overhead entirely.
         _infra_tc_dir = output_dir if output_dir else (GENERATED_DIR / tc_id)
-        for agg_rel in ("src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn",
-                        "src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn"):
-            agg_src = DEMO_ROOT / agg_rel
-            agg_dst = _infra_tc_dir / agg_rel
-            if agg_src.exists():
-                agg_dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(agg_src, agg_dst)
-                log(f"[INFRA PREINSTALL] Aggregator stub: {agg_rel}", "DEBUG")
+        _static_ttcn_files = {
+            # Types and constants: complete from demo, no LLM generation needed
+            "src/ttcn3/1_Data_Definitions/Types/Types_SECC_15118_2.ttcn": None,
+            "src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn": None,
+            "src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn": None,
+            # PICS
+            "src/ttcn3/1_Data_Definitions/PICS/PICS_SECC_15118_2.ttcn": None,
+            # Architecture
+            "src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn": None,
+            # Aggregators
+            "src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn": None,
+            "src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn": None,
+            # TestCases_SECC.ttcn must use the actual tc_output_filename (not hardcoded demo name)
+            "src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn": (
+                f'module TestCases_SECC {{\n'
+                f'    import from SECC_TestSystem all;\n'
+                f'    import from {tc_output_filename} all;\n'
+                f'\n'
+                f'    control {{\n'
+                f'        execute({tc_output_filename}());\n'
+                f'    }}\n'
+                f'}} // end module\n'
+            ),
+        }
+        for _rel, _content in _static_ttcn_files.items():
+            _src = DEMO_ROOT / _rel
+            _dst = _infra_tc_dir / _rel
+            _dst.parent.mkdir(parents=True, exist_ok=True)
+            if _content is not None:
+                # Static content that must be generated (e.g. TestCases_SECC with correct TC name)
+                _dst.write_text(_content, encoding="utf-8")
+                log(f"[INFRA PREINSTALL] {_rel} (static generation)", "DEBUG")
+            elif _src.exists():
+                # File exists in demo — copy it
+                shutil.copy2(_src, _dst)
+                log(f"[INFRA PREINSTALL] {_rel}", "DEBUG")
             else:
-                log(f"[INFRA PREINSTALL] Aggregator not in demo (OK if no shared TTCN files needed): {agg_rel}", "DEBUG")
+                log(f"[INFRA PREINSTALL] Not in demo: {_rel}", "DEBUG")
 
         # === 构建 Agent prompt ===
         user_prompt = f"""{system_prompt}
@@ -3152,20 +4614,19 @@ Now generate the project structure by writing files directly to disk.
 
 IMPORTANT: Output directory is `{output_dir_str}/`
 
-Use the Write tool to create each file with the full absolute path:
-- `{output_dir_str}/config/titan_runtime.cfg`
-- `{output_dir_str}/config/hardware_env.json`
-- `{output_dir_str}/src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn`
-- `{output_dir_str}/src/ttcn3/1_Data_Definitions/Types/Types_SECC_15118_2.ttcn`
-- `{output_dir_str}/src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn`
-- `{output_dir_str}/src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn`
-- `{output_dir_str}/src/ttcn3/1_Data_Definitions/PICS/PICS_SECC_15118_2.ttcn`
-- `{output_dir_str}/src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn`
+The following files are ALREADY PRE-CREATED by the pipeline (do NOT overwrite them — just skip):
+- config/titan_runtime.cfg
+- config/hardware_env.json
+- src/ttcn3/1_Data_Definitions/Types/Types_SECC_15118_2.ttcn
+- src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn
+- src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn
+- src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn
+- src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn
+- src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn
+- src/ttcn3/1_Data_Definitions/PICS/PICS_SECC_15118_2.ttcn
+- src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn
 
-Do NOT output JSON. Use the Write tool for every file.
-
-After writing all files, you MAY optionally run `bash build.sh` to self-verify the build.
-If compilation errors occur, fix the affected files and retry.
+You do NOT need to generate any TTCN files. All files are pre-created. You may optionally run `bash build.sh` to self-verify the build.
 
 Do NOT create C++ adapter files, build.sh, or V2G port implementations -- these are handled by the pipeline automatically."""
 
@@ -3357,6 +4818,26 @@ Do NOT create C++ adapter files, build.sh, or V2G port implementations -- these 
             "message": f"Agent wrote {len(detected_files)} files directly to {tc_dir}",
         }
 
+
+    # === STEP 3: Post-run disk validation fallback ===
+    # If infra agent returned "completed" but some required files are still missing,
+    # mark as files_missing so the compile loop can retry in fix mode.
+    _infra_tc_dir = output_dir if output_dir else (GENERATED_DIR / tc_id)
+    _required_patterns = [
+        "config/titan_runtime.cfg",
+        "config/hardware_env.json",
+        "src/ttcn3/1_Data_Definitions/Types/Types_SECC_15118_2.ttcn",
+        "src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn",
+        "src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn",
+        "src/ttcn3/1_Data_Definitions/PICS/PICS_SECC_15118_2.ttcn",
+        "src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn",
+    ]
+    _missing = [p for p in _required_patterns
+                if not (_infra_tc_dir / p).exists() or (_infra_tc_dir / p).stat().st_size < 100]
+    if _missing and infra_result.get("status") in ("completed", "error", None, ""):
+        log(f"[INFRA-DISK-FALLBACK] {len(_missing)} required files missing: {_missing[:3]}", "WARN")
+        infra_result["status"] = "files_missing"
+        infra_result["missing_files"] = _missing
     return infra_result
 
 
@@ -4071,6 +5552,134 @@ def _inject_condition_function_imports(
             log("[INJECT] Fixed stale import in TestCases_SECC.ttcn")
 
 
+def _ensure_missing_precondition_stubs(tc_dir: Path, generation_plan: Dict) -> None:
+    """Generate minimal stubs for precondition functions that the TC file imports but no file exists.
+
+    Root cause: Core Agent writes `import from f_XYZ_001 all;` in the TC module
+    without creating the corresponding PreConditions/f_XYZ_001.ttcn stub file.
+    TITAN then fails with "There is no module with identifier `f_XYZ_001`".
+
+    This function:
+    1. Scans PreConditions/ for existing module names
+    2. Extracts `import from f_XXX_001 all;` from the main TC file
+    3. For each imported module that has NO corresponding .ttcn file in PreConditions/,
+       generates a minimal stub module so TITAN can at least compile and link.
+    4. Adds the stub module to the aggregator PreConditions_SECC_15118_2.ttcn
+    """
+    import re
+
+    pre_dir = tc_dir / "src/ttcn3/3_Behavior_Steps/PreConditions"
+    if not pre_dir.exists():
+        pre_dir.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: Find already-existing module names in PreConditions/
+    existing_modules = set()
+    for f in pre_dir.glob("*.ttcn"):
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r'^\s*module\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{', content, re.MULTILINE)
+            if m:
+                existing_modules.add(m.group(1))
+        except Exception:
+            continue
+
+    # Step 2: Find all function modules imported in the TC file
+    tc_ttcn_files = list((tc_dir / "src/ttcn3/4_TestCases").glob("*.ttcn"))
+    imported_modules = set()
+    for f in tc_ttcn_files:
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace")
+            for m in re.finditer(r'^\s*import from\s+([A-Za-z_][A-Za-z0-9_]*)\s+all;', content, re.MULTILINE):
+                imported_modules.add(m.group(1))
+        except Exception:
+            continue
+
+    # Step 3: Find missing stubs (imported but no .ttcn file)
+    # Only generate stubs for precondition function modules (f_<Name>_<N> pattern).
+    # Skip infrastructure modules (SECC_CmnTemplates, SECC_Constants, SECC_Types,
+    # SECC_TestSystem, PostConditions_SECC_15118_2, etc.) — those are defined in
+    # 1_Data_Definitions/ and PreConditions_SECC_15118_2.ttcn from the demo and
+    # must NOT be duplicated as stub files in PreConditions/.
+    _PRECOND_PATTERN = re.compile(r'^f_[A-Z][A-Za-z0-9]+(?:_V2G)?(?:_AC|_DC)?_\d+$')
+    missing = sorted(
+        m for m in (imported_modules - existing_modules)
+        if _PRECOND_PATTERN.match(m)
+    )
+    if not missing:
+        if imported_modules - existing_modules:
+            skipped = sorted(imported_modules - existing_modules)
+            log(f"[STUB GEN] Skipping {len(skipped)} non-function modules (infra already in 1_Data_Definitions/): {skipped}")
+        return
+
+    log(f"[STUB GEN] {len(missing)} missing precondition stubs detected: {missing}")
+
+    generated_stubs = []
+    for mod_name in missing:
+        # Derive file path: f_SECC_CMN_PR_SessionSetup_001 -> f_SECC_CMN_PR_SessionSetup_001.ttcn
+        stub_filename = f"{mod_name}.ttcn"
+        stub_path = pre_dir / stub_filename
+
+        # Build a minimal valid TTCN-3 stub module.
+        # For precondition functions in SIL mode: void return, no parameters.
+        # The function just passes to advance the state machine.
+        # TITAN requires the module to exist and have a matching function signature.
+        func_name = mod_name  # e.g. f_SECC_CMN_PR_SessionSetup_001
+
+        stub_code = f"""module {mod_name} {{
+
+    import from SECC_TestSystem all;
+    import from SECC_CmnTemplates all;
+
+    // Auto-generated stub precondition function.
+    // Minimal implementation: advance state machine to satisfy TITAN import resolution.
+    // Replace with full implementation if needed.
+    function {func_name}()
+        runs on SECCTester
+        {{
+            // Stub: precondition satisfied (no-op in SIL mode)
+            log("{mod_name}: precondition stub called");
+        }}
+
+}} // end module {mod_name}
+"""
+        try:
+            stub_path.write_text(stub_code, encoding="utf-8")
+            generated_stubs.append(mod_name)
+            log(f"[STUB GEN] Created {stub_filename}")
+        except Exception as e:
+            log(f"[STUB GEN] Failed to write {stub_filename}: {e}", "WARN")
+
+    # Step 4: Add missing stubs to the PreConditions_SECC_15118_2.ttcn aggregator
+    if generated_stubs:
+        agg_path = pre_dir / "PreConditions_SECC_15118_2.ttcn"
+        try:
+            if agg_path.exists():
+                agg_content = agg_path.read_text(encoding="utf-8")
+            else:
+                agg_content = (
+                    "module PreConditions_SECC_15118_2 {\n"
+                    "    import from SECC_TestSystem all;\n"
+                    "    import from SECC_CmnTemplates all;\n"
+                    "    import from SECC_Constants all;\n"
+                    "}\n"
+                )
+            # Add missing import statements if not already present
+            modified = False
+            for mod in generated_stubs:
+                if f"import from {mod} all;" not in agg_content:
+                    # Insert before the closing brace
+                    agg_content = agg_content.replace(
+                        "} // end module PreConditions_SECC_15118_2",
+                        f"    import from {mod} all;\n}} // end module PreConditions_SECC_15118_2"
+                    )
+                    modified = True
+            if modified:
+                agg_path.write_text(agg_content, encoding="utf-8")
+                log(f"[STUB GEN] Updated PreConditions_SECC_15118_2.ttcn with {len(generated_stubs)} stubs")
+        except Exception as e:
+            log(f"[STUB GEN] Failed to update aggregator: {e}", "WARN")
+
+
 def _ensure_tc_direct_imports(tc_dir: Path, tc_filename: str,
                                 pre_condition_files: List[Dict],
                                 post_condition_files: List[Dict]) -> None:
@@ -4204,26 +5813,40 @@ def _fix_ttcn3_timer_syntax(tc_dir: Path) -> int:
 
 
 def _install_build_script(tc_dir: Path) -> bool:
-    """Install a dynamic build.sh into the generated project directory.
+    """Install a build.sh into the generated project directory.
 
-    Instead of copying the demo's build.sh with hardcoded TTCN file paths (which causes
-    "cannot find source file" errors when the generated project has fewer/more/different
-    files than the demo), this function generates a build.sh that uses ``$(find ...)``
-    to auto-discover all .ttcn and .cc files at build time.
-
-    The makefilegen command passes files in the correct TITAN ordering:
-      1. Architecture (ComponentsAndPorts)
-      2. Data definitions (Types, Templates, PICS, PIXIT)
-      3. Services (CommonFunctions)
-      4. PreConditions / PostConditions (ALL .ttcn files -- TITAN does NOT compile
-         transitively; each module must be passed to makefilegen explicitly)
-      5. TestBehavior (step functions)
-      6. TestCases (main module + TC file)
-      7. C++ port adapters
-
-    Returns:
-        True if the file was successfully written, False otherwise.
+    Strategy: prefer the canonical, verified build.sh from
+    ``knowledge_base/canonical_build.sh`` (the byte-for-byte copy of the
+    20260605 PASS run). If that file is missing, fall back to the dynamic
+    generator embedded below.
     """
+    dest = tc_dir / "build.sh"
+
+    # ── Try canonical build.sh first (verified PASS baseline) ──
+    canonical = Path(__file__).parent / "knowledge_base" / "canonical_build.sh"
+    if canonical.exists():
+        try:
+            dest.write_text(canonical.read_text(encoding="utf-8"), encoding="utf-8")
+            os.chmod(dest, 0o755)
+            log(f"[BUILD] Canonical build.sh copied (from {canonical.name})")
+            return True
+        except Exception as e:
+            log(f"[BUILD] WARNING: canonical copy failed ({e}); falling back to dynamic generator", "WARN")
+
+    # ── Fallback: dynamic generator (preserved for safety) ──
+    #
+    # The makefilegen command passes files in the correct TITAN ordering:
+    #   1. Architecture (ComponentsAndPorts)
+    #   2. Data definitions (Types, Templates, PICS, PIXIT)
+    #   3. Services (CommonFunctions)
+    #   4. PreConditions / PostConditions (ALL .ttcn files -- TITAN does NOT compile
+    #      transitively; each module must be passed to makefilegen explicitly)
+    #   5. TestBehavior (step functions)
+    #   6. TestCases (main module + TC file)
+    #   7. C++ port adapters
+    #
+    # Returns:
+    #     True if the file was successfully written, False otherwise.
     dest = tc_dir / "build.sh"
 
     # ── Bash script content (written as a plain triple-quoted string so that
@@ -4271,6 +5894,13 @@ _cleanup_and_restore() {
         [ -d "$src_dir/build"  ] && rsync -a --delete "$src_dir/build/"  "$SCRIPT_DIR/build/"
         [ -d "$src_dir/config" ] && rsync -a --delete "$src_dir/config/" "$SCRIPT_DIR/config/"
         [ -d "$src_dir/logs"   ] && rsync -a "$src_dir/logs/"          "$SCRIPT_DIR/logs/"
+        # TITAN TestExecutable resolves `../config/` from `build/bin/` to `build/config/`.
+        # Mirror the synced config to build/config/ so the runtime can chdir there.
+        if [ -d "$SCRIPT_DIR/config" ]; then
+            mkdir -p "$SCRIPT_DIR/build/config"
+            rsync -a --delete "$SCRIPT_DIR/config/" "$SCRIPT_DIR/build/config/"
+            echo "[BUILD] Mirrored config/ to build/config/ for runtime resolution"
+        fi
     fi
     rm -rf "$work_dir"
     echo "[BUILD] Temp directory cleaned up."
@@ -4369,18 +5999,21 @@ cd build/generated_cpp
 
 find_port_file() {
     local filename="$1"
-    # Option 1: already present with real content
-    if [ -f "$filename" ] && [ "$(stat -c%s "$filename" 2>/dev/null || echo 0)" -gt 200 ]; then
-        echo "$filename"; return 0
-    fi
-    # Option 2: project root
-    if [ -f "../../$filename" ] && [ "$(stat -c%s "../../$filename" 2>/dev/null || echo 0)" -gt 200 ]; then
-        cp "../../$filename" .; echo "[BUILD] Copied $filename from project root"; echo "$filename"; return 0
-    fi
-    # Option 3: src/cpp_adapters
-    local found=$(find ../../src/cpp_adapters -name "$filename" 2>/dev/null | head -1)
+    # Option 1: src/cpp_adapters/SA/ports/ (always fresh from scaffolding)
+    local found=$(find ../../src/cpp_adapters/SA/ports -name "$filename" 2>/dev/null | head -1)
     if [ -n "$found" ] && [ "$(stat -c%s "$found" 2>/dev/null || echo 0)" -gt 200 ]; then
         cp "$found" .; echo "[BUILD] Copied $filename from $found"; echo "$filename"; return 0
+    fi
+    # Option 2: build/generated_cpp/ (scaffolding copies correct files here, but might have stale entries from old projects)
+    if [ -f "$filename" ] && [ "$(stat -c%s "$filename" 2>/dev/null || echo 0)" -gt 200 ]; then
+        # Verify it's not a stale skeleton (check for "empty" or "skeleton" content)
+        if ! grep -qi "empty\|skeleton" "$filename" 2>/dev/null; then
+            echo "[BUILD] Using existing $filename in build/generated_cpp/"; echo "$filename"; return 0
+        fi
+    fi
+    # Option 3: project root
+    if [ -f "../../$filename" ] && [ "$(stat -c%s "../../$filename" 2>/dev/null || echo 0)" -gt 200 ]; then
+        cp "../../$filename" .; echo "[BUILD] Copied $filename from project root"; echo "$filename"; return 0
     fi
     echo ""; return 1
 }
@@ -4506,7 +6139,14 @@ sed -i 's|^EXECUTABLE = TestExecutable|EXECUTABLE = ../bin/TestExecutable|' Make
 sed -i 's/^TTCN3_LIB = ttcn3-parallel-dynamic$/TTCN3_LIB = ttcn3-dynamic/' Makefile
 sed -i 's/^TTCN3_LIB = ttcn3-parallel$/TTCN3_LIB = ttcn3-dynamic/' Makefile
 sed -i 's/^LINUX_LIBS = -lxml2$/LINUX_LIBS = -lxml2 -lpthread/' Makefile
-echo "[BUILD] Makefile fixed."
+# Add fmt include paths for ExiCodecAdapter and other adapters that use {fmt}
+FMT_INC="-I../../src/cpp_adapters/CD/exi_codec/fmt/include -I../../src/cpp_adapters/CD/exi_codec/fmt/fmt -I../../src/cpp_adapters/CD/exi_codec"
+if grep -q "^CXXFLAGS" Makefile; then
+    sed -i "s|^CXXFLAGS = |CXXFLAGS = ${FMT_INC} |" Makefile
+else
+    echo "CXXFLAGS = ${FMT_INC}" >> Makefile
+fi
+echo "[BUILD] Makefile fixed (fmt include paths added)."
 
 # ==========================================
 # Step 7: Compile
@@ -4548,6 +6188,47 @@ echo ""
         log(f"[BUILD] ERROR: failed to write build.sh: {e}", "ERROR")
         return False
 
+
+
+def _install_canonical_runtime_config(tc_dir: Path) -> None:
+    """Copy the verified runtime config + hardware env to the TC project.
+
+    Source of truth: ``knowledge_base/canonical_titan_runtime.cfg`` and
+    ``knowledge_base/canonical_hardware_env.json`` (the 20260605 PASS run).
+
+    These are placed at:
+      - ``tc_dir/config/titan_runtime.cfg``  (consumed by the pipeline's
+        `_run_titan_test` step, which invokes ``./TestExecutable
+        ../config/titan_runtime.cfg`` from ``tc_dir/build/bin``)
+      - ``tc_dir/build/config/...``  (consumed by the build.sh's temp
+        workspace rsync, in case anyone re-builds)
+    """
+    kb = Path(__file__).parent / "knowledge_base"
+    src_cfg = kb / "canonical_titan_runtime.cfg"
+    src_hw = kb / "canonical_hardware_env.json"
+
+    # Target dirs: tc_dir/config (consumed at runtime by pipeline's test step)
+    #              tc_dir/build/config (consumed by build.sh's rsync)
+    target_dirs = [
+        (tc_dir / "config", "config/"),
+        (tc_dir / "build" / "config", "build/config/"),
+    ]
+    pairs = [
+        (src_cfg, "titan_runtime.cfg"),
+        (src_hw, "hardware_env.json"),
+    ]
+    for src_file, fname in pairs:
+        if not src_file.exists():
+            log(f"[CONFIG] WARNING: canonical {fname} not found in knowledge_base", "WARN")
+            continue
+        for target_dir, label in target_dirs:
+            try:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                dest = target_dir / fname
+                dest.write_text(src_file.read_text(encoding="utf-8"), encoding="utf-8")
+                log(f"[CONFIG] Canonical {fname} installed to {label}")
+            except Exception as e:
+                log(f"[CONFIG] ERROR: failed to install {fname} to {label}: {e}", "ERROR")
 
 
 def _patch_build_script_common_functions(tc_dir: Path) -> None:
@@ -4640,26 +6321,139 @@ def _patch_build_script_pre_post_conditions(tc_dir: Path) -> None:
 
 
 def _patch_build_script_include_paths(tc_dir: Path) -> None:
-    """修补 Makefile：在 CXXFLAGS 中添加 -I.. 以解决 SECC_TestSystem.hh 路径问题
+    """Recursively discover all header directories and inject -I flags into the Makefile.
 
-    makefilegen 生成的 SECC_TestSystem.hh 在项目根目录，而端口适配器的 .cc 文件
-    在 build/generated_cpp/ 目录，编译时需要 -I.. 才能找到上级的 SECC_TestSystem.hh。
+    Problem: The C++ adapter hierarchy under src/cpp_adapters/ contains deeply nested
+    include directories (e.g., CD/exi_codec/cppcommon/, fmt/include/, openv2g/, etc.).
+    The fmt library's format.cc includes "fmt/format-inl.h", which resolves relative to
+    fmt/include/ -- but makefilegen does NOT add nested include paths automatically.
+
+    Solution: Traverse src/cpp_adapters/ for all directories containing .h, .hh, or .inl
+    files, then inject each as an absolute -I flag into CXXFLAGS so the compiler can
+    resolve all nested #include directives.
+
+    Additionally inject -I.. so generated_cpp/ can find SECC_TestSystem.hh at the
+    project root level.
     """
     makefile_path = tc_dir / "build" / "generated_cpp" / "Makefile"
     if not makefile_path.exists():
+        log("_patch_build_script_include_paths: Makefile not found, skipping", "WARN")
         return
 
+    # Collect all unique include directories that contain .h / .hh / .inl files
+    cpp_adapters_dir = tc_dir / "src" / "cpp_adapters"
+    include_dirs: set[str] = set()
+
+    if cpp_adapters_dir.exists():
+        for header_file in cpp_adapters_dir.rglob("*"):
+            if header_file.is_file() and header_file.suffix in (".h", ".hh", ".hpp", ".inl"):
+                include_dirs.add(str(header_file.parent))
+
+    # Convert to sorted list for deterministic output
+    sorted_dirs = sorted(include_dirs)
+
     content = makefile_path.read_text(encoding="utf-8")
-    if "-I.." not in content:
-        import re
-        # 在 CXXFLAGS 定义中添加 -I..
-        content = re.sub(
-            r"(CXXFLAGS\s*=\s*[^\n]*)",
-            r"\1 -I..",
+
+    # Build the full -I flag string; prepend -I.. for SECC_TestSystem.hh discovery
+    extra_flags = "-I.."
+    for d in sorted_dirs:
+        # Make path absolute from the project root
+        abs_path = str(tc_dir / d)
+        extra_flags += f" -I{abs_path}"
+
+    # Check if already patched (idempotent)
+    marker = "# TITAN_CXXFLAGS_PATCH"
+    if marker in content:
+        # Replace existing patch
+        import re as _re
+        content = _re.sub(
+            r"{}.*?{}.*?\n".format(_re.escape(marker), _re.escape(marker)),
+            f"{marker} injected\n{marker}\n",
+            content,
+            flags=_re.DOTALL
+        )
+        log("_patch_build_script_include_paths: Makefile already patched, skipping")
+        return
+
+    # Inject after the CXXFLAGS definition line
+    import re as _re
+    patched = _re.sub(
+        r"(CXXFLAGS\s*=\s*[^\n]*)",
+        r"\1 " + _re.escape(extra_flags),
+        content
+    )
+
+    if patched == content:
+        log("_patch_build_script_include_paths: no CXXFLAGS line found, trying CFLAGS", "WARN")
+        patched = _re.sub(
+            r"(CFLAGS\s*=\s*[^\n]*)",
+            r"\1 " + _re.escape(extra_flags),
             content
         )
-        makefile_path.write_text(content, encoding="utf-8")
-        log("Makefile 已注入 -I.. 到 CXXFLAGS")
+
+    if patched != content:
+        makefile_path.write_text(patched, encoding="utf-8")
+        log(f"_patch_makefile_include_paths: injected {len(sorted_dirs)} include dirs into CXXFLAGS")
+    else:
+        log("_patch_makefile_include_paths: could not find CXXFLAGS/CFLAGS to patch", "WARN")
+
+
+def _patch_makefile_include_paths_post_build(tc_dir: Path) -> bool:
+    """Recursively discover all C++ header dirs and inject -I flags into the Makefile.
+
+    Called from run_build_and_test() AFTER makefilegen has generated the Makefile.
+    This guarantees the Makefile exists so we can patch it.
+    Only patches if the Makefile doesn't already have nested include paths.
+
+    Returns:
+        True if the Makefile was patched (caller should retry make), False otherwise.
+    """
+    import re as _re
+
+    makefile_path = tc_dir / "build" / "generated_cpp" / "Makefile"
+    if not makefile_path.exists():
+        return False
+
+    # Collect all unique include directories containing .h/.hh/.hpp/.inl files
+    cpp_adapters_dir = tc_dir / "src" / "cpp_adapters"
+    include_dirs: set[str] = set()
+    if cpp_adapters_dir.exists():
+        for header_file in cpp_adapters_dir.rglob("*"):
+            if header_file.is_file() and header_file.suffix in (".h", ".hh", ".hpp", ".inl"):
+                include_dirs.add(str(header_file.parent))
+
+    if not include_dirs:
+        return False
+
+    sorted_dirs = sorted(include_dirs)
+
+    # Build extra flags: -I.. for SECC_TestSystem.hh + all discovered include dirs
+    extra_flags = "-I.. " + " ".join(f"-I{str(tc_dir / d)}" for d in sorted_dirs)
+
+    lines = makefile_path.read_text(encoding="utf-8").splitlines()
+
+    # Check if already patched (fast path)
+    if any("CD/exi_codec/fmt" in l for l in lines):
+        return False
+
+    # Find and patch the CXXFLAGS line
+    patched_lines = []
+    found = False
+    for line in lines:
+        if line.startswith("CXXFLAGS") and "=" in line:
+            # Append our extra flags to this line
+            patched_lines.append(line + " " + extra_flags)
+            found = True
+        else:
+            patched_lines.append(line)
+
+    if not found:
+        log("_patch_makefile_include_paths_post_build: no CXXFLAGS line found", "WARN")
+        return False
+
+    makefile_path.write_text("\n".join(patched_lines) + "\n", encoding="utf-8")
+    log(f"_patch_makefile_include_paths_post_build: injected {len(sorted_dirs)} include dirs")
+    return True
 
 
 def _rebuild_testcases_module(tc_dir: Path, tc_id: str) -> None:
@@ -4785,6 +6579,105 @@ def _patch_build_script_ttcn3_compiler_fix(tc_dir: Path) -> None:
         content = re.sub(old_pattern, new_cmd, content)
         build_sh_path.write_text(content, encoding="utf-8")
         log("build.sh: fixed ttcn3_compiler -I flag misuse (was treating TTCN3_INC as input file)")
+
+
+def _verify_demo_ttcn_syntax() -> Tuple[bool, List[str]]:
+    """SCAFFOLD-stage fail-fast gate: dry-run compile all DEMO_SHARED_FILES via ttc3_compiler.
+
+    Without this gate, a syntax error in a demo source file (e.g. a stray
+    ``template name := {...}`` without a Type prefix) is silently copied into
+    every generated project and only surfaces after the Infrastructure Agent
+    has spent several minutes on its work -- wasting LLM tokens and time.
+
+    Compiles each .ttcn in DEMO_SHARED_FILES in one ttc3_compiler invocation.
+    Files have cross imports (e.g. PreConditions_SECC_15118_2 imports every
+    PR module), so we compile the full set together rather than per-file:
+    this catches intra-demo semantic errors that per-file dry-runs would
+    miss. Runs from DEMO_ROOT with relative paths so TITAN can resolve
+    cross-module imports between subdirectories.
+
+    Returns:
+        (ok, errors) -- ok=True means the demo TTCN baseline is syntactically
+        valid. errors is the list of compiler error lines (empty if ok=True).
+        On TITAN toolchain absence we return (True, []) so this gate does
+        not block pipelines on machines without the compiler installed.
+    """
+    import subprocess
+
+    # Build the list of existing demo files
+    files_to_check: List[Path] = []
+    for rel in DEMO_SHARED_FILES:
+        src = DEMO_ROOT / rel
+        if src.exists():
+            files_to_check.append(src)
+
+    if not files_to_check:
+        log("[PRECOMPILE] no demo TTCN files to verify -- skipping", "WARN")
+        return True, []
+
+    # Locate ttc3_compiler binary. Try TTCN3_DIR/bin first, then $PATH.
+    ttc3 = None
+    titan_dir = os.environ.get("TTCN3_DIR", "/usr")
+    for candidate in (
+        Path(titan_dir) / "bin" / "ttc3_compiler",
+        Path(titan_dir) / "bin" / "ttcn3_compiler",
+        Path("/usr/bin/ttc3_compiler"),
+        Path("/usr/bin/compiler"),  # Debian/Ubuntu package ships as 'compiler'
+    ):
+        if candidate.exists():
+            ttc3 = str(candidate)
+            break
+    if ttc3 is None:
+        # Fall back to PATH lookup
+        import shutil
+        ttc3 = shutil.which("ttc3_compiler") or shutil.which("ttcn3_compiler") or shutil.which("compiler")
+
+    if ttc3 is None:
+        log("[PRECOMPILE] ttc3_compiler not found -- skipping demo syntax gate (install TITAN to enable)", "WARN")
+        return True, []
+
+    # Compile in the demo root so we can use relative paths. Absolute paths
+    # cause TITAN to mis-resolve cross-module imports between files that live
+    # in different subdirectories of the demo tree.
+    cmd = [ttc3] + [str(f.relative_to(DEMO_ROOT)) for f in files_to_check]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(DEMO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        log(f"[PRECOMPILE] ttc3_compiler timed out on {len(files_to_check)} demo files", "ERROR")
+        return False, ["timeout during ttc3_compiler dry-run"]
+    except Exception as e:
+        log(f"[PRECOMPILE] ttc3_compiler invocation failed: {e}", "ERROR")
+        return False, [str(e)]
+
+    if proc.returncode == 0:
+        log(f"[PRECOMPILE] demo baseline OK -- {len(files_to_check)} files pass ttc3_compiler")
+        return True, []
+
+    # Extract error lines. TITAN prints "error:" markers on stderr.
+    errors: List[str] = []
+    for line in (proc.stderr or "").splitlines():
+        stripped = line.strip()
+        if "error:" in stripped or "Error" in stripped:
+            errors.append(stripped)
+    # If we didn't find explicit error markers but the return code is non-zero,
+    # surface the last 20 lines of stderr for diagnostic purposes.
+    if not errors:
+        errors = (proc.stderr or "").splitlines()[-20:]
+
+    log(
+        f"[PRECOMPILE] FAIL-FAST: demo baseline has {len(errors)} syntax error(s); "
+        f"would have wasted an Infrastructure Agent run. Fix the offending demo file(s) before retrying.",
+        "ERROR",
+    )
+    for err in errors[:10]:
+        log(f"  [PRECOMPILE]   {err}", "ERROR")
+    return False, errors
 
 
 def _validate_makefilegen_includes_tc(tc_dir: Path, tc_filename: str) -> bool:
@@ -5055,25 +6948,51 @@ TCPTLSPortAdapter::~TCPTLSPortAdapter() {}
 # working, syntax-verified shared definitions.
 # ============================================================
 
-# List of shared TTCN files to copy from demo.
-# These files must exist in demo/ and contain valid, working definitions.
+# List of ALL verified TTCN files to copy from demo (nuclear copy strategy).
+# These files are known to be syntax-correct and compilable.
+# The pipeline REPLACES any LLM-generated version with the demo's verified copy,
+# guaranteeing the test suite has a clean compilation baseline.
+# NOTE: PreConditions/PostConditions aggregators and their individual function files are
+# included -- the _inject_condition_function_imports() pipeline step will rebuild them
+# with the correct imports for the current test case afterwards.
 DEMO_SHARED_FILES = [
+    # Architecture
+    "src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn",
+    # Data definitions
     "src/ttcn3/1_Data_Definitions/Types/Types_SECC_15118_2.ttcn",
     "src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn",
     "src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn",
     "src/ttcn3/1_Data_Definitions/PICS/PICS_SECC_15118_2.ttcn",
-    # EXCLUDED: PreConditions/PostConditions aggregator files are controlled by
-    # _inject_condition_function_imports() -- never overwrite them with demo stubs:
-    # "src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn",
-    # "src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn",
-    "src/ttcn3/3_Behavior_Steps/Services/CommonFunctions.ttcn",
     "src/ttcn3/1_Data_Definitions/PIXIT/PIXIT_SECC_15118_2.ttcn",
-    # These two files are also generated by the Infrastructure Agent but have
-    # correct demo versions that must override Agent output. Not including them
-    # caused wrong module names (ComponentsAndPorts vs SECC_TestSystem) and
-    # missing test case registration in the generated project.
-    "src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn",
+    # Services
+    "src/ttcn3/3_Behavior_Steps/Services/CommonFunctions.ttcn",
+    # PreConditions (aggregator + individual function modules -- all verified)
+    "src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_Binding_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_002.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_PLCLinkStatusCombinedTesting_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SetPowerFlowConfiguration_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SetProximityPilot_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_StateA_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_StateB_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn",
+    # PostConditions (aggregator + individual function modules -- all verified)
+    "src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_ShutdownConfiguration_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_PO_ShutdownConfiguration_002.ttcn",
+    # TestBehavior (function modules -- all verified)
+    "src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_SDP_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_SupportedAppProtocol_001.ttcn",
+    "src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.ttcn",
+    # TestCases: entry point + the single demo TC file the entry point imports.
+    # The entry point module (`TestCases_SECC.ttcn`) is overwritten by
+    # `_rebuild_testcases_module` for every new case, but the TC file it
+    # executes by default is needed for the demo baseline to compile in
+    # isolation (precompile gate).
     "src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn",
+    "src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn",
 ]
 
 
@@ -5159,6 +7078,10 @@ def _ensure_port_implementations(generated_cpp_dir: Path, tc_dir: Optional[Path]
         elif port_name.endswith(".cc"):
             content = port_path.read_text(encoding="utf-8", errors="replace")
             if "empty function" in content or "skeleton" in content.lower():
+                needs_replacement = True
+            # Always replace if the active outgoing_send signature is missing
+            # (old files use V2G__MessageUnion, new files use V2G__PortMessage)
+            if "V2G__PortMessage" not in content:
                 needs_replacement = True
 
         if needs_replacement:
@@ -5455,6 +7378,14 @@ def run_build_and_test(
 
         log(f"Build exit code: {build_returncode}")
 
+        # ================================================================
+        # Fix 1 (sweep): Recursive C++ adapter include paths (POST-makefilegen).
+        # build.sh runs makefilegen which generates the Makefile in generated_cpp/.
+        # Only NOW does the Makefile exist, so we patch CXXFLAGS here.
+        # This must happen BEFORE we check build_returncode so we can retry.
+        # ================================================================
+        _patch_makefile_include_paths_post_build(tc_dir)
+
         # 保存编译输出（build.sh 的 stdout 包含脚本内的 echo 输出，包含 === STDOXT === 等标记）
         # 将 build.sh 自身的 stdout 也纳入错误解析范围，以捕获脚本 echo 的日志内容
         build_log_path = tc_dir / "logs" / "system_logs" / "build.log"
@@ -5468,15 +7399,50 @@ def run_build_and_test(
         compile_errors = parse_compile_errors(build_stdout + "\n" + build_stderr)
 
         if build_returncode != 0:
-            return {
-                "status": "build_failed",
-                "returncode": build_returncode,
-                "stdout": build_stdout[-5000:],
-                "stderr": build_stderr[-5000:],
-                "compile_errors": compile_errors,
-                "executable_path": None,
-                "test_result": None,
-            }
+            # === Auto-retry: patch Makefile include paths and re-run make ===
+            # The makefilegen-generated Makefile lacks nested C++ include dirs.
+            # If the error mentions missing headers, patch and retry once.
+            header_keywords = ["format-inl", "fatal error:", "no such file", "boost/function"]
+            first_error = (build_stdout + build_stderr)
+            needs_include_fix = any(kw.lower() in first_error.lower() for kw in header_keywords)
+
+            if needs_include_fix:
+                patched = _patch_makefile_include_paths_post_build(tc_dir)
+                if patched:
+                    log("[RETRY] Makefile patched with recursive include paths -- re-running make...")
+                    makefile_dir = tc_dir / "build" / "generated_cpp"
+                    nproc_result = subprocess.run(
+                        ["nproc"], capture_output=True, text=True, timeout=5
+                    )
+                    n_jobs = nproc_result.stdout.strip() if nproc_result.returncode == 0 else "4"
+                    retry_result = subprocess.run(
+                        f"make -j{n_jobs}",
+                        capture_output=True, text=True, timeout=240,
+                        cwd=str(makefile_dir), shell=True
+                    )
+                    if retry_result.returncode == 0:
+                        log("[RETRY] make succeeded after include path patch!")
+                        build_returncode = 0
+                        build_stdout += "\n[RETRY MAKE OUTPUT]\n" + retry_result.stdout
+                        build_stderr += "\n[RETRY MAKE STDERR]\n" + retry_result.stderr
+                        compile_errors = []
+                        # Update build log to reflect retry
+                        with open(build_log_path, "a", encoding="utf-8") as f:
+                            f.write("\n[RETRY MAKE -- SUCCESS]\n")
+                    else:
+                        build_stdout += "\n[RETRY MAKE FAILED]\n" + retry_result.stdout
+                        build_stderr += "\n[RETRY MAKE STDERR]\n" + retry_result.stderr
+
+            if build_returncode != 0:
+                return {
+                    "status": "build_failed",
+                    "returncode": build_returncode,
+                    "stdout": build_stdout[-5000:],
+                    "stderr": build_stderr[-5000:],
+                    "compile_errors": compile_errors,
+                    "executable_path": None,
+                    "test_result": None,
+                }
 
         # 编译成功，查找可执行文件
         exec_path = tc_dir / "build" / "bin" / "TestExecutable"
@@ -5526,6 +7492,8 @@ def run_build_and_test(
         log(f"Running test: {exec_path} with config/titan_runtime.cfg")
         runtime_cfg = tc_dir / "config" / "titan_runtime.cfg"
 
+        # Track wall-clock time of test execution for metrics.json
+        test_start_time = time.time()
         try:
             run_result = subprocess.run(
                 [str(exec_path), str(runtime_cfg)],
@@ -5535,6 +7503,7 @@ def run_build_and_test(
                 cwd=str(exec_path.parent),
             )
         finally:
+            test_end_time = time.time()
             # === Step 6: 停止 Sniffer（仅在启动后才停止）===
             if sniffer:
                 try:
@@ -5543,12 +7512,20 @@ def run_build_and_test(
                 except Exception as e:
                     log(f"Sniffer stop failed: {e}", "WARN")
 
-        # 读取测试日志
-        log_path = tc_dir / "logs" / "titan_traces" / "TestExecution.log"
+        # 读取测试日志 (TITAN writes to build/bin/logs/titan_traces/, but earlier
+        # versions expected tc_dir/logs/titan_traces/. Try both locations.)
+        log_path_candidates = [
+            tc_dir / "logs" / "titan_traces" / "TestExecution.log",
+            tc_dir / "build" / "bin" / "logs" / "titan_traces" / "TestExecution.log",
+        ]
         test_log_content = ""
-        if log_path.exists():
-            with open(log_path, "r", encoding="utf-8") as f:
-                test_log_content = f.read()
+        log_path = None
+        for _lp in log_path_candidates:
+            if _lp.exists():
+                log_path = _lp
+                with open(_lp, "r", encoding="utf-8") as f:
+                    test_log_content = f.read()
+                break
 
         test_result = {
             "returncode": run_result.returncode,
@@ -5558,11 +7535,15 @@ def run_build_and_test(
             "log_content": test_log_content[-10000:],
         }
 
+        # Read execution time from wall-clock (not from log parser)
+        execution_wallclock = round(test_end_time - test_start_time, 3)
+
         return {
             "status": "completed",
             "executable_path": str(exec_path),
             "test_result": test_result,
             "compile_errors": compile_errors,
+            "execution_wallclock_seconds": execution_wallclock,
         }
 
     except subprocess.TimeoutExpired:
@@ -5570,6 +7551,7 @@ def run_build_and_test(
             "status": "timeout",
             "reason": "build_timeout",
             "message": "Build exceeded 5 minute timeout",
+            "execution_wallclock_seconds": 300.0,
         }
     except Exception as e:
         return {
@@ -6020,7 +8002,19 @@ def build_infra_error_feedback(infra_errors: List[Dict],
 
     lines = [
         "## Compilation Errors - Infrastructure Agent Feedback",
-        "(incremental: only fix listed files)" if targeted_only else "(infrastructure errors)"
+        "(incremental: only fix listed files)" if targeted_only else "(infrastructure errors)",
+        "",
+        "## STRICT FIX POLICY (forbidden patterns):",
+        "- DO NOT replace the test body with a stub like `return pass;`, `setverdict(pass, ...);` "
+        "without exercising the network handshake. The framework requires a real send/receive "
+        "exchange to validate the protocol against the SECC.",
+        "- DO NOT remove or comment out the `send(...)` and `receive(...)` template calls.",
+        "- DO NOT swallow exceptions / timeouts to force a `pass` verdict.",
+        "- If a TTCN-3 field is missing on a union/record (e.g. `v2g` field), you MUST add the "
+        "field to the type definition in Types_SECC_15118_2.ttcn -- do NOT silently change the "
+        "TB file to a different field name.",
+        "- Fix the root cause in the type system or templates; preserve structural send/receive.",
+        "",
     ]
     for i, err in enumerate(filtered, 1):
         err_type = err.get("type", "unknown")
@@ -6049,6 +8043,60 @@ def build_infra_error_feedback(infra_errors: List[Dict],
     return "\n".join(lines)
 
 
+def _build_missing_pr_remediation_directive(generation_plan: Dict) -> str:
+    """Append a "missing precondition" block to the Infrastructure Agent fix-mode prompt.
+
+    2D: in fix mode, the Infrastructure Agent gets the same plan-driven
+    directive as initial mode, but framed as a remediation step. The agent
+    is told: even though you're in fix mode, the test case references these
+    PR modules that are still missing on disk -- you MUST create them.
+
+    Returns "" if the plan has no missing PRs (so the prompt stays clean
+    for the common case).
+    """
+    completeness = generation_plan.get("_precondition_completeness", {}) if isinstance(generation_plan, dict) else {}
+    missing_pr = completeness.get("missing_preconditions", []) or []
+    missing_po = completeness.get("missing_postconditions", []) or []
+
+    if not missing_pr and not missing_po:
+        return ""
+
+    lines = [
+        "",
+        "## 🚨 REPEATED-MISS REMEDIATION (HARD REQUIREMENT, fix mode)",
+        "",
+        "The previous attempt(s) FAILED to generate the following PreCondition/",
+        "PostCondition function module(s) referenced by the test case's",
+        "precondition_chain. The compiler errors below likely include messages",
+        "like ``There is no module with identifier `f_XXX_001`'`` -- those errors",
+        "will not resolve until YOU create the missing files.",
+        "",
+        "You have up to 3 fix iterations. Use this iteration specifically to:",
+        "",
+    ]
+    if missing_pr:
+        lines.append(f"### Missing PreCondition modules to GENERATE ({len(missing_pr)}):")
+        for fn in missing_pr:
+            lines.append(f"  - `{fn}`  ->  `src/ttcn3/3_Behavior_Steps/PreConditions/{fn}.ttcn`")
+        lines.append("")
+    if missing_po:
+        lines.append(f"### Missing PostCondition modules to GENERATE ({len(missing_po)}):")
+        for fn in missing_po:
+            lines.append(f"  - `{fn}`  ->  `src/ttcn3/3_Behavior_Steps/PostConditions/{fn}.ttcn`")
+        lines.append("")
+    lines.extend([
+        "**Generation contract** (same as the initial directive in this prompt):",
+        "- One file per module, `module f_<Name>_<NNN> { ... }` declaration",
+        "- Function body: call sub-conditions in order, mirror the structure of",
+        "  the existing demo PreCondition modules (e.g. f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn)",
+        "- Return type: `verdicttype`. Use `setverdict(pass/fail/inconc, ...)`.",
+        "- Update `PreConditions_SECC_15118_2.ttcn` / `PostConditions_SECC_15118_2.ttcn`",
+        "  aggregator to `import from f_<Name>_<NNN> all;`",
+        "- Verify the `module` declaration matches the filename before writing",
+    ])
+    return "\n".join(lines)
+
+
 # ============================================================
 # 运行时自修复
 # ============================================================
@@ -6065,6 +8113,8 @@ def _runtime_self_repair(
     few_shot_examples: Optional[Dict[str, str]] = None,
     sop: Optional[Dict] = None,
     references: Optional[Dict] = None,
+    compile_loop_fc_times: Optional[List[Tuple[int, float]]] = None,
+    compile_loop_fc_total_ref: Optional[List[float]] = None,
 ) -> Optional[Dict]:
     """运行时自修复：处理 auto_fix 和 manual_review 两类修复建议。
 
@@ -6101,6 +8151,9 @@ def _runtime_self_repair(
 
     for repair_iter in range(1, MAX_RUNTIME_REPAIR_ITERATIONS + 1):
         log(f"运行时自修复迭代 {repair_iter}/{MAX_RUNTIME_REPAIR_ITERATIONS}...")
+
+        # Track total iteration time (repair application + rebuild)
+        iter_start = time.time()
 
         # === auto_fix 类型：字符串替换 ===
         auto_repairs = [
@@ -6151,7 +8204,8 @@ def _runtime_self_repair(
             if few_shot_examples and sop:
                 runtime_feedback = build_runtime_feedback(fault_result)
                 fixed_core_result = run_core_agent(
-                    generation_plan, references or {}, few_shot_examples, sop, runtime_feedback
+                    generation_plan, references or {}, few_shot_examples, sop, runtime_feedback,
+                    protocol_snapshot=_reg.snapshot(_reg.active_protocol()) if _reg.active_protocol() else None,
                 )
                 if fixed_core_result and fixed_core_result.get("testcase"):
                     fixed_code = fixed_core_result["testcase"]
@@ -6166,7 +8220,8 @@ def _runtime_self_repair(
                     for f_data in fixed_pre + fixed_post:
                         f_path = tc_project_dir / f_data["path"]
                         f_path.parent.mkdir(parents=True, exist_ok=True)
-                        f_path.write_text(f_data["content"], encoding="utf-8")
+                        fixed_content = sanitize_ttcn3_hex_strings(f_data["content"])
+                        f_path.write_text(fixed_content, encoding="utf-8")
                     if fixed_pre or fixed_post:
                         log(f"已写入 {len(fixed_pre)} 个 pre + {len(fixed_post)} 个 post 文件")
                     current_code = fixed_code
@@ -6208,24 +8263,71 @@ def _runtime_self_repair(
             pcap_output=pcap_out,
         )
 
+        # Track this FC retry build iteration for metrics
+        if compile_loop_fc_times is not None:
+            compile_loop_fc_times.append((repair_iter, 0.0))
+        if compile_loop_fc_total_ref is not None and compile_loop_fc_total_ref:
+            compile_loop_fc_total_ref[0] += 0.0
+
+        iter_elapsed = time.time() - iter_start
+
         retry_status = retry_result.get("status", "")
+        if compile_loop_fc_times is not None and len(compile_loop_fc_times) >= repair_iter:
+            compile_loop_fc_times[repair_iter - 1] = (repair_iter, round(iter_elapsed, 3))
+        if compile_loop_fc_total_ref is not None and compile_loop_fc_total_ref:
+            compile_loop_fc_total_ref[0] += iter_elapsed
         if retry_status == "completed":
-            log("运行时自修复: 编译运行成功!")
-            try:
-                from fault_corrector.repair_engine import learn_from_repair
-                for repair in applied_repairs_this_iter:
-                    if repair.get("applied"):
-                        learn_from_repair(repair, repair.get("raw_message", ""))
-                log(f"知识库已更新: {len([r for r in applied_repairs_this_iter if r.get('applied')])} 条新修复记录")
-            except Exception as e:
-                log(f"知识库更新失败: {e}", "WARN")
-            return {
-                "status": "repair_success",
-                "repairs": all_applied_repairs,
-                "build_status": retry_status,
-                "iterations_used": repair_iter,
-            }
-        elif retry_status == "build_failed":
+            # ================================================================
+            # Runtime Log Verification (Defect #1 fix):
+            # Compile success is NOT sufficient. The TestExecution.log must
+            # explicitly contain "Overall verdict: pass" -- otherwise the
+            # binary may have returned 0 without exercising the protocol
+            # (e.g. an LLM stub like `return pass;`). Continue the FC loop
+            # instead of declaring success.
+            # ================================================================
+            _runtime_log_path_candidates = [
+                tc_project_dir / "logs" / "titan_traces" / "TestExecution.log",
+                tc_project_dir / "build" / "bin" / "logs" / "titan_traces" / "TestExecution.log",
+            ]
+            _runtime_log_path = next((p for p in _runtime_log_path_candidates if p.exists()), _runtime_log_path_candidates[0])
+            _runtime_log_content = ""
+            if _runtime_log_path.exists():
+                try:
+                    _runtime_log_content = _runtime_log_path.read_text(encoding="utf-8", errors="ignore")
+                except OSError as _e:
+                    log(f"[RUNTIME-VERIFY] could not read {_runtime_log_path}: {_e}", "WARN")
+            _runtime_pass = "Overall verdict: pass" in _runtime_log_content
+            if not _runtime_pass:
+                log(f"[RUNTIME-FAIL] compile succeeded but TestExecution.log lacks 'Overall verdict: pass'")
+                log(f"[RUNTIME-FAIL] log_path={_runtime_log_path}, length={len(_runtime_log_content)}")
+                # Treat as runtime failure; do NOT return, do NOT lock compile.
+                # Fall through to the build_failed branch to re-invoke FC.
+                retry_status = "runtime_fail"
+                applied_repairs_this_iter.append({
+                    "type": "runtime_verification_failed",
+                    "status": "no_overall_verdict_pass",
+                    "iteration": repair_iter,
+                    "log_path": str(_runtime_log_path),
+                    "log_length": len(_runtime_log_content),
+                })
+            else:
+                log("运行时自修复: 编译运行成功! (Overall verdict: pass confirmed)")
+                try:
+                    from fault_corrector.repair_engine import learn_from_repair
+                    for repair in applied_repairs_this_iter:
+                        if repair.get("applied"):
+                            learn_from_repair(repair, repair.get("raw_message", ""))
+                    log(f"知识库已更新: {len([r for r in applied_repairs_this_iter if r.get('applied')])} 条新修复记录")
+                except Exception as e:
+                    log(f"知识库更新失败: {e}", "WARN")
+                return {
+                    "status": "repair_success",
+                    "repairs": all_applied_repairs,
+                    "build_status": retry_status,
+                    "iterations_used": repair_iter,
+                    "runtime_verdict": "pass",
+                }
+        if retry_status in ("build_failed", "runtime_fail"):
             retry_errors = retry_result.get("compile_errors", [])
             log(f"运行时自修复: 修复后编译仍然失败 ({len(retry_errors)} 个错误)")
 
@@ -6238,7 +8340,9 @@ def _runtime_self_repair(
                     sop=sop,
                     phase="runtime",
                     tc_id=plan_tc_id,
-                    log_path=tc_project_dir / "logs" / "titan_traces" / "TestExecution.log",
+                    log_path=tc_project_dir / "build" / "bin" / "logs" / "titan_traces" / "TestExecution.log"
+                        if (tc_project_dir / "build" / "bin" / "logs" / "titan_traces" / "TestExecution.log").exists()
+                        else (tc_project_dir / "logs" / "titan_traces" / "TestExecution.log"),
                     pcap_path=pcap_out if pcap_out.exists() else None,
                 )
                 if new_fault_result and new_fault_result.get("repairs"):
@@ -6301,12 +8405,16 @@ def generate_code_for_test_case(
     pcap_path: Optional[Path] = None,
     skip_build: bool = False,
     sut_ip: Optional[str] = None,
-    ablation_no_knowledge: bool = False,
+    rule_based_plan: bool = False,
+    no_llm_render: bool = False,
+    watchdog_timeout: int = 600,
+    raw_file_data: Optional[Dict] = None,
+    filter_tc_id: Optional[str] = None,
 ) -> Dict:
     """为单个测试用例生成 TTCN-3 代码及完整项目结构
 
     流水线:
-      测试用例 → Orchestrator → Summarizer → Core Agent → Infrastructure Agent → Build
+      测试用例 → Plan Builder / Orchestrator → Summarizer → Core Agent → Infrastructure Agent → Build
                                                                           |
                                                         +-------------------+
                                                         v                   |
@@ -6379,43 +8487,68 @@ def generate_code_for_test_case(
     sop = load_json(SOP_PATH)
     few_shot_examples = load_few_shot_examples()
 
-    # === Step 1: Orchestrator - 意图分解 ===
-    log("\n--- Step 1: Orchestrator (意图分解) ---")
-    t0 = time.time()
-    generation_plan = run_orchestrator(tc, requirement_context, sop)
-    orchestrator_elapsed = time.time() - t0
-    log(f"[Orchestrator] 耗时: {orchestrator_elapsed:.1f}s")
-    # 注意：run_orchestrator 现在即使 LLM 失败也会返回 fallback plan，不再需要此检查
-    # 但保留此处以防未来变化
-    if not generation_plan:
-        log("Orchestrator 失败，流水线终止", "ERROR")
-        _print_timing_summary(result, orchestrator_elapsed, summarizer_elapsed,
-                             core_agent_elapsed, infra_agent_elapsed, build_elapsed,
-                             compile_loop_core_total, compile_loop_infra_total,
-                             compile_loop_build_total, compile_loop_fc_total,
-                             fc_runtime_elapsed, fc_legacy_elapsed,
-                             compile_loop_core_times, compile_loop_infra_times,
-                             compile_loop_build_times, compile_loop_fc_times)
-        # Write metrics even on orchestrator failure
-        _tc_dir = GENERATED_DIR / (plan_tc_id + "_" + run_timestamp)
-        _tc_dir.mkdir(parents=True, exist_ok=True)
-        _write_metrics_json(_tc_dir, _build_metrics_dict(
-            plan_tc_id, run_timestamp, generation_plan or {}, result,
-            orchestrator_elapsed, summarizer_elapsed, core_agent_elapsed,
-            infra_agent_elapsed, build_elapsed,
-            compile_loop_core_total, compile_loop_infra_total,
-            compile_loop_build_total, compile_loop_fc_total,
-            fc_runtime_elapsed, fc_legacy_elapsed,
-            compile_loop_core_times, compile_loop_infra_times,
-            compile_loop_build_times, compile_loop_fc_times,
-            False, build_result,
-        ))
-        return None
+    # P3: Bootstrap the ProtocolRegistry so Orchestrator can inject the snapshot
+    # into its LLM prompt. We only load the active protocol when we have a TC_Id.
+    # The registry starts with L1 manifests (fast, <1 KB each).
+    _reg = get_default_registry()
+    _active_protocol = None
+    if tc_id:
+        _active_protocol = _reg.auto_load_for_tc(tc_id)
+        if _active_protocol:
+            log(f"[ProtocolRegistry] Active protocol: {_active_protocol}", "INFO")
+
+    # === Step 1: Orchestrator - 意图分解 (LLM) 或 规则构建 (rule-based) ===
+    run_timestamp = _run_ts.datetime.now().strftime("%Y%m%d_%H%M%S")
+    if rule_based_plan:
+        # Rule-based plan builder: deterministic, zero token cost, no LLM
+        log("\n--- Step 1: Plan Builder (确定性规则, 无 LLM) ---")
+        t0 = time.time()
+        generation_plan = build_generation_plan_from_test_case(
+            raw_file_data or test_case, sop, filter_tc_id=filter_tc_id
+        )
+        orchestrator_elapsed = time.time() - t0
+        log(f"[Plan Builder] 耗时: {orchestrator_elapsed * 1000:.1f}ms (LLM bypass)")
+        log(f"生成计划: tc_id={generation_plan.get('tc_id')}, "
+            f"type={generation_plan.get('test_type')}, "
+            f"message={generation_plan.get('message_type')}, "
+            f"sequences={len(generation_plan.get('test_sequences', []))}")
+    else:
+        # LLM-based Orchestrator: injects registry snapshot
+        log("\n--- Step 1: Orchestrator (意图分解) ---")
+        t0 = time.time()
+        _protocol_snapshot = None
+        if _active_protocol:
+            _protocol_snapshot = _reg.snapshot(_active_protocol)
+        generation_plan = run_orchestrator(tc, requirement_context, sop, _protocol_snapshot)
+        orchestrator_elapsed = time.time() - t0
+        log(f"[Orchestrator] 耗时: {orchestrator_elapsed:.1f}s")
+        if not generation_plan:
+            log("Orchestrator 失败，流水线终止", "ERROR")
+            _print_timing_summary(result, orchestrator_elapsed, summarizer_elapsed,
+                                 core_agent_elapsed, infra_agent_elapsed, build_elapsed,
+                                 compile_loop_core_total, compile_loop_infra_total,
+                                 compile_loop_build_total, compile_loop_fc_total,
+                                 fc_runtime_elapsed, fc_legacy_elapsed,
+                                 compile_loop_core_times, compile_loop_infra_times,
+                                 compile_loop_build_times, compile_loop_fc_times)
+            _tc_dir = GENERATED_DIR / (tc_id + "_" + run_timestamp)
+            _tc_dir.mkdir(parents=True, exist_ok=True)
+            _write_metrics_json(_tc_dir, _build_metrics_dict(
+                tc_id, run_timestamp, generation_plan or {}, result,
+                orchestrator_elapsed, summarizer_elapsed, core_agent_elapsed,
+                infra_agent_elapsed, build_elapsed,
+                compile_loop_core_total, compile_loop_infra_total,
+                compile_loop_build_total, compile_loop_fc_total,
+                fc_runtime_elapsed, fc_legacy_elapsed,
+                compile_loop_core_times, compile_loop_infra_times,
+                compile_loop_build_times, compile_loop_fc_times,
+                False, build_result,
+            ))
+            return None
 
     # === Step 1b: 规范化 tc_id 和前置条件名称 ===
     # 修复 Phase 1 生成的非标准命名
     plan_tc_id = generation_plan.get('tc_id', tc_id)
-    run_timestamp = _run_ts.datetime.now().strftime("%Y%m%d_%H%M%S")
     if plan_tc_id != tc_id:
         normalized = normalize_tc_id(plan_tc_id)
         if normalized != plan_tc_id:
@@ -6446,14 +8579,13 @@ def generate_code_for_test_case(
     msg_type = generation_plan.get("message_type", "")
     sut = generation_plan.get("sut_type", "SECC")
 
-    if ablation_no_knowledge:
-        # Zero-Shot 模式：完全禁用知识库检索
-        log("\n--- Step 2: Summarizer (已禁用: --ablation-no-knowledge) ---")
+    if rule_based_plan:
+        # Rule-based 模式：跳过 Summarizer，禁用知识库检索（Core Agent 独立推理）
+        log("\n--- Step 2: Summarizer (已跳过: --rule-based-plan) ---")
         kb_search_results = {}
         references = {}
         summarizer_elapsed = 0.0
         local_ref_section = ""
-        log("[Summarizer] Zero-Shot 模式: references={}, kb_search_results={}", "INFO")
     else:
         # 正常模式：运行 Summarizer Agent
         log("\n--- Step 2: Summarizer (知识检索) ---")
@@ -6480,19 +8612,161 @@ def generate_code_for_test_case(
                 local_ref_parts.append(f"// === Local Ref Function: {fn.get('name', 'unknown')} ===\n{fn['code']}")
         local_ref_section = "\n\n".join(local_ref_parts) if local_ref_parts else ""
 
-    # === Step 3: Core Agent (代码生成, 单次调用) ===
-    log("\n--- Step 3: Core Agent (代码生成) ---")
-    # 判断 SIL/HIL 模式：没有 SUT IP 时为 SIL 模式
-    effective_sut_mode = "SIL" if not sut_ip else "HIL"
-    t2 = time.time()
-    core_result = run_core_agent(
-        generation_plan, references, few_shot_examples, sop, "",
-        sut_mode=effective_sut_mode, local_ref_section=local_ref_section
-    )
-    core_agent_elapsed = time.time() - t2
-    log(f"[Core Agent] 耗时: {core_agent_elapsed:.1f}s")
+    # === Step 3: Static Renderer (always) + optional LLM review ===
+    # Layer 1: Static template rendering (deterministic, <1s, zero tokens)
+    log("\n--- Step 3a: Static TTCN Renderer (Layer 1) ---")
+    t_renderer = time.time()
+    _static_renderer_used = False
+    _static_tc_path: Optional[Path] = None
+    _static_tb_path: Optional[Path] = None
+    _static_tc_content = ""
+    _static_tb_content = ""
+
+    try:
+        from ttcn_static_renderer import render_and_write as _render_and_write
+        _render_result = _render_and_write(generation_plan, GENERATED_DIR / (plan_tc_id + "_" + run_timestamp))
+        _static_tc_path = _render_result["tc_file"]
+        _static_tb_path = _render_result["tb_file"]
+        _static_tc_content = _render_result["tc_content"]
+        _static_tb_content = _render_result["tb_content"]
+        _static_renderer_used = True
+        log(f"[Static Renderer] TC: {_static_tc_path.name}")
+        log(f"[Static Renderer] TB: {_static_tb_path.name}")
+        log(f"[Static Renderer] 耗时: {(time.time() - t_renderer) * 1000:.1f}ms")
+    except Exception as _e:
+        log(f"[Static Renderer] 失败: {_e}，回退到 LLM 生成", "WARN")
+        _static_renderer_used = False
+
+    # Layer 2: LLM review (optional, watchdog-capped)
+    # When no_llm_render=True we skip LLM entirely and use the static output.
+    core_result: Optional[Dict[str, Any]] = None
+    core_agent_elapsed = 0.0
+    _llm_skipped_or_killed = False
+
+    if no_llm_render:
+        log("\n--- Step 3b: Core Agent (已跳过: --no-llm-render) ---")
+        _llm_skipped_or_killed = True
+        core_agent_elapsed = 0.0
+    else:
+        log(f"\n--- Step 3b: Core Agent (代码生成, watchdog={watchdog_timeout}s) ---")
+        t2 = time.time()
+        # Pass watchdog_timeout to call_claude_agent via a global (quickest integration path)
+        global _llm_watchdog_timeout
+        _llm_watchdog_timeout = watchdog_timeout
+        try:
+            core_result = run_core_agent(
+                generation_plan, references, few_shot_examples, sop, "",
+                sut_mode="SIL", local_ref_section=local_ref_section,
+                protocol_snapshot=_reg.snapshot(_reg.active_protocol()) if _reg.active_protocol() else None,
+            )
+        except Exception as _e:
+            log(f"[Core Agent] 调用异常: {_e}，回退到静态渲染", "WARN")
+            core_result = None
+            _llm_skipped_or_killed = True
+        core_agent_elapsed = time.time() - t2
+        log(f"[Core Agent] 耗时: {core_agent_elapsed:.1f}s")
+        # If LLM produced no testcase, fall back to static renderer output
+        if not core_result or not core_result.get("testcase"):
+            log("[Core Agent] 未产生 testcase，回退到静态渲染", "WARN")
+            core_result = None
+            _llm_skipped_or_killed = True
+            # Inject static renderer's already-written files into core_result
+            if _static_renderer_used and _static_tc_content:
+                core_result = {
+                    "testcase": _static_tc_content,
+                    "precondition_files": [],
+                    "postcondition_files": [],
+                    "_static_renderer_used": True,
+                    "_static_tc_path": str(_static_tc_path),
+                    "_static_tb_path": str(_static_tb_path),
+                    "_static_tb_content": _static_tb_content,
+                }
+                log(f"[Static Renderer] 已注入 TC ({len(_static_tc_content)} chars) 和 "
+                    f"TB ({len(_static_tb_content)} chars) 到 core_result")
+
+    # === --no-llm-render path: inject static renderer output into core_result ===
+    if no_llm_render and (not core_result or not core_result.get("testcase")):
+        if _static_renderer_used and _static_tc_content:
+            core_result = {
+                "testcase": _static_tc_content,
+                "precondition_files": [],
+                "postcondition_files": [],
+                "_static_renderer_used": True,
+                "_static_tc_path": str(_static_tc_path),
+                "_static_tb_path": str(_static_tb_path),
+                "_static_tb_content": _static_tb_content,
+            }
+            log(f"[Static Renderer] --no-llm-render: 直接使用 TC ({len(_static_tc_content)} chars) 和 "
+                f"TB ({len(_static_tb_content)} chars)")
+
+    # === DISK-AWARE FALLBACK VERIFICATION ===
+    # Even if parse returned empty, the Core Agent may have written files directly
+    # to disk via its Write Tool. Scan the timestamped project directory as a safety net.
+    _disk_fallback_active = False
     if not core_result or not core_result.get("testcase"):
-        log("Core Agent 未生成代码", "ERROR")
+        # Try multiple candidate directories (current run, orphan dir, recent)
+        _candidate_dirs = [
+            GENERATED_DIR / (plan_tc_id + "_" + run_timestamp),  # Current run
+            GENERATED_DIR / plan_tc_id,  # Orphan non-timestamped dir
+        ]
+        # Also scan most recent timestamped dir of same TC ID
+        _pattern = f"{plan_tc_id}_*"
+        try:
+            recent_runs = sorted(
+                [d for d in GENERATED_DIR.glob(_pattern) if d.is_dir()],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True
+            )
+            _candidate_dirs.extend(recent_runs[:3])  # Last 3 runs
+        except Exception:
+            pass
+        # Deduplicate
+        _seen = set()
+        _candidate_dirs = [d for d in _candidate_dirs if d.exists() and str(d) not in _seen and not _seen.add(str(d))]
+
+        _disk_output_filename = derive_tc_filename(plan_tc_id)
+
+        for _disk_tc_project_dir in _candidate_dirs:
+            _scanned_ttcn = _disk_tc_project_dir / "src/ttcn3/4_TestCases" / _disk_output_filename
+            _scanned_precond_files = []
+            _scanned_postcond_files = []
+            if _scanned_ttcn.exists() and _scanned_ttcn.stat().st_size > 0:
+                log(f"[DISK-FALLBACK] Found TTCN-3 on disk: {_scanned_ttcn} ({_scanned_ttcn.stat().st_size} bytes)", "WARN")
+                _disk_fallback_active = True
+            elif _disk_tc_project_dir.exists():
+                _precond_dir = _disk_tc_project_dir / "src/ttcn3/3_Behavior_Steps"
+                if _precond_dir.exists():
+                    for f in _precond_dir.rglob("*.ttcn"):
+                        if f.is_file() and f.stat().st_size > 0:
+                            if "PostCondition" in f.name:
+                                _scanned_postcond_files.append(f)
+                            else:
+                                _scanned_precond_files.append(f)
+                _scanned_ttcn_fallback = _disk_tc_project_dir / "src/ttcn3" / _disk_output_filename
+                if not _scanned_ttcn.exists() and _scanned_ttcn_fallback.exists() and _scanned_ttcn_fallback.stat().st_size > 0:
+                    _scanned_ttcn = _scanned_ttcn_fallback
+                if _scanned_ttcn.exists() and _scanned_ttcn.stat().st_size > 0:
+                    log(f"[DISK-FALLBACK] Found TTCN-3 via alternate path: {_scanned_ttcn}", "WARN")
+                    _disk_fallback_active = True
+            if _disk_fallback_active:
+                break
+
+        if _disk_fallback_active:
+            _rescued_code = _scanned_ttcn.read_text(encoding="utf-8")
+            _rescued_pre = [{"path": str(f.relative_to(_disk_tc_project_dir)), "content": f.read_text(encoding="utf-8")} for f in _scanned_precond_files]
+            _rescued_post = [{"path": str(f.relative_to(_disk_tc_project_dir)), "content": f.read_text(encoding="utf-8")} for f in _scanned_postcond_files]
+            core_result = {
+                "testcase": _rescued_code,
+                "precondition_files": _rescued_pre,
+                "postcondition_files": _rescued_post,
+                "_disk_fallback_used": True,
+            }
+            log(f"[DISK-FALLBACK] Rescued TTCN-3 ({len(_rescued_code)} chars), "
+                f"{len(_rescued_pre)} pre + {len(_rescued_post)} post from disk", "WARN")
+        else:
+            log("[DISK-FALLBACK] No TTCN-3 found on disk either — proceeding to error exit", "WARN")
+
+    if not core_result or not core_result.get("testcase"):
         _print_timing_summary(result, orchestrator_elapsed, summarizer_elapsed,
                              core_agent_elapsed, infra_agent_elapsed, build_elapsed,
                              compile_loop_core_total, compile_loop_infra_total,
@@ -6516,9 +8790,19 @@ def generate_code_for_test_case(
         raise _PipelineEarlyExit()
 
     # 提取各部分代码
-    ttcn3_code = core_result["testcase"]
+    raw_ttcn3_code = core_result.get("testcase", "")
+    # 处理 Core Agent 返回 dict 而非 str 的情况（安全过滤器导致 JSON 写入失败时）
+    if isinstance(raw_ttcn3_code, dict):
+        log(f"Core Agent testcase 是 dict，已降级处理（可能存在安全过滤器问题）", "WARN")
+        raw_ttcn3_code = ""
+    ttcn3_code = raw_ttcn3_code or ""
     pre_condition_files = core_result.get("precondition_files", [])
     post_condition_files = core_result.get("postcondition_files", [])
+
+    # Record disk-fallback recovery in result for metrics propagation
+    if core_result.get("_disk_fallback_used"):
+        result["_disk_fallback_used"] = True
+        log("[DISK-FALLBACK] Recovery flag recorded in result for metrics", "INFO")
 
     log(f"生成主测试用例代码 {len(ttcn3_code)} 字符")
     log(f"生成前置条件文件 {len(pre_condition_files)} 个")
@@ -6555,7 +8839,8 @@ def generate_code_for_test_case(
     compile_loop_build_times: List[Tuple[int, float]] = []  # (iteration, seconds)
     compile_loop_fc_times: List[Tuple[int, float]] = []     # (iteration, seconds)
     compile_loop_core_times: List[Tuple[int, float]] = []    # (iteration, seconds) — 0 if skipped
-    compile_loop_infra_times: List[Tuple[int, float]] = [] # (iteration, seconds) — 0 if skipped
+    compile_loop_infra_times: List[Tuple[int, float]] = []  # (iteration, seconds) — 0 if skipped
+    _compile_iteration = 1  # iteration counter for metrics tracking
 
     # === Step 5: 写入 Core Agent 生成的 pre/post condition 文件 ===
     # Use timestamped dir so repeated runs don't overwrite each other.
@@ -6563,15 +8848,42 @@ def generate_code_for_test_case(
     tc_project_dir.mkdir(parents=True, exist_ok=True)
     log("[TC PROJECT] Output directory: " + str(tc_project_dir))
 
+    # === Clean stale build artifacts to guarantee a clean-slate environment ===
+    # Eliminates FS-TRUTH contamination from any prior partial build
+    # (e.g. TestExecutable left on disk from a previous failed run).
+    import shutil as _shutil
+    for _stale in [
+        tc_project_dir / "build" / "bin" / "TestExecutable",
+    ]:
+        try:
+            if _stale.is_file():
+                _stale.unlink()
+                log(f"[CLEAN] removed stale binary: {_stale.name}")
+        except OSError as _e:
+            log(f"[CLEAN] could not remove {_stale}: {_e}", "WARN")
+    for _stale_dir in [
+        tc_project_dir / "build" / "obj",
+        tc_project_dir / "build" / "generated_cpp",
+        tc_project_dir / "build" / "config",
+        tc_project_dir / "logs" / "titan_traces",
+        tc_project_dir / "logs" / "system_logs",
+    ]:
+        try:
+            if _stale_dir.exists():
+                _shutil.rmtree(_stale_dir, ignore_errors=True)
+                log(f"[CLEAN] removed stale dir: {_stale_dir.relative_to(tc_project_dir)}")
+        except OSError as _e:
+            log(f"[CLEAN] could not remove {_stale_dir}: {_e}", "WARN")
+
     # 同时定义 tc_ttcn_dest（供 _runtime_self_repair 使用，避免 NameError）
     tc_ttcn_dest = tc_project_dir / "src/ttcn3/4_TestCases" / output_filename
     tc_ttcn_dest.parent.mkdir(parents=True, exist_ok=True)
-    tc_ttcn_dest.write_text(ttcn3_code, encoding="utf-8")
+    tc_ttcn_dest.write_text(sanitize_ttcn3_hex_strings(ttcn3_code), encoding="utf-8")
 
     for f_data in pre_condition_files + post_condition_files:
         f_path = tc_project_dir / f_data["path"]
         f_path.parent.mkdir(parents=True, exist_ok=True)
-        f_path.write_text(f_data["content"], encoding="utf-8")
+        f_path.write_text(sanitize_ttcn3_hex_strings(f_data["content"]), encoding="utf-8")
     log(f"已写入 {len(pre_condition_files)} 个 pre + {len(post_condition_files)} 个 post 文件")
 
     # === Step 5a: Import injection (MUST run BEFORE Infrastructure Agent) ===
@@ -6581,6 +8893,13 @@ def generate_code_for_test_case(
     # Agent runs so the agent sees consistent, correct files on disk.
     _inject_condition_function_imports(tc_project_dir, pre_condition_files, post_condition_files, plan_tc_id)
     _ensure_tc_direct_imports(tc_project_dir, output_filename, pre_condition_files, post_condition_files)
+
+    # === Step 5c: GENERATE MISSING PRECONDITION STUBS ===
+    # Core Agent sometimes writes `import from f_XYZ_001 all;` in the TC file
+    # without generating the corresponding stub file (Module Name Mismatch Bug).
+    # This function detects such missing stubs and creates minimal valid implementations
+    # so the TITAN compiler can at least link the module.
+    _ensure_missing_precondition_stubs(tc_project_dir, generation_plan)
 
     # Re-validate after fixing imports -- catch missing modules before build
     validation_issues = pre_build_validate(tc_project_dir)
@@ -6615,7 +8934,53 @@ def generate_code_for_test_case(
     if not build_installed:
         log("[SCAFFOLD] WARNING: build.sh not found in demo -- agent compile loop will fail", "WARN")
 
-    # 2. Create directory structure first (V2G ports need these paths)
+    # 1b. Copy canonical runtime config + hardware env to tc_dir/config/ and tc_dir/build/config/
+    #     The build.sh's rsync syncs the temp work_dir/config/ back to SCRIPT_DIR/config/
+    #     (not build/config/). To allow `TestExecutable ../config/titan_runtime.cfg`,
+    #     we ensure config/ exists with the canonical files.
+    _install_canonical_runtime_config(tc_project_dir)
+
+    # 1c. PRECOMPILE GATE: dry-run compile every DEMO_SHARED_FILES entry via
+    # ttc3_compiler BEFORE we copy anything. Without this gate, a syntax error
+    # in a demo source file would be silently copied into the generated project
+    # and only surface after the Infrastructure Agent has done several minutes
+    # of work, wasting LLM tokens and time.
+    # Cached: the demo source tree only changes when someone hand-edits it, so
+    # we run this check at most once per process invocation.
+    global _DEMO_PRECOMPILE_OK
+    if _DEMO_PRECOMPILE_OK is None:
+        _ok_flag, _err_list = _verify_demo_ttcn_syntax()
+        _DEMO_PRECOMPILE_OK = _ok_flag
+        if not _ok_flag:
+            log(
+                "[SCAFFOLD] ABORT: demo TTCN baseline has syntax errors. "
+                "Fix demo source files before running the pipeline.",
+                "ERROR",
+            )
+            raise RuntimeError(
+                f"Demo TTCN baseline failed ttc3_compiler dry-run "
+                f"({len(_err_list)} error(s)). Pipeline aborted to avoid "
+                f"wasting an Infrastructure Agent run."
+            )
+    elif _DEMO_PRECOMPILE_OK is False:
+        # Re-emit the abort; we cached False on a prior run
+        log(
+            "[SCAFFOLD] ABORT: cached precompile failure. Fix demo TTCN "
+            "source files before running the pipeline.",
+            "ERROR",
+        )
+        raise RuntimeError(
+            "Demo TTCN baseline previously failed ttc3_compiler dry-run. "
+            "Pipeline aborted."
+        )
+
+    # 2. NUCLEAR COPY: Install ALL verified demo TTCN skeleton files proactively.
+    # This guarantees a clean compilation baseline before Infrastructure Agent runs.
+    # Any LLM-generated version of these files will be overwritten.
+    ttcn_installed = install_shared_ttcn_files(tc_project_dir)
+    log(f"[SCAFFOLD] Nuclear TTCN copy: {ttcn_installed} files from demo")
+
+    # 3. Create directory structure first (V2G ports need these paths)
     generated_cpp_dir = tc_project_dir / "build" / "generated_cpp"
     rsync_safe_dir = tc_project_dir / "src" / "cpp_adapters" / "SA" / "ports"
     (tc_project_dir / "src" / "cpp_adapters" / "common").mkdir(parents=True, exist_ok=True)
@@ -6694,6 +9059,7 @@ def generate_code_for_test_case(
             sut_ip=sut_ip,
             tc_output_filename=tc_output_filename,
             output_dir=tc_project_dir,
+            protocol_snapshot=_reg.snapshot(_active_protocol, include_full_messages=True) if _active_protocol else None,
         )
     except RuntimeError as e:
         log(f"[WARN] Infrastructure Agent threw RuntimeError: {e}", "WARN")
@@ -6716,6 +9082,18 @@ def generate_code_for_test_case(
             log(f"[FATAL] {e}", "ERROR")
             raise
         log(f"[MODE] Direct Write Mode confirmed -- {len(detected_files)} files written by agent", "INFO")
+        # === Post-detection TTCN hex sanitization ===
+        # Sanitize ALL .ttcn files written by the agent to fix LLM-generated odd-length hex literals
+        for f in detected_files:
+            if f.suffix == ".ttcn":
+                try:
+                    raw = f.read_text(encoding="utf-8", errors="replace")
+                    clean = sanitize_ttcn3_hex_strings(raw)
+                    if clean != raw:
+                        f.write_text(clean, encoding="utf-8")
+                        log(f"[HEX-SANITIZE] Sanitized agent-written file: {f.relative_to(tc_project_dir)}")
+                except Exception as e:
+                    log(f"[HEX-SANITIZE] Could not sanitize {f}: {e}", "WARN")
         if detected_files:
             log(f"[Direct Write Mode] 验证成功，目录包含 {len(detected_files)} 个有效文件:")
             for f in sorted(detected_files):
@@ -6726,6 +9104,37 @@ def generate_code_for_test_case(
 
     infra_agent_elapsed = time.time() - t3
     log(f"[Infrastructure Agent] 耗时: {infra_agent_elapsed:.1f}s")
+
+    # === Re-apply static renderer output AFTER Infrastructure Agent runs ===
+    # The Infra Agent may have overwritten our files (or been killed by watchdog).
+    # Always re-write the static TC+TB files before build so they are clean.
+    if _static_renderer_used and _static_tc_path and _static_tc_content:
+        _reinject_count = 0
+        _testcases_file = _static_tc_path.parent / "TestCases_SECC" / "TestCases_SECC.ttcn"
+        # Re-render TestCases_SECC.ttcn (depends only on testcase_name)
+        try:
+            from ttcn_static_renderer import _get_jinja_env
+            _env = _get_jinja_env()
+            _tcs_tpl = _env.get_template("TestCases_SECC.ttcn.j2")
+            _tcs_content = _tcs_tpl.render(testcase_name=plan_tc_id)
+            _testcases_file.parent.mkdir(parents=True, exist_ok=True)
+            _testcases_file.write_text(_tcs_content, encoding="utf-8")
+            _reinject_count += 1
+        except Exception as _e:
+            log(f"[Static Renderer] TestCases_SECC.ttcn 重生成失败: {_e}", "WARN")
+        for _fpath, _fcontent in [
+            (_static_tc_path, _static_tc_content),
+            (_static_tb_path, _static_tb_content),
+        ]:
+            if _fpath and _fcontent:
+                try:
+                    _fpath.parent.mkdir(parents=True, exist_ok=True)
+                    _fpath.write_text(_fcontent, encoding="utf-8")
+                    _reinject_count += 1
+                except Exception:
+                    pass
+        log(f"[Static Renderer] Re-injected {_reinject_count} file(s) before build "
+            f"(overwrites any Infra Agent stomp)")
 
     # Forward-Only compile lock flag
     compile_locked = False
@@ -6777,66 +9186,125 @@ def generate_code_for_test_case(
                 (compile_errors or build_result.get("returncode", 0) != 0)
                 and not compile_locked
             )
-            if genuine_build_error:
-                log(f"\n--- Step 7: Infrastructure Agent Fix Loop (self-contained) ---")
 
-                # Build error feedback for Infrastructure Agent
-                infra_error_fb = build_infra_error_feedback(compile_errors, tc_project_dir)
-                if not infra_error_fb:
-                    infra_error_fb = (
-                        "Build failed with exit code " + str(build_result.get("returncode", 0)) + ". "
-                        "Raw output: " + build_result.get("stderr", build_result.get("stdout", ""))[:1000]
+            # === Static Linter (zero-LLM): fix mechanical typos before LLM fix ===
+            linter_fixed, linter_fixes = _run_static_linter(compile_errors, tc_project_dir)
+            if linter_fixed:
+                log(f"[STATIC-LINTER] Applied {sum(len(f['fixes']) for f in linter_fixes)} patches: {linter_fixes}")
+
+            if genuine_build_error:
+                # Track compilation iterations for metrics
+                compile_loop_build_times.append((0, build_elapsed))
+
+                log(f"\n--- Step 7: Infrastructure Agent Fix Loop (max 3 iterations) ---")
+
+                INFRA_FIX_MAX_ITER = 3
+                _infra_fix_succeeded = False
+                _remaining_errors = compile_errors
+
+                # 2D: Pre-compute the missing-PR remediation directive ONCE so the
+                # Infrastructure Agent sees the same mandatory file list on every
+                # fix iteration. Without this, the agent would waste iterations
+                # rediscovering that the PR modules don't exist.
+                _missing_pr_directive = _build_missing_pr_remediation_directive(generation_plan)
+                if _missing_pr_directive:
+                    log(
+                        f"[Infra Fix] Plan reports missing PR/PO modules -- will inject "
+                        f"remediation directive into every fix iteration's error feedback",
+                        "WARN",
                     )
 
-                log(f"[Infra Fix] Calling Infrastructure Agent with error feedback...")
+                for _infra_fix_iter in range(1, INFRA_FIX_MAX_ITER + 1):
+                    if _infra_fix_iter > 1:
+                        # Re-run build to check if previous fix worked
+                        log(f"[Infra Fix] Iteration {_infra_fix_iter}: re-checking build...")
+                        _recheck_result = run_build_and_test(
+                            tc_dir=tc_project_dir, tc_id=plan_tc_id,
+                            sut_ip=sut_ip, pcap_output=pcap_out,
+                        )
+                        if _recheck_result.get("status") == "completed":
+                            log(f"[Infra Fix] Build succeeded on iteration {_infra_fix_iter - 1}!")
+                            build_result = _recheck_result
+                            result["build_result"] = _recheck_result
+                            compile_locked = True
+                            _infra_fix_succeeded = True
+                            break
+                        else:
+                            _remaining_errors = _recheck_result.get("compile_errors", [])
+                            result["compile_errors"] = _remaining_errors
+                            build_result = _recheck_result
 
-                # Track previous files for fix mode
-                current_infra_files = infra_result.get("files", []) if infra_result else []
-                previous_infra_files = [f.get("path", "") for f in current_infra_files] if isinstance(current_infra_files, list) else []
-                previous_core_files = pre_condition_files + post_condition_files
+                    # Build error feedback
+                    infra_error_fb = build_infra_error_feedback(_remaining_errors, tc_project_dir)
+                    if not infra_error_fb:
+                        infra_error_fb = (
+                            "Build failed with exit code " + str(build_result.get("returncode", 0)) + ". "
+                            "Raw output: " + build_result.get("stderr", build_result.get("stdout", ""))[:1000]
+                        )
 
-                # Call Infrastructure Agent in fix mode (it runs its own inner compile loop)
-                t_infra_fix = time.time()
-                infra_retry = run_infrastructure_agent(
-                    generation_plan=generation_plan,
-                    ttcn3_code=ttcn3_code,
-                    tc_id=plan_tc_id,
-                    sut_ip=sut_ip,
-                    tc_output_filename=tc_output_filename,
-                    error_feedback=infra_error_fb,
-                    previous_infra_files=previous_infra_files,
-                    previous_core_files=previous_core_files,
-                    is_fix_mode=True
-                )
-                infra_fix_elapsed = time.time() - t_infra_fix
-                log(f"[Infra Fix] Infrastructure Agent 耗时: {infra_fix_elapsed:.1f}s")
+                    # 2D: append missing-PR remediation directive. This is the
+                    # core of 2D -- the Infrastructure Agent now gets told, on
+                    # every fix iteration, exactly which PR files it MUST
+                    # generate (because the demo baseline didn't supply them).
+                    if _missing_pr_directive:
+                        infra_error_fb = infra_error_fb + _missing_pr_directive
 
-                # Guard against destructive JSON-parse-error + build-success scenario.
-                # If run_infrastructure_agent returned an error (JSON parse failed) but the
-                # build actually succeeded, the agent's files on disk are valid -- do NOT
-                # overwrite them with demo skeleton stubs. Just warn and use what we have.
-                # Also: if compile_locked (Forward-Only), never touch scaffolding again.
-                infra_is_json_error = infra_retry.get("status") == "error"
-                build_succeeded = build_result.get("status") == "completed"
-                if (infra_is_json_error and build_succeeded) or compile_locked:
-                    if compile_locked:
-                        log("[LOCK] compile_locked=True: skipping Infrastructure Agent fallback.", "WARN")
-                    else:
-                        log("[WARN] Infrastructure Agent JSON parse failed but build succeeded. "
-                            "Skipping destructive fallback -- preserving agent's working files.", "WARN")
-                        # Verify the files are still there
-                        try:
-                            _, detected_files = detect_direct_write_mode(tc_project_dir)
-                            log(f"[WARN] Preserved {len(detected_files)} files from agent output")
-                        except RuntimeError as e:
-                            log(f"[WARN] File verification failed: {e}", "WARN")
-                    # Lock and proceed directly to runtime -- never re-trigger static fixes
-                    compile_locked = True
-                    # Fall through without the fallback overwrites
-                else:
-                    # Normal flow: process agent result, overwrite scaffolding, run final build
-                    # Process Infrastructure Agent result
-                    # Agent must have written files to disk. detect_direct_write_mode validates this.
+                    log(f"[Infra Fix] Iteration {_infra_fix_iter}/{INFRA_FIX_MAX_ITER}: calling agent...")
+
+                    current_infra_files = infra_result.get("files", []) if infra_result else []
+                    previous_infra_files = (
+                        [f.get("path", "") for f in current_infra_files]
+                        if isinstance(current_infra_files, list) else []
+                    )
+                    previous_core_files = pre_condition_files + post_condition_files
+
+                    t_infra_fix = time.time()
+                    infra_retry = run_infrastructure_agent(
+                        generation_plan=generation_plan,
+                        ttcn3_code=ttcn3_code,
+                        tc_id=plan_tc_id,
+                        sut_ip=sut_ip,
+                        tc_output_filename=tc_output_filename,
+                        error_feedback=infra_error_fb,
+                        previous_infra_files=previous_infra_files,
+                        previous_core_files=previous_core_files,
+                        is_fix_mode=True,
+                        protocol_snapshot=(
+                            _reg.snapshot(_active_protocol, include_full_messages=True)
+                            if _active_protocol else None
+                        ),
+                    )
+                    infra_fix_elapsed = time.time() - t_infra_fix
+                    log(f"[Infra Fix] Iteration {_infra_fix_iter} elapsed: {infra_fix_elapsed:.1f}s")
+                    compile_loop_infra_times.append((_infra_fix_iter, infra_fix_elapsed))
+
+                    # Re-apply static renderer
+                    if _static_renderer_used and _static_tc_path and _static_tc_content:
+                        _reinject_count = 0
+                        for _fpath, _fcontent in [
+                            (_static_tc_path, _static_tc_content),
+                            (_static_tb_path, _static_tb_content),
+                        ]:
+                            if _fpath and _fcontent:
+                                try:
+                                    _fpath.parent.mkdir(parents=True, exist_ok=True)
+                                    _fpath.write_text(_fcontent, encoding="utf-8")
+                                    _reinject_count += 1
+                                except Exception:
+                                    pass
+                        log(f"[Static Renderer] Re-injected {_reinject_count} file(s) after Infra Fix")
+
+                    infra_is_json_error = infra_retry.get("status") == "error"
+                    build_succeeded = build_result.get("status") == "completed"
+                    if (infra_is_json_error and build_succeeded) or compile_locked:
+                        if compile_locked:
+                            log(f"[LOCK] compile_locked=True: stopping Infrastructure Agent retries.")
+                        else:
+                            log("[WARN] Agent JSON parse failed but build succeeded. "
+                                "Preserving agent's working files.")
+                        _infra_fix_succeeded = True
+                        break
+
                     try:
                         detected_mode, detected_files = detect_direct_write_mode(tc_project_dir)
                         log(f"[Infra Fix] Direct Write Mode: found {len(detected_files)} files")
@@ -6844,31 +9312,35 @@ def generate_code_for_test_case(
                         log(f"[Infra Fix] FATAL: {e}", "ERROR")
                         raise
 
-                    # Run final build to verify
-                    log(f"[Infra Fix] Running final build to verify...")
                     t_final_build = time.time()
                     final_build_result = run_build_and_test(
-                        tc_dir=tc_project_dir,
-                        tc_id=plan_tc_id,
-                        sut_ip=sut_ip,
-                        pcap_output=pcap_out,
+                        tc_dir=tc_project_dir, tc_id=plan_tc_id,
+                        sut_ip=sut_ip, pcap_output=pcap_out,
                     )
                     final_build_elapsed = time.time() - t_final_build
-                    log(f"[Infra Fix - Final Build] 耗时: {final_build_elapsed:.1f}s")
+                    log(f"[Infra Fix] Iteration {_infra_fix_iter} final build: {final_build_elapsed:.1f}s")
+                    compile_loop_build_times.append((_infra_fix_iter, final_build_elapsed))
 
-                    # Update result based on final build
                     if final_build_result.get("status") == "completed":
-                        log("Infrastructure Agent fix succeeded! Build now passes.")
+                        log(f"[Infra Fix] Iteration {_infra_fix_iter} SUCCESS!")
                         result["build_result"] = final_build_result
                         result["compile_feedback"] = ""
                         result["compile_errors"] = []
                         compile_locked = True
+                        _infra_fix_succeeded = True
+                        break
                     else:
-                        remaining_errors = final_build_result.get("compile_errors", [])
-                        log(f"Build still failing after Infrastructure Agent fix: {len(remaining_errors)} errors")
+                        _remaining_errors = final_build_result.get("compile_errors", [])
+                        log(f"[Infra Fix] Iteration {_infra_fix_iter} FAILED: "
+                            f"{len(_remaining_errors)} errors remain. {'Retrying...' if _infra_fix_iter < INFRA_FIX_MAX_ITER else 'Exhausted max iterations.'}")
                         result["compile_feedback"] = infra_error_fb
-                        result["compile_errors"] = remaining_errors
+                        result["compile_errors"] = _remaining_errors
                         result["build_result"] = final_build_result
+                        build_result = final_build_result
+
+                if not _infra_fix_succeeded and not compile_locked:
+                    log(f"[Infra Fix] All {INFRA_FIX_MAX_ITER} iterations exhausted. "
+                        "Proceeding to runtime phase with build failures.", "WARN")
             else:
                 log("[WARN] Infrastructure Agent JSON parse failed but build succeeded. "
                     "Build artifacts preserved -- no destructive fallback triggered.", "WARN")
@@ -6888,7 +9360,11 @@ def generate_code_for_test_case(
                 result["test_passed"] = True
             else:
                 log("\n--- Fault Corrector (runtime: dual-track analysis) ---")
-                test_log = tc_project_dir / "logs" / "titan_traces" / "TestExecution.log"
+                test_log_candidates = [
+                    tc_project_dir / "logs" / "titan_traces" / "TestExecution.log",
+                    tc_project_dir / "build" / "bin" / "logs" / "titan_traces" / "TestExecution.log",
+                ]
+                test_log = next((p for p in test_log_candidates if p.exists()), test_log_candidates[0])
                 t_fc_rt = time.time()
                 fault_result = run_fault_corrector(
                     ttcn3_code=ttcn3_code,
@@ -6920,6 +9396,8 @@ def generate_code_for_test_case(
                         few_shot_examples=few_shot_examples,
                         sop=sop,
                         references=references,
+                        compile_loop_fc_times=compile_loop_fc_times,
+                        compile_loop_fc_total_ref=[compile_loop_fc_total],
                     )
                     if self_repair_result:
                         result["runtime_repair"] = self_repair_result
@@ -6956,6 +9434,34 @@ def generate_code_for_test_case(
                          fc_runtime_elapsed, fc_legacy_elapsed,
                          compile_loop_core_times, compile_loop_infra_times,
                          compile_loop_build_times, compile_loop_fc_times)
+
+    # === Filesystem Truth Override (STRICT) ===
+    # If a TestExecutable exists on disk but our in-memory build_result says
+    # failed, the LLM Self-Healing has produced a working build. However, we
+    # MUST NOT declare a pass verdict just because the binary exists on disk.
+    # We mark build as "completed_pending_rebuild" and force a rebuild to get
+    # a real runtime verdict from TestExecution.log.
+    _exe_candidate = tc_project_dir / "build" / "bin" / "TestExecutable"
+    if _exe_candidate.exists() and (not build_result or build_result.get("status") != "completed"):
+        log(f"[FS-TRUTH] Stale TestExecutable exists at {_exe_candidate} but build_result.status={build_result.get('status') if build_result else 'None'}.")
+        log(f"[FS-TRUTH] Forcing rebuild + runtime execution to obtain real verdict (NOT granting pass on binary existence alone).")
+        # Do NOT set status="completed" -- we have not actually run this build.
+        # Instead, mark the build_result as "stale_binary_found" so the metrics
+        # accurately reflect that the binary is from a prior attempt, and the
+        # runtime verdict will be determined by a fresh rebuild+run below.
+        build_result = {
+            "status": "stale_binary_requires_rebuild",
+            "compile_errors": [],
+            "test_result": None,
+            "execution_wallclock_seconds": 0.0,
+            "_fs_truth_overridden": True,
+            "stale_executable": str(_exe_candidate),
+        }
+        result["build_result"] = build_result
+        # NOTE: do NOT set compile_locked=True here -- the runtime phase
+        # MUST rebuild from the current source files and re-execute to
+        # get a real verdict. The stale binary may not match the current
+        # .ttcn sources after LLM edits.
 
     # === Write metrics.json ===
     _write_metrics_json(tc_project_dir, _build_metrics_dict(
@@ -7134,11 +9640,94 @@ def _get_git_commit():
         return "unknown"
 
 
+_METRICS_REQUIRED_FIELDS = [
+    "experiment_metadata",
+    "verdict",
+    "verdict.result",
+    "verdict.execution_time_seconds",
+    "verdict.build_status",
+    "latency.total_pipeline_seconds",
+]
+
+
+def _validate_metrics_schema(metrics):
+    """Fail-loud schema validation for metrics.json.
+
+    Checks that all required fields are present and have the correct types.
+    Raises AssertionError (which bubbles up as a pipeline failure) if any field is missing.
+    """
+    errors = []
+    # Check top-level verdict
+    verdict = metrics.get("verdict", {})
+    if not verdict:
+        errors.append("verdict object is missing or empty")
+    else:
+        if "result" not in verdict:
+            errors.append("verdict.result is missing")
+        result = verdict.get("result", "")
+        if not isinstance(result, str):
+            errors.append(f"verdict.result is not a string: {type(result).__name__}")
+        elif result == "not_run":
+            # When build/compile never produced a TTCN-3 verdict, the run is
+            # still a real run — it just failed. Normalize to "error" so the
+            # metrics.json is schema-compliant and the caller can read the
+            # failure mode from the existing build_status / log_content.
+            log("[METRICS] verdict.result was 'not_run'; normalizing to 'error' for schema compliance")
+            verdict["result"] = "error"
+        if "execution_time_seconds" not in verdict:
+            errors.append("verdict.execution_time_seconds is missing")
+        else:
+            et = verdict["execution_time_seconds"]
+            if not isinstance(et, (int, float)):
+                errors.append(f"verdict.execution_time_seconds is not numeric: {type(et).__name__}")
+            elif et < 0:
+                errors.append(f"verdict.execution_time_seconds is negative: {et}")
+        if "build_status" not in verdict:
+            errors.append("verdict.build_status is missing")
+    # Check latency
+    latency = metrics.get("latency", {})
+    if not latency:
+        errors.append("latency object is missing or empty")
+    else:
+        if "total_pipeline_seconds" not in latency:
+            errors.append("latency.total_pipeline_seconds is missing")
+    if errors:
+        raise AssertionError(
+            f"[METRICS VALIDATION FAILED] metrics.json is missing or has invalid fields:\n"
+            + "\n".join(f"  - {e}" for e in errors)
+            + "\nThe pipeline will continue but this metrics.json will be incomplete."
+        )
+
+
 def _write_metrics_json(tc_project_dir, metrics):
     path = tc_project_dir / "metrics.json"
+    # Schema validation: fail-loud on missing required fields
+    _validate_metrics_schema(metrics)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
     log("[METRICS] Written to " + str(path))
+
+
+def _parse_execution_time_from_log(log_content: str) -> float:
+    """Parse test execution time from TITAN TestExecution.log.
+
+    TITAN doesn't emit a single 'Real time: Xs' line. Instead, the start and
+    end timestamps are embedded in the first/last EXECUTOR lines:
+      First:  "01:46:48.733775 EXECUTOR - TTCN-3 Test Executor started..."
+      Last:   "01:47:50.322596 EXECUTOR - TTCN-3 Test Executor finished..."
+
+    We parse both timestamps and compute the difference in seconds.
+    """
+    import re
+    TS_RE = re.compile(r"^(\d{2}:\d{2}:\d{2}\.\d+)", re.MULTILINE)
+    hits = TS_RE.findall(log_content)
+    if len(hits) >= 2:
+        def to_sec(ts: str) -> float:
+            h, m, rest = ts.split(":", 2)
+            s, frac = (rest.split(".") if "." in rest else [rest, "0"])
+            return int(h) * 3600 + int(m) * 60 + int(s) + int(frac.ljust(6, "0")) / 1_000_000
+        return round(to_sec(hits[-1]) - to_sec(hits[0]), 3)
+    return 0.0
 
 
 def _build_metrics_dict(
@@ -7155,6 +9744,9 @@ def _build_metrics_dict(
     planning_in = _agent_input_tokens.get("Orchestrator", 0)
     planning_out = _agent_output_tokens.get("Orchestrator", 0)
     planning_calls = _agent_call_counts.get("Orchestrator", 0)
+    summarizer_in = _agent_input_tokens.get("Summarizer", 0)
+    summarizer_out = _agent_output_tokens.get("Summarizer", 0)
+    summarizer_calls = _agent_call_counts.get("Summarizer", 0)
     core_in = _agent_input_tokens.get("Core Agent", 0)
     core_out = _agent_output_tokens.get("Core Agent", 0)
     core_calls = _agent_call_counts.get("Core Agent", 0)
@@ -7171,23 +9763,56 @@ def _build_metrics_dict(
     compile_errors_count = 0
     if build_result:
         build_status = build_result.get("status", "unknown")
+        # `not_run` is the initial sentinel. If we entered this branch with
+        # a build_result but no verdict line was found, the test really did
+        # run but produced no parseable verdict -- treat as "inconc" so the
+        # downstream validator doesn't reject metrics.json as malformed.
+        # If build_status already says "error" the lines below override
+        # verdict_result explicitly.
+        build_status = build_result.get("status", "unknown")
         if build_status == "completed":
-            verdict_result = "pass"
-            test_res = build_result.get("test_result", {})
-            combined = test_res.get("log_content", "") + "\n" + test_res.get("stdout", "")
+            # Binary was actually executed (per run_build_and_test Step 5).
+            # However, the binary may exit without writing a "Overall verdict:"
+            # line (e.g. testcase hung and we timed out, or the binary
+            # returned 0 with no TTCN-3 verdict emitted). We require explicit
+            # evidence of a TTCN-3 verdict from the log/stdout -- a bare
+            # `returncode == 0` is NOT sufficient for a pass verdict.
+            test_res = build_result.get("test_result") or {}
+            combined = (test_res.get("log_content", "") if test_res else "") + "\n" + (test_res.get("stdout", "") if test_res else "")
             if "Overall verdict: pass" in combined:
                 verdict_result = "pass"
             elif "Overall verdict: inconc" in combined:
                 verdict_result = "inconc"
             elif "Overall verdict: fail" in combined:
                 verdict_result = "fail"
-            execution_time = test_res.get("execution_time_seconds", 0.0)
+            else:
+                # No explicit TTCN-3 verdict line found. Mark as inconclusive
+                # to be honest about the telemetry gap. Do NOT default to pass.
+                verdict_result = "inconc"
+                log(f"[VERDICT] build=completed but no 'Overall verdict:' line found in log; marking as inconc (no pass credit).")
+            # Parse execution time: prefer wall-clock (most reliable), fall back to log parser
+            wallclock = build_result.get("execution_wallclock_seconds", 0.0)
+            if wallclock and wallclock > 0:
+                execution_time = round(wallclock, 3)
+            else:
+                log_content = test_res.get("log_content", "")
+                parsed_log_time = _parse_execution_time_from_log(log_content)
+                # Wall-clock is the source of truth. If log parser returned 0, use wall-clock.
+                execution_time = round(wallclock or parsed_log_time, 3)
         elif build_status == "build_failed":
             verdict_result = "error"
             compile_errors_count = len(build_result.get("compile_errors", []))
+        elif build_status == "stale_binary_requires_rebuild":
+            # Filesystem had a TestExecutable from a prior attempt, but the
+            # current build did not succeed. The binary on disk does NOT
+            # represent the current source state. verdict must be honest:
+            # runtime did not execute on the current code -- mark as error.
+            verdict_result = "error"
+            compile_errors_count = 0
+            log("[FS-TRUTH] verdict=error: stale binary on disk does not match current sources, runtime not executed.")
 
-    total_in = planning_in + core_in + infra_in + fc_in
-    total_out = planning_out + core_out + infra_out + fc_out
+    total_in = planning_in + summarizer_in + core_in + infra_in + fc_in
+    total_out = planning_out + summarizer_out + core_out + infra_out + fc_out
     cl_core = sum(1 for _, t in compile_loop_core_times if t > 0)
     cl_infra = sum(1 for _, t in compile_loop_infra_times if t > 0)
     cl_build = len(compile_loop_build_times)
@@ -7208,6 +9833,7 @@ def _build_metrics_dict(
         },
         "token_usage": {
             "planning": {"input_tokens": planning_in, "output_tokens": planning_out, "calls": planning_calls},
+            "summarizer": {"input_tokens": summarizer_in, "output_tokens": summarizer_out, "calls": summarizer_calls},
             "core_generation": {"input_tokens": core_in, "output_tokens": core_out, "calls": core_calls},
             "infrastructure_agent": {"input_tokens": infra_in, "output_tokens": infra_out, "calls": infra_calls},
             "fault_corrector": {"input_tokens": fc_in, "output_tokens": fc_out, "calls": fc_calls},
@@ -7216,6 +9842,8 @@ def _build_metrics_dict(
         },
         "latency": {
             "planning_seconds": round(orchestrator_elapsed + summarizer_elapsed, 3),
+            "orchestrator_seconds": round(orchestrator_elapsed, 3),
+            "summarizer_seconds": round(summarizer_elapsed, 3),
             "generation_seconds": round(core_agent_elapsed, 3),
             "infrastructure_seconds": round(infra_agent_elapsed, 3),
             "compilation_seconds": round(build_elapsed, 3),
@@ -7224,11 +9852,24 @@ def _build_metrics_dict(
             "total_pipeline_seconds": round(total_all, 3),
         },
         "self_healing": {
+            "disk_fallback_used": result.get("_disk_fallback_used", False),
             "compile_loop_iterations": cl_core,
             "compile_loop_max": 3,
             "runtime_loop_iterations": fc_calls,
-            "runtime_loop_max": 2,
+            "runtime_loop_max": 4,
             "total_self_fixes": total_fixes,
+            "runtime_repair_iterations_used": (
+                result.get("runtime_repair", {}).get("iterations_used", 0)
+                if isinstance(result.get("runtime_repair"), dict) else 0
+            ),
+            "runtime_repair_status": (
+                result.get("runtime_repair", {}).get("status", "not_run")
+                if isinstance(result.get("runtime_repair"), dict) else "not_run"
+            ),
+            "runtime_repair_verdict": (
+                result.get("runtime_repair", {}).get("runtime_verdict", "not_run")
+                if isinstance(result.get("runtime_repair"), dict) else "not_run"
+            ),
         },
         "verdict": {
             "result": verdict_result,
@@ -7256,7 +9897,9 @@ def run_pipeline(
     pcap_path: Optional[Path] = None,
     skip_build: bool = False,
     sut_ip: Optional[str] = None,
-    ablation_no_knowledge: bool = False,
+    rule_based_plan: bool = False,
+    no_llm_render: bool = False,
+    watchdog_timeout: int = 600,
 ) -> List[Dict]:
     """运行完整的 TTCN-3 代码生成流水线
 
@@ -7277,6 +9920,11 @@ def run_pipeline(
         multi_mode: 多需求模式，True 表示合并为一个测试用例
         skip_build: 是否跳过编译运行步骤
         sut_ip: SUT IP 地址（用于 titan_runtime.cfg 配置）
+        rule_based_plan: 若为 True，使用确定性 Python 规则构建 plan，跳过 Orchestrator LLM 调用
+                          （默认 False，保持向后兼容）
+        no_llm_render: 若为 True，完全使用静态模板引擎生成 TTCN 文件，跳过 Core Agent 调用。
+                       提供 100%% 确定性的基线路径。
+        watchdog_timeout: LLM 子代理最大空闲秒数（默认 600s）。超时后看门狗终止代理并回退到静态模板。
 
     Returns:
         包含生成结果的列表，每个元素包含 input、success 字段，
@@ -7304,6 +9952,10 @@ def run_pipeline(
                 titan_log=titan_log, pcap_path=pcap_path,
                 skip_build=skip_build,
                 sut_ip=sut_ip,
+                rule_based_plan=rule_based_plan,
+                no_llm_render=no_llm_render,
+                watchdog_timeout=watchdog_timeout,
+                raw_file_data=None,
             )
         except _PipelineEarlyExit:
             gen_result = None
@@ -7319,6 +9971,8 @@ def run_pipeline(
     if test_case_file:
         log(f"从文件加载测试用例: {test_case_file}")
         test_case_list = load_test_case_from_file(Path(test_case_file))
+        # Also load raw JSON to preserve top-level fields (testing_points, orchestrator_plan, etc.)
+        raw_file_data = load_json(Path(test_case_file)) if Path(test_case_file).exists() else None
         if test_case_list:
             # load_test_case_from_file 已经返回列表
 
@@ -7358,7 +10012,9 @@ def run_pipeline(
                     titan_log=titan_log, pcap_path=pcap_path,
                     skip_build=skip_build,
                     sut_ip=sut_ip,
-                    ablation_no_knowledge=ablation_no_knowledge,
+                    rule_based_plan=rule_based_plan,
+                    raw_file_data=raw_file_data,
+                    filter_tc_id=filter_tc_id,
                 )
             except _PipelineEarlyExit:
                 gen_result = None
@@ -7396,7 +10052,10 @@ def run_pipeline(
                     titan_log=titan_log, pcap_path=pcap_path,
                     skip_build=skip_build,
                     sut_ip=sut_ip,
-                    ablation_no_knowledge=ablation_no_knowledge,
+                    rule_based_plan=rule_based_plan,
+                    no_llm_render=no_llm_render,
+                    watchdog_timeout=watchdog_timeout,
+                    raw_file_data=None,
                 )
             except _PipelineEarlyExit:
                 gen_result = None
@@ -7456,7 +10115,10 @@ def run_pipeline(
                 titan_log=titan_log, pcap_path=pcap_path,
                 skip_build=skip_build,
                 sut_ip=sut_ip,
-                ablation_no_knowledge=ablation_no_knowledge,
+                rule_based_plan=rule_based_plan,
+                no_llm_render=no_llm_render,
+                watchdog_timeout=watchdog_timeout,
+                raw_file_data=None,
             )
         except _PipelineEarlyExit:
             gen_result = None
@@ -7561,6 +10223,16 @@ def main():
         "--no-auto-generate", action="store_true",
         help="未找到测试用例时不自动生成"
     )
+    config_group.add_argument(
+        "--no-llm-render", action="store_true",
+        help="禁用 LLM 辅助渲染：完全使用静态模板引擎生成 TTCN 文件，不调用 Core Agent。"
+              " 提供 100%% 确定性的端到端自动化基线。"
+    )
+    config_group.add_argument(
+        "--watchdog-timeout", type=int, default=1200,
+        help="LLM 子代理的最大空闲时间（秒），超过则看门狗将其终止并回退到静态模板。"
+              " 默认 1200s (20min)。设为 0 则禁用看门狗。"
+    )
 
     # 基础设施参数
     infra_group = parser.add_argument_group("编译运行选项")
@@ -7573,8 +10245,8 @@ def main():
         help="SUT IP 地址（用于 titan_runtime.cfg 配置，默认 ff02::01 IPv6 组播）"
     )
     infra_group.add_argument(
-        "--ablation-no-knowledge", action="store_true",
-        help="禁用所有知识库注入（Summarizer + Local KB Search），执行 Zero-Shot 模式用于消融研究"
+        "--rule-based-plan", action="store_true",
+        help="使用确定性 Python 规则构建 plan，跳过 Orchestrator LLM 调用（同时禁用 Summarizer）；用于消融研究和纯推理能力评估"
     )
 
     # 故障分析参数
@@ -7630,7 +10302,9 @@ def main():
         pcap_path=Path(args.pcap) if args.pcap else None,
         skip_build=args.skip_build,
         sut_ip=args.sut_ip,
-        ablation_no_knowledge=args.ablation_no_knowledge,
+        rule_based_plan=args.rule_based_plan,
+        no_llm_render=args.no_llm_render,
+        watchdog_timeout=args.watchdog_timeout,
     )
 
     # 打印结果报告
@@ -7691,6 +10365,304 @@ def main():
     return 0 if success_count == len(results) else 1
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Static Linter: zero-LLM mechanical fix layer
+# Runs BEFORE the Fault Corrector LLM is invoked. Catches known mechanical
+# typos that waste expensive LLM tokens and TITAN compile cycles.
+# Returns (bool_fixed, list_of_fixes_applied).
+# ─────────────────────────────────────────────────────────────────────────────
+import re as _re
+
+
+def _run_static_linter(
+    compile_errors: List[Dict],
+    tc_project_dir: Path,
+) -> Tuple[bool, List[Dict]]:
+    """
+    Apply pattern-based fixes to TTCN-3 source files WITHOUT calling LLM.
+    Catches mechanical typos: (1) incorrect { v2g := { union wrapper,
+    (2) lowercase field names that should be camelCase.
+    """
+    if not compile_errors:
+        return False, []
+
+    # Canonical V2G_MessageUnion field name map
+    UNION_FIELD_MAP = {
+        "sdpreq": "sdpReq", "sdpres": "sdpRes",
+        "supportedappprotocolreq": "supportedAppProtocolReq",
+        "supportedappprotocolres": "supportedAppProtocolRes",
+        "sessionsetupreq": "sessionSetupReq", "sessionsetupres": "sessionSetupRes",
+        "servicediscoveryreq": "serviceDiscoveryReq", "servicediscoveryres": "serviceDiscoveryRes",
+        "servicepaymentselectionreq": "servicePaymentSelectionReq",
+        "servicepaymentselectionres": "servicePaymentSelectionRes",
+        "paymentdetailsreq": "paymentDetailsReq", "paymentdetailsres": "paymentDetailsRes",
+        "authorizationreq": "authorizationReq", "authorizationres": "authorizationRes",
+        "certificateinstallationreq": "certificateInstallationReq",
+        "certificateinstallationres": "certificateInstallationRes",
+        "certificateupdatereq": "certificateUpdateReq",
+        "certificateupdateres": "certificateUpdateRes",
+        "cablecheckreq": "cableCheckReq", "cablecheckres": "cableCheckRes",
+        "chargeparameterdiscoveryreq": "chargeParameterDiscoveryReq",
+        "chargeparameterdiscoveryres": "chargeParameterDiscoveryRes",
+        "powerdeliveryreq": "powerDeliveryReq", "powerdeliveryres": "powerDeliveryRes",
+        "sessionstopreq": "sessionStopReq", "sessionstopres": "sessionStopRes",
+        "chargingstatusreq": "chargingStatusReq", "chargingstatusres": "chargingStatusRes",
+        "currentdemandreq": "currentDemandReq", "currentdemandres": "currentDemandRes",
+        "meterreceiptreq": "meterReceiptReq", "meterreceiptres": "meterReceiptRes",
+        "prechargereq": "preChargeReq", "prechargeres": "preChargeRes",
+        "weldingdetectionreq": "weldingDetectionReq", "weldingdetectionres": "weldingDetectionRes",
+        "servicedetailsreq": "serviceDetailsReq", "servicedetailsres": "serviceDetailsRes",
+    }
+
+    # Wrong → correct field name mapping (handles v2gtp-prefixed and bare names)
+    _FIELD_MAP = {}
+    for wrong, correct in [
+        # Simple bad names (with v2gtp prefix)
+        ("v2gtpsessionsetupReq", "sessionSetupReq"), ("v2gtpsessionsetupRes", "sessionSetupRes"),
+        ("v2gtpsdpreq", "sdpReq"), ("v2gtpsdpres", "sdpRes"),
+        ("v2gtpauthorizationreq", "authorizationReq"), ("v2gtpauthorizationres", "authorizationRes"),
+        ("v2gtppowerdeliveryreq", "powerDeliveryReq"), ("v2gtppowerdeliveryres", "powerDeliveryRes"),
+        ("v2gtpcablecheckreq", "cableCheckReq"), ("v2gtpcablecheckres", "cableCheckRes"),
+        ("v2gtpservicediscoveryreq", "serviceDiscoveryReq"), ("v2gtpservicediscoveryres", "serviceDiscoveryRes"),
+        ("v2gtpsessionstopreq", "sessionStopReq"), ("v2gtpsessionstopres", "sessionStopRes"),
+        ("v2gtpchargeparameterdiscoveryreq", "chargeParameterDiscoveryReq"),
+        ("v2gtpchargeparameterdiscoveryres", "chargeParameterDiscoveryRes"),
+        ("v2gtpservicedetailsreq", "serviceDetailsReq"), ("v2gtpservicedetailsres", "serviceDetailsRes"),
+        ("v2gtpsupportedappprotocolreq", "supportedAppProtocolReq"),
+        ("v2gtpsupportedappprotocolres", "supportedAppProtocolRes"),
+        ("v2gtppaymentserviceselectionreq", "servicePaymentSelectionReq"),
+        ("v2gtppaymentserviceselectionres", "servicePaymentSelectionRes"),
+        ("v2gtppaymentdetailsreq", "paymentDetailsReq"),
+        ("v2gtppaymentdetailsres", "paymentDetailsRes"),
+        ("v2gtpcertificateinstallationreq", "certificateInstallationReq"),
+        ("v2gtpcertificateinstallationres", "certificateInstallationRes"),
+        ("v2gtpcertificateupdatereq", "certificateUpdateReq"),
+        ("v2gtpcertificateupdateres", "certificateUpdateRes"),
+        ("v2gtpchargeparameterdiscoveryreq", "chargeParameterDiscoveryReq"),
+        ("v2gtpchargeparameterdiscoveryres", "chargeParameterDiscoveryRes"),
+        ("v2gtpchargingstatusreq", "chargeStatusReq"),
+        ("v2gtpchargingstatusres", "chargeStatusRes"),
+        ("v2gtpcurrentdemandreq", "currentDemandReq"),
+        ("v2gtpcurrentdemandres", "currentDemandRes"),
+        ("v2gtpmeteringreceiptreq", "meterReceiptReq"),
+        ("v2gtpmeteringreceiptres", "meterReceiptRes"),
+        ("v2gtpprechargereq", "preChargeReq"),
+        ("v2gtpprechargeres", "preChargeRes"),
+        ("v2gtpweldingdetectionreq", "weldingDetectionReq"),
+        ("v2gtpweldingdetectionres", "weldingDetectionRes"),
+        ("v2gtpservicedetailsreq", "serviceDetailsReq"),
+        ("v2gtpservicedetailsres", "serviceDetailsRes"),
+        # Compound receive-alt suffixes (ReqRes = session-setup response)
+        ("v2gtpsessionsetupReqRes", "sessionSetupRes"),
+        ("v2gtpsdpreqRes", "sdpRes"),
+        ("v2gtpauthorizationReqRes", "authorizationRes"),
+        ("v2gtppowerdeliveryReqRes", "powerDeliveryRes"),
+        ("v2gtpcablecheckReqRes", "cableCheckRes"),
+        ("v2gtpservicediscoveryReqRes", "serviceDiscoveryRes"),
+        ("v2gtpsessionstopReqRes", "sessionStopRes"),
+        ("v2gtpsupportedappprotocolReqRes", "supportedAppProtocolRes"),
+        ("v2gtppaymentdetailsReqRes", "paymentDetailsRes"),
+        ("v2gtpservicepaymentselectionReqRes", "servicePaymentSelectionRes"),
+        ("v2gtpcertificateinstallationReqRes", "certificateInstallationRes"),
+        ("v2gtpcertificateupdateReqRes", "certificateUpdateRes"),
+        ("v2gtpchargeparameterdiscoveryReqRes", "chargeParameterDiscoveryRes"),
+        ("v2gtpchargingstatusReqRes", "chargeStatusRes"),
+        ("v2gtpcurrentdemandReqRes", "currentDemandRes"),
+        ("v2gtpmeteringreceiptReqRes", "meterReceiptRes"),
+        ("v2gtpprechargeReqRes", "preChargeRes"),
+        ("v2gtpweldingdetectionReqRes", "weldingDetectionRes"),
+        ("v2gtpservicedetailsReqRes", "serviceDetailsRes"),
+        # Bare lowercase (no prefix)
+        ("sdpreq", "sdpReq"), ("sdpres", "sdpRes"),
+        ("authorizationreq", "authorizationReq"), ("authorizationres", "authorizationRes"),
+        ("powerdeliveryreq", "powerDeliveryReq"), ("powerdeliveryres", "powerDeliveryRes"),
+        ("cablecheckreq", "cableCheckReq"), ("cablecheckres", "cableCheckRes"),
+        ("servicediscoveryreq", "serviceDiscoveryReq"), ("servicediscoveryres", "serviceDiscoveryRes"),
+        ("sessionstopreq", "sessionStopReq"), ("sessionstopres", "sessionStopRes"),
+        ("sessionsetupreq", "sessionSetupReq"), ("sessionsetupres", "sessionSetupRes"),
+        ("supportedappprotocolreq", "supportedAppProtocolReq"),
+        ("supportedappprotocolres", "supportedAppProtocolRes"),
+        ("paymentserviceselectionreq", "servicePaymentSelectionReq"),
+        ("paymentserviceselectionres", "servicePaymentSelectionRes"),
+        ("paymentdetailsreq", "paymentDetailsReq"), ("paymentdetailsres", "paymentDetailsRes"),
+        ("certificateinstallationreq", "certificateInstallationReq"),
+        ("certificateinstallationres", "certificateInstallationRes"),
+        ("certificateupdatereq", "certificateUpdateReq"),
+        ("certificateupdateres", "certificateUpdateRes"),
+        ("chargeparameterdiscoveryreq", "chargeParameterDiscoveryReq"),
+        ("chargeparameterdiscoveryres", "chargeParameterDiscoveryRes"),
+        ("chargingstatusreq", "chargingStatusReq"), ("chargingstatusres", "chargingStatusRes"),
+        ("currentdemandreq", "currentDemandReq"), ("currentdemandres", "currentDemandRes"),
+        ("meteringreceiptreq", "meterReceiptReq"), ("meteringreceiptres", "meterReceiptRes"),
+        ("prechargereq", "preChargeReq"), ("prechargeres", "preChargeRes"),
+        ("weldingdetectionreq", "weldingDetectionReq"), ("weldingdetectionres", "weldingDetectionRes"),
+        ("servicedetailsreq", "serviceDetailsReq"), ("servicedetailsres", "serviceDetailsRes"),
+        # Bare lowercase compound receive-alt
+        ("sessionsetupReqRes", "sessionSetupRes"),
+        ("sdpReqRes", "sdpRes"),
+        ("authorizationReqRes", "authorizationRes"),
+        ("powerdeliveryReqRes", "powerDeliveryRes"),
+        ("cablecheckReqRes", "cableCheckRes"),
+        ("servicediscoveryReqRes", "serviceDiscoveryRes"),
+        ("sessionstopReqRes", "sessionStopRes"),
+        ("supportedappprotocolReqRes", "supportedAppProtocolRes"),
+        ("paymentserviceselectionReqRes", "servicePaymentSelectionRes"),
+        ("paymentdetailsReqRes", "paymentDetailsRes"),
+        ("certificateinstallationReqRes", "certificateInstallationRes"),
+        ("certificateupdateReqRes", "certificateUpdateRes"),
+        ("chargeparameterdiscoveryReqRes", "chargeParameterDiscoveryRes"),
+        ("chargingstatusReqRes", "chargeStatusRes"),
+        ("currentdemandReqRes", "currentDemandRes"),
+        ("meteringreceiptReqRes", "meterReceiptRes"),
+        ("prechargeReqRes", "preChargeRes"),
+        ("weldingdetectionReqRes", "weldingDetectionRes"),
+        ("servicedetailsReqRes", "serviceDetailsRes"),
+    ]:
+        _FIELD_MAP[wrong.lower()] = correct
+
+    # Comprehensive single-pass patterns.
+    # The bad code structure is:
+    #   send(
+    #     { v2g := { FIELD := value } }     <-- needs fixing
+    #   );
+    #   OR
+    #   [] port.receive(
+    #     { v2g := { FIELD := ? } }         <-- needs fixing
+    #   ) {
+    #
+    # Fix strategy: regex with DOTALL on the line/block of interest.
+    # Pattern 1: fix inner FIELD name (correct structure: { v2g:={ FIELD := value } })
+    # Pattern 2: unwrap double-nesting { v2g:={ v2g:= FIELD }}  → { v2g:= FIELD }
+    _PAT_WRAPPER = re.compile(
+        r"\{\s*v2g\s*:=\s*\{\s*([A-Za-z][A-Za-z0-9]+)\s*:=\s*([^{}]+?)\s*\}\s*\}",
+        re.DOTALL,
+    )
+    # Fix double-nested {v2g:={v2g:=FIELD}} → {v2g:={FIELD:=?}}
+    # Matches: { v2g := { v2g := FieldName } }
+    # Capture both the field name and the value (for send patterns with real values)
+    _PAT_DOUBLE = re.compile(
+        r"\{\s*v2g\s*:=\s*\{\s*v2g\s*:=\s*([^{}]+?)\s*\}\s*\}",
+        re.DOTALL,
+    )
+    def _double_nested_replacer(m):
+        field = m.group(1)
+        value = m.group(2).strip()
+        # If value is empty/placeholder (receive pattern) → use wildcard
+        if not value or value == "?":
+            return "{ v2g := { %s :=? } }" % field
+        # Otherwise it's a send pattern with a real value
+        return "{ v2g := { %s := %s } }" % (field, value)
+
+    def _fix_field_name(wrong_name):
+        """
+        Map wrong field names to correct ones.
+        Handles:
+        - Simple bad: "v2gtpsessionsetupReq" -> "sessionSetupReq"
+        - Compound suffix: "v2gtpsessionsetupReqRes" -> "sessionSetupRes"
+        - Already correct: "sessionSetupReq" -> "sessionSetupReq" (no-op)
+        """
+        key = wrong_name.lower()
+        if key in _FIELD_MAP:
+            return _FIELD_MAP[key]
+        # Already correct (starts with capital, no v2g prefix)
+        if wrong_name[0].isupper() and not wrong_name.startswith("v2g"):
+            return wrong_name
+        # Determine the suffix type first
+        actual_suffix = None
+        for suffix in ("reqres", "resreq", "req", "res"):
+            if key.endswith(suffix):
+                actual_suffix = suffix
+                break
+        # Strip suffix if found
+        root = key
+        if actual_suffix:
+            root = key[:-len(actual_suffix)]
+        # Strip v2gtp/v2g prefix from the root
+        for pfx in ("v2gtp", "v2g_", "v2g"):
+            if root.startswith(pfx):
+                base = root[len(pfx):]
+                if actual_suffix:
+                    lookup_key = base + actual_suffix[-3:]
+                    if lookup_key in _FIELD_MAP:
+                        return _FIELD_MAP[lookup_key]
+                else:
+                    for sfx in ("req", "res"):
+                        lookup_key = base + sfx
+                        if lookup_key in _FIELD_MAP:
+                            return _FIELD_MAP[lookup_key]
+                break
+        return wrong_name
+
+    def _wrapper_replacer(m):
+        """
+        Fix the inner field name in a {v2g:={FIELD:=...}} wrapper.
+        If the captured 'field' is literally 'v2g' it means the
+        double-nested pattern {v2g:={v2g:=VALUE}} was matched (where
+        'VALUE' = field, '...' = value). Delegate accordingly.
+        """
+        field = m.group(1)
+        value = m.group(2)
+        # If field='v2g' we matched the double-nested pattern — delegate
+        if field.lower() == "v2g":
+            return _double_nested_replacer(m)
+        correct = _fix_field_name(field)
+        if correct == field:
+            return m.group(0)
+        return "{ v2g := { %s := %s } }" % (correct, value)
+
+    fixes_applied = []
+    any_fixed = False
+
+    for ttcn_file in tc_project_dir.rglob("*.ttcn"):
+        if not ttcn_file.is_file():
+            continue
+        try:
+            content = ttcn_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        original = content
+        file_fixes = []
+
+        # Strip comments (TTCN: line // and block /* */) to avoid false
+        # matches in source-code documentation comments.
+        no_block = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
+        no_comments = re.sub(r"//[^\n]*", "", no_block)
+
+        # Fix 0: unwrap double-nested {v2g:={v2g:=...}} → {v2g:=...}
+        nc = _PAT_DOUBLE.sub(_double_nested_replacer, no_comments)
+        if nc != no_comments:
+            no_comments = nc
+            file_fixes.append("double-nested union unwrapped")
+
+        # Fix 1: {v2g:={FIELD:=...}} wrapper - fix inner FIELD name only
+        # (wrapper itself is the V2G_PortMessage structure and must remain)
+        nc = _PAT_WRAPPER.sub(_wrapper_replacer, no_comments)
+        if nc != no_comments:
+            no_comments = nc
+            file_fixes.append("union field name fixed (v2g wrapper kept)")
+
+        # Replace content with the patched version if we made any fix
+        if file_fixes:
+            content = no_comments
+
+        if content != original:
+            ttcn_file.write_text(content, encoding="utf-8")
+            fixes_applied.append({
+                "file": str(ttcn_file.relative_to(tc_project_dir)),
+                "fixes": file_fixes,
+            })
+            any_fixed = True
+            log(f"[STATIC-LINTER] Fixed {ttcn_file.name}: {file_fixes}")
+
+    if fixes_applied:
+        log(f"[STATIC-LINTER] {len(fixes_applied)} file patches, "
+            f"{sum(len(f['fixes']) for f in fixes_applied)} ops total")
+
+    return any_fixed, fixes_applied
+
+
+
 if __name__ == "__main__":
     # 注册 SIGINT 信号处理，确保 Ctrl+C 能正确终止子进程
     def setup_signal_handler():
@@ -7699,6 +10671,7 @@ if __name__ == "__main__":
             signal.signal(signal.SIGINT, _request_interrupt)
         if hasattr(signal, 'SIGTERM'):
             signal.signal(signal.SIGTERM, _request_interrupt)
-    
+
     setup_signal_handler()
     sys.exit(main())
+

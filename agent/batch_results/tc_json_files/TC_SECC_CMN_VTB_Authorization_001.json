@@ -1,0 +1,36 @@
+{
+  "Test_Case": {
+    "TC_Id": "TC_SECC_CMN_VTB_Authorization_001",
+    "TC_Name": "SECC CMN VTB Authorization 001",
+    "Purpose": "Test System executes GoodCase procedure and sends an AuthorizationReq message with the current SessionID and all additional mandatory parameters.Test System then checks that the SUT sends an AuthorizationRes message with the current SessionID, ResponseCode 'OK', EVSEProcessing 'Finished' and all additional mandatory parameters. If a valid AuthorizationRes message with EVSEProcessing 'Ongoing_WaitingForCustomerInteraction' was received before, the Test System sends another AuthorizationReq message. This message sequence will be repeated until the authorization has finished or 'V2G_EVCC_Ongoing_Timer' has expired.",
+    "Document_Reference": {
+      "Requirements": [
+        "[V2G2-179]",
+        "[V2G2-180]",
+        "[V2G2-181]",
+        "[V2G2-183]",
+        "[V2G2-212]",
+        "[V2G2-213]",
+        "[V2G2-563]",
+        "[V2G2-752]",
+        "[V2G2-856]",
+        "[V2G2-377]",
+        "[V2G2-391]",
+        "[V2G2-457]",
+        "[V2G2-634]",
+        "[V2G2-664]",
+        "[V2G2-665]",
+        "[V2G2-666]",
+        "[V2G2-667]",
+        "[V2G2-915]",
+        "[V2G2-665]"
+      ]
+    }
+  },
+  "metadata": {
+    "sut_type": "SECC",
+    "message_type": "Authorization",
+    "test_type": "GoodCase",
+    "source_kb": "iso15118_4_ttcn_knowledge_base.json"
+  }
+}

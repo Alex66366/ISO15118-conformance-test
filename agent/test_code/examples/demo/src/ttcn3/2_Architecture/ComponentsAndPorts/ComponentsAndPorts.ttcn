@@ -2,19 +2,32 @@ module SECC_TestSystem {
     import from SECC_Types all;
 
     // ==========================================
+    // V2G_PortMessage — Dual-type out message union
+    // ==========================================
+    // V2GTP layer BadCase tests MUST send raw octetstrings to control the V2GTP header
+    // bytes exactly (ProtocolVersion, InverseProtocolVersion, etc.). All other V2G
+    // application messages go through V2G_MessageUnion (C++ adapter encodes via JSON).
+    // ==========================================
+    type union V2G_PortMessage {
+        V2G_MessageUnion  v2g,    // Normal V2G messages (EXI-encoded by C++ adapter)
+        octetstring       raw     // Raw bytes for V2GTP header BadCase tests
+    }
+
+    // ==========================================
     // Section 1: Port Types
     // ==========================================
 
-    // V2G_TCP_TLS_Port: V2G application messages via V2G_MessageUnion.
-    //   The C++ ExiCodecAdapter (in V2G_TCP_TLS_Port.cc) intercepts these
-    //   structured values, encodes them to EXI, and prepends the V2GTP header
-    //   before sending over TCP.
+    // V2G_TCP_TLS_Port: out uses V2G_PortMessage (dual-path), in always V2G_MessageUnion.
+    //   - { v2g := ... }: C++ ExiCodecAdapter encodes via exi_payload_library.json,
+    //     prepends V2GTP header (ProtocolVersion=0x01), sends over TCP.
+    //   - { raw := ... }: C++ adapter sends raw bytes as-is (no EXI, no V2GTP patching).
+    //     Use ONLY for V2GTP layer BadCase tests (TC_SECC_CMN_VTB_V2GTPHeader_*).
     //
     // V2G_UDP_SDP_Port: Raw SDP protocol (no EXI, no V2G_MessageUnion).
     // ==========================================
 
     type port V2G_TCP_TLS_Port message {
-        out V2G_MessageUnion;
+        out V2G_PortMessage;
         in  V2G_MessageUnion;
     }
 

@@ -271,9 +271,57 @@ void V2G__TCP__TLS__Port::outgoing_send(const ::SECC__Types::V2G__MessageUnion& 
     }
 }
 
-void V2G__TCP__TLS__Port::send_data(const ::SECC__Types::V2G__MessageUnion& send_data,
-                                      const char* /* send_fmt */, ...) {
-    outgoing_send(send_data);
+// ============================================================================
+// V2GTP_PortMessage dispatch: TITAN calls this for port out type V2G_PortMessage.
+// Dispatches to the appropriate send path based on which union variant is active.
+// ============================================================================
+void V2G__TCP__TLS__Port::outgoing_send(const V2G__PortMessage& send_par) {
+    using PM = V2G__PortMessage;
+    PM::union_selection_type sel = send_par.get_selection();
+
+    if (sel == PM::ALT_raw) {
+        // V2GTP header BadCase: raw octetstring bytes sent as-is
+        ::std::cout << "[TCP_TLS_PORT] outgoing_send(V2G_PortMessage{raw}): dispatching to raw handler" << ::std::endl;
+        const ::OCTETSTRING& raw = send_par.raw();
+        outgoing_send(raw);
+    } else if (sel == PM::ALT_v2g) {
+        // Normal V2G message: EXI encode via JSON library
+        ::std::cout << "[TCP_TLS_PORT] outgoing_send(V2G_PortMessage{v2g}): dispatching to v2g handler" << ::std::endl;
+        const ::SECC__Types::V2G__MessageUnion& v2g = send_par.v2g();
+        outgoing_send(v2g);
+    } else {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: Unknown V2G_PortMessage selection: " << (int)sel << ::std::endl;
+    }
+}
+
+// ============================================================================
+// V2GTP header BadCase send: raw bytes bypass EXI encoding and V2GTP patching.
+// The { raw := ... } variant of V2G_PortMessage lands here so the adapter sends
+// exactly the bytes the TTCN-3 test case constructed — used ONLY for
+// TC_SECC_CMN_VTB_V2GTPHeader_* BadCase tests.
+// ============================================================================
+void V2G__TCP__TLS__Port::outgoing_send(const ::OCTETSTRING& raw_bytes) {
+    // TITAN OCTETSTRING: use lengthof() and implicit conversion to unsigned char*
+    const unsigned char* data = raw_bytes;
+    size_t length = raw_bytes.lengthof();
+
+    ::std::cout << "[TCP_TLS_PORT] outgoing_send(raw): " << length << " bytes" << ::std::endl;
+    if (length > 0 && length <= 128) {
+        ::std::cout << "[TCP_TLS_PORT] Raw wire: ";
+        for (size_t i = 0; i < length; ++i)
+            ::std::cout << ::std::hex << ::std::setw(2) << ::std::setfill('0') << (int)data[i] << " ";
+        ::std::cout << ::std::dec << ::std::endl;
+    }
+
+    if (!connected_ || socket_fd_ < 0) {
+        ::std::cerr << "[TCP_TLS_PORT] WARNING: Not connected, connecting..." << ::std::endl;
+        connect_to_secc();
+    }
+    if (connected_) {
+        send_wire_bytes(data, length);
+    } else {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: Not connected" << ::std::endl;
+    }
 }
 
 int V2G__TCP__TLS__Port::parse_ipv6_address(const ::std::string& addr_str, ::sockaddr_in6* addr6) {

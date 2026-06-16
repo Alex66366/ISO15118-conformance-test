@@ -7,8 +7,26 @@ Analyze the given test case JSON and decompose it into a structured TTCN-3 code 
 You will receive:
 1. A test case JSON with TC_Id, Test_Objective, Test_Description, Document_Reference, Requirements, Test_Sequence, parameters
 2. The requirement context from ISO 15118-2
+3. **Protocol Descriptor** — a machine-readable snapshot of the active protocol's metadata, including message catalog, naming rules, transport configuration, and protocol layers. **This is the authoritative source for all protocol-specific rules. Use it instead of relying on hardcoded knowledge.**
+
+## Protocol Descriptor
+
+```json
+{PROTOCOL_SNAPSHOT}
+```
+
+**How to use the Protocol Descriptor:**
+- Every naming rule (module name, function name, template name, timer name, port name) comes from the `naming` section. Follow the exact pattern strings with `{placeholder}` substitution.
+- Every precondition chain comes from `messages[].default_precondition_chain`. Use the chain exactly as given.
+- Every `union_field_req` / `union_field_res` comes from `messages[].union_field`. Use these values in the TTCN-3 union field selectors.
+- Every `port_name` comes from `messages[].port_name` after `{SUT}` substitution.
+- Every `send_template_name` and `receive_template_name` comes from the naming section.
+- For SDP / raw-octetstring messages: `uses_raw_octetstring=true`. Do NOT use V2G_MessageUnion for these.
+- For wrapper-prefixed messages (e.g. V2GTPSessionSetup): use the canonical message type's union fields but keep the wrapper message name for naming.
+- `covered_by_precondition` on a message means the pre-condition chain already exchanges that message; the TB can short-circuit.
 
 ## Output
+
 You MUST output a valid JSON object (and nothing else) with this exact structure:
 
 ```json
@@ -48,25 +66,64 @@ You MUST output a valid JSON object (and nothing else) with this exact structure
 }
 ```
 
-**Rules**
-1. SUT type: If the test targets SECC behavior, SUT=SECC. If it targets EVCC, SUT=EVCC.
-2. Category: CMN for common tests, AC for AC-specific, DC for DC-specific.
-3. SeqNo: 001 for GoodCase (valid input, expect correct response), 002+ for BadCase (invalid input, expect rejection).
-4. Precondition and postcondition chains must follow the V2G session sequence.
-   PostConditions always include f_{SUT}_CMN_PO_InitialState_001 followed by f_{SUT}_CMN_PO_ShutdownConfiguration_001.
-   (precondition chain rules unchanged)
-   - V2GTPHeader/SDP tests: TCP_Connected only (transport layer, bypasses V2G session)
-   - SessionSetup: Init → SupportedAppProtocol
-   - ServiceDiscovery: Init → SupportedAppProtocol → SessionSetup
-   - Authorization: Init → ... → PaymentServiceSelection
-   - PowerDelivery: Init → ... → ChargeParameterDiscovery
-5. Timer parameter must match the message type from ISO 15118-2 Annex A.
-6. For BadCase verdict logic: pass when SUT rejects/closes/times out, fail when SUT accepts invalid input.
-7. Special message types that bypass standard preconditions: TCP_Connected, SLAC, TLSHandshake, TCP, V2GTP, SDP -- these do NOT require the full V2G session chain. For SDP/UDP discovery tests, set precondition_chain to [f_{SUT}_CMN_PR_InitConfiguration_001] and postcondition_chain to [f_{SUT}_CMN_PO_InitialState_001]. For pure transport-layer tests (TCP_Connected, TLSHandshake), set both chains to [].
+## Rules
+
+1. **All protocol-specific rules come from the Protocol Descriptor above.** Do NOT guess naming conventions, precondition chains, or union field names. Use the values from the snapshot.
+2. **SUT type**: If the test targets SECC behavior, SUT=SECC. If it targets EVCC, SUT=EVCC.
+3. **Category**: CMN for common tests, AC for AC-specific, DC for DC-specific.
+4. **SeqNo**: 001 for GoodCase (valid input, expect correct response), 002+ for BadCase (invalid input, expect rejection).
+5. **Timer parameter**: Use the protocol's named timer (`tc_V2G_{SUT}_Msg_Timer`) and timer param (`par_V2G_{SUT}_Msg_Timeout_{MessageType}{Req|Res}`).
+6. **For BadCase verdict logic**: pass when SUT rejects/closes/times out, fail when SUT accepts invalid input.
+7. **Protocol layer**: Use the `protocol_layer` field from the Protocol Descriptor for the `message_type` you identified.
+8. **SDP**: If `message_type` resolves to SDP in the Protocol Descriptor, use raw octetstring (NOT V2G_MessageUnion) and set `precondition_chain` to only `f_{SUT}_CMN_PR_InitConfiguration_001`.
 
 ---
 
-# CRITICAL OUTPUT DIRECTIVE — PREVENTING OVER-THINKING
+## Step 6: Discover and Propose New Protocol Knowledge
+
+If during analysis you encounter a V2G message type that is **not in the Protocol Descriptor's `message_names` list**, you MUST:
+
+1. Infer the correct protocol metadata from context (union field name, naming pattern, transport, preconditions).
+2. Output it in the `proposed_additions` field (see format below).
+
+This keeps the protocol descriptor growing organically as new test cases reveal new messages.
+
+### proposed_additions format
+
+Include this in your JSON output **only if** you discovered something new:
+
+```json
+{
+  "tc_id": "...",
+  ...,
+  "proposed_additions": {
+    "messages": [
+      {
+        "name": "NewMessage",
+        "category": "CMN",
+        "protocol_layer": "V2G_Application",
+        "transport": "TCP_TLS",
+        "uses_raw_octetstring": false,
+        "covered_by_precondition": null,
+        "request_type": "NewMessageReq",
+        "response_type": "NewMessageRes",
+        "union_field": "newMessageReq",
+        "default_precondition_chain": [
+          "f_{SUT}_CMN_PR_InitConfiguration_001",
+          "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        ],
+        "rationale": "Inferred from test case TC_SECC_CMN_VTB_NewMessage_001: ..."
+      }
+    ]
+  }
+}
+```
+
+**Important**: `proposed_additions` is optional. Only include it when you found a message not already in the Protocol Descriptor. The pipeline will write this to a review queue for human approval before merging.
+
+---
+
+# CRITICAL OUTPUT DIRECTIVE
 
 **FAILURE TO FOLLOW THIS DIRECTIVE WILL CAUSE THE PIPELINE TO CRASH.**
 
@@ -75,11 +132,10 @@ You MUST output a valid JSON object (and nothing else) with this exact structure
 ```json
 {
   "tc_id": "...",
-  "sut_type": "...",
   ...
 }
 ```
 
 2. **Your entire response MUST end with a valid JSON block** enclosed in ` ```json ... ``` ` containing the generation plan. This is non-negotiable. If your response does not end with a JSON code block, the pipeline will fail.
 
-<!-- NeTestLLM SOP v2.0 Pure Static -->
+<!-- NeTestLLM SOP v3.0 Protocol-Registry -->

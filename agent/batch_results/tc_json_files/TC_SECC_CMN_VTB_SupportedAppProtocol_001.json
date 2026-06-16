@@ -1,0 +1,44 @@
+{
+  "Test_Case": {
+    "TC_Id": "TC_SECC_CMN_VTB_SupportedAppProtocol_001",
+    "TC_Name": "SECC CMN VTB SupportedAppProtocol 001",
+    "Purpose": "Test System executes GoodCase procedure and sends a SupportedAppProtocolReq message with a list of valid AppProtocols including ISO namespace and all additional mandatory parameters.Test System then checks that the SUT sends a SupportedAppProtocolRes message with ResponseCode 'OK_SuccessfulNegotiation' or 'OK_SuccessfulNegotiationWithMinorDeviation' and all additional mandatory parameters.",
+    "Document_Reference": {
+      "Requirements": [
+        "[V2G2-165]",
+        "[V2G2-168]",
+        "[V2G2-169]",
+        "[V2G2-176]",
+        "[V2G2-178]",
+        "[V2G2-541]",
+        "[V2G2-026]",
+        "[V2G2-030]",
+        "[V2G2-031]",
+        "[V2G2-033]",
+        "[V2G2-377]",
+        "[V2G2-381]",
+        "[V2G2-391]",
+        "[V2G2-395]",
+        "[V2G2-634]",
+        "[V2G2-664]",
+        "[V2G2-665]",
+        "[V2G2-666]",
+        "[V2G2-667]",
+        "[V2G2-915]",
+        "[V2G2-721]",
+        "[V2G2-602]",
+        "[V2G2-626]",
+        "[V2G2-665]",
+        "[V2G2-068]",
+        "[V2G2-871]",
+        "[V2G2-852]"
+      ]
+    }
+  },
+  "metadata": {
+    "sut_type": "SECC",
+    "message_type": "SupportedAppProtocol_001TC_SECC",
+    "test_type": "GoodCase",
+    "source_kb": "iso15118_4_ttcn_knowledge_base.json"
+  }
+}

@@ -3,7 +3,7 @@
   "version": "1.0",
 
   "network": {
-    "interface": "eth0",
+    "interface": "ens33",
     "ipv6_multicast_address": "ff02::01",
     "vlan_id": 0,
     "mtu": 1500,
@@ -19,7 +19,7 @@
   "tcp_tls": {
     "port": 15118,
     "connection_timeout_ms": 10000,
-    "tls_enabled": true,
+    "tls_enabled": false,
     "tls_version": "1.2",
     "cipher_suites": [
       "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
@@ -28,7 +28,7 @@
 
   "slac": {
     "enabled": false,
-    "interface": "eth0",
+    "interface": "ens33",
     "config_file": "./slac_config.json",
     "timeout_ms": 5000
   },

@@ -66,10 +66,10 @@ module SECC_PIXIT {
     // ==========================================
 
     // EVCCID for Testing
-    modulepar EvccIDType PIXIT_SECC_CMN_Test_eVCCID := '123456789ABC'O;
+    modulepar EvccIDType PIXIT_SECC_CMN_Test_eVCCID := { content := '123456789ABC'O };
 
     // Session ID for Testing
-    modulepar SessionIDType PIXIT_SECC_CMN_Test_SessionID := '0000000000000000'O;
+    modulepar SessionIDType PIXIT_SECC_CMN_Test_SessionID := { content := '0000000000000000'O };
 
     // Certificate Configuration
     modulepar charstring PIXIT_SECC_CMN_Test_Root_CA := "V2G_ROOT_CA";

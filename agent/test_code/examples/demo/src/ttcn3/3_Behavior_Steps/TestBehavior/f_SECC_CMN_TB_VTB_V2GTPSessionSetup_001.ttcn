@@ -25,31 +25,35 @@ module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001 {
     // ================================================================
 
     function f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001() runs on SECCTester return verdicttype {
-        timer tc_V2G_EVCC_Msg_Timer := PX_SECC_CMN_Message_Timeout;
+        timer tc_V2G_SECC_Msg_Timer := PX_SECC_CMN_Message_Timeout;
 
         // Phase C: Send SessionSetupReq via structured union
         // The C++ port adapter intercepts and encodes via ExiCodecAdapter
         log("Phase C: Sending SessionSetupReq via structured union...");
-        tc_V2G_EVCC_Msg_Timer.start(PX_SECC_CMN_Message_Timeout);
+        tc_V2G_SECC_Msg_Timer.start(PX_SECC_CMN_Message_Timeout);
 
         pt_V2G_TCP_TLS_ALM_SECC_Port.send(
-            { sessionSetupReq := md_CMN_SessionSetupReq_001 }
+            { v2g := { sessionSetupReq := md_CMN_SessionSetupReq_001 } }
         );
 
         alt {
+            // Match any SessionSetupRes with ResponseCode in the OK range.
+            // Inline template (not module-level) keeps TTCN-3 syntax legal
+            // and avoids a stray `template name :=` declaration without a
+            // type prefix (which the TITAN compiler rejects).
             [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(
-                { sessionSetupRes := ? }
+                { sessionSetupRes := { ResponseCode := (0, 1), EVSEID := ?, EVSETimeStamp := omit } }
             ) {
-                tc_V2G_EVCC_Msg_Timer.stop;
+                tc_V2G_SECC_Msg_Timer.stop;
                 log("SessionSetupRes received and matched");
                 log("SessionID captured (C++ adapter stores it for subsequent messages)");
                 setverdict(pass, "SessionSetup exchange successful -- SECC accepted the session");
             }
             [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive {
-                tc_V2G_EVCC_Msg_Timer.stop;
+                tc_V2G_SECC_Msg_Timer.stop;
                 setverdict(fail, "Unexpected message received during SessionSetup");
             }
-            [] tc_V2G_EVCC_Msg_Timer.timeout {
+            [] tc_V2G_SECC_Msg_Timer.timeout {
                 setverdict(inconc, "SessionSetup timeout -- no response from SECC");
             }
         }

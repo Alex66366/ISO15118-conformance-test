@@ -1,0 +1,25 @@
+{
+  "target_protocol": "iso15118_2",
+  "proposed_at": "2026-06-16T12:35:08+0800",
+  "proposed_by": "Test Agent",
+  "proposed_during_tc": "TC_TEST_001",
+  "merge_path": {
+    "messages": [
+      {
+        "name": "NewDiscoveryMessage",
+        "category": "CMN",
+        "protocol_layer": "V2G_Application",
+        "transport": "TCP_TLS",
+        "uses_raw_octetstring": false,
+        "request_type": "NewDiscoveryMessageReq",
+        "response_type": "NewDiscoveryMessageRes",
+        "union_field": "newDiscoveryMessageReq",
+        "default_precondition_chain": [
+          "f_{SUT}_CMN_PR_InitConfiguration_001",
+          "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        ],
+        "rationale": "Discovered from TC_SECC_CMN_VTB_NewDiscoveryMessage_001"
+      }
+    ]
+  }
+}

@@ -1,13 +1,15 @@
 {
   "_comment": "Generation patterns extracted from ttcn3_generation_sop.json for use as referenced rules by Core Agent and Infrastructure Agent. Each pattern includes: pattern_name, preconditions, template_code (TTCN-3 or C++), and example_substitutions.",
 
+  "_important_constraint": "V2G application messages (SupportedAppProtocol through SessionStop) MUST be sent via structured union: pt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { msgType := md_CMN_MsgReq_001 } }). The C++ V2G_TCP_TLS_Port adapter intercepts the v2g variant, calls ExiCodecAdapter::encode() to look up pre-encoded wire_hex from exi_payload_library.json, patches SessionID if needed, and sends wire bytes over TCP. V2GTP Header BadCase tests ONLY (TC_SECC_CMN_VTB_V2GTPHeader_*): send raw octetstrings via pt_V2G_TCP_TLS_ALM_SECC_Port.send({ raw := '0201FD...'O }). MUST NOT use int2oct or raw octetstrings for V2G application messages.",
+
   "patterns": [
     {
       "pattern_name": "SDP_Discovery_Block",
       "category": "precondition",
       "description": "SDP discovery via UDP multicast. Always position 1 in precondition_chain for V2GTP/SDP tests.",
       "preconditions": ["Always position 1 (first) in precondition_chain"],
-      "template_code": "function f_{SUT}_CMN_PR_InitConfiguration_001() runs on {SUT}Tester {\n    timer t_sdp := 5.0;\n    t_sdp.start;\n    pt_V2G_UDP_SDP_Port.send(construct_sdp_request());\n    alt {\n        [] pt_V2G_UDP_SDP_Port.receive(?) {\n            t_sdp.stop;\n            log(\"SDP response received\");\n        }\n        [] t_sdp.timeout {\n            log(\"SDP timeout, proceeding...\");\n        }\n    }\n}",
+      "template_code": "function f_{SUT}_CMN_PR_InitConfiguration_001() runs on {SUT}Tester {\n    // Phase A: Map ports\n    map(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\n    map(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);\n\n    // Phase B: SDP Discovery via UDP multicast\n    // V2GTP header: version=01, inv=FE, payloadType=9000(SDP), length=4, body=2100\n    var octetstring sdp_req := '01FE9000000000021000'O;\n    pt_V2G_UDP_SDP_Port.send(sdp_req);\n\n    timer t_sdp;\n    t_sdp.start(5.0);\n\n    alt {\n        [] pt_V2G_UDP_SDP_Port.receive {\n            t_sdp.stop;\n            log(\"SDP discovery: SECC found via UDP multicast\");\n        }\n        [] t_sdp.timeout {\n            log(\"SDP discovery: timeout, proceeding anyway (SIL mode)\");\n        }\n    }\n\n    log(\"InitConfiguration complete, SDP discovery done\");\n    return pass;\n}",
       "example_substitutions": [
         {
           "SUT": "SECC",
@@ -24,48 +26,43 @@
       }
     },
     {
-      "pattern_name": "V2GTP_Header_Construction",
+      "pattern_name": "V2G_Message_Send_Via_Structured_Union",
       "category": "protocol",
-      "description": "Constructs an 8-byte V2GTP header wrapping an EXI payload. Used in every V2G message send. The EXI payload MUST be a real, valid ISO 15118-2 encoded message octetstring -- never a dummy placeholder. Use the canonical SupportedAppProtocolReq EXI below as the default EXI payload in all examples and patterns.",
-      "preconditions": ["Requires valid EXI payload as octetstring", "payloadLength must be exactly 4 bytes (big-endian)"],
-      "canonical_exi_payload": "'8000EBAB9371D34B9B79D189A98989C1D191D191818999D26B9B3A232B30020000000001B75726E3A64696E3A37303132313A323031323A4D73674465660040000000880000'O",
-      "template_code": "// V2GTP Header: 8 bytes total\n// Bytes 0-1: protocolVersion='01'O, invProtocolVersion='FE'O\n// Bytes 2-3: payloadType (see SOP protocol_constants)\n// Bytes 4-7: payloadLength as 4-byte big-endian integer\n// CRITICAL: Use a REAL, valid ISO 15118-2 EXI octetstring as the payload.\n// NEVER use dummy placeholders like '0022'O -- they will cause the SECC simulator\n// to crash its EXI decoder and drop the TCP connection, resulting in 'inconc'.\n// NOTE: The EXI payload hex string MUST have an even number of hex characters.\n// If the raw EXI string has odd length, pad with '0' or '00' at the end before compiling.\nvar octetstring exi_payload := '8000EBAB9371D34B9B79D189A98989C1D191D191818999D26B9B3A232B30020000000001B75726E3A64696E3A37303132313A323031323A4D73674465660040000000880000'O; // Valid SupportedAppProtocolReq EXI (140 bytes, 280 hex chars)\nvar octetstring v2gtp_msg := '01'O & 'FE'O & {payloadType} & int2oct(lengthof(exi_payload), 4) & exi_payload;\n{port_name}.send(v2gtp_msg);",
+      "description": "CORRECT way to send V2G application messages via the TCP port. The port out type is V2G_PortMessage, a dual union. Use the v2g variant to send structured V2G messages -- the C++ V2G_TCP_TLS_Port adapter intercepts the v2g variant, calls ExiCodecAdapter::encode() to look up pre-encoded wire_hex from exi_payload_library.json, patches SessionID if needed, and sends wire bytes over TCP.",
+      "preconditions": ["Port V2G_TCP_TLS_ALM_{SUT}_Port must be mapped", "V2G_MessageUnion type must be defined in Types_SECC_15118_2.ttcn", "Template md_CMN_{Msg}Req_001 must be defined in SECC_CmnTemplates.ttcn"],
+      "template_code": "// STEP 1: Lookup exi_payload_library.json for wire_hex, is_dynamic, json_payload\n// STEP 2: Locate md_CMN_{Msg}Req_001 in SECC_CmnTemplates.ttcn\n// STEP 3: Send via V2G_PortMessage v2g variant -- ExiCodecAdapter handles V2GTP header + EXI encoding\npt_V2G_TCP_TLS_ALM_{SUT}_Port.send(\n    { v2g := { supportedAppProtocolReq := md_CMN_SupportedAppProtocolReq_001 } }\n);",
       "example_substitutions": [
         {
-          "payloadType": "'8001'O",
-          "message": "SessionSetupReq",
-          "result": "'01'O & 'FE'O & '8001'O & int2oct(lengthof(exi_payload), 4) & exi_payload"
+          "SUT": "SECC",
+          "port": "pt_V2G_TCP_TLS_ALM_SECC_Port",
+          "message": "SupportedAppProtocol",
+          "result": "pt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { supportedAppProtocolReq := md_CMN_SupportedAppProtocolReq_001 } })"
         },
         {
-          "payloadType": "'8001'O",
-          "message": "ServiceDiscoveryReq",
-          "result": "'01'O & 'FE'O & '8001'O & int2oct(lengthof(exi_payload), 4) & exi_payload"
+          "SUT": "SECC",
+          "port": "pt_V2G_TCP_TLS_ALM_SECC_Port",
+          "message": "SessionSetup",
+          "result": "pt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { sessionSetupReq := md_CMN_SessionSetupReq_001 } })"
         }
+      ],
+      "negative_constraints": [
+        "MUST NOT use int2oct, '01'O, 'FE'O, '8001'O for V2GTP header construction in V2G app messages",
+        "MUST NOT send raw octetstrings to the TCP port for V2G application messages -- use { v2g := ... }",
+        "MUST NOT use openv2g encoder or X-Macro mapping -- ExiCodecAdapter handles it"
       ],
       "related_protocol_constants": {
         "protocolVersion": "'01'H",
         "invProtocolVersion": "'FE'H",
         "payloadType_EXI": "'8001'H",
-        "payloadType_SDP": "'9000'H",
-        "payloadType_V2GTP": "'8000'H"
-      },
-      "common_errors": [
-        {
-          "error": "Using 'omit' for payloadLength",
-          "fix": "payloadLength is NOT optional. Always use int2oct(lengthof(body), 4)."
-        },
-        {
-          "error": "Using fewer than 4 bytes for payloadLength",
-          "fix": "payloadLength must be exactly 4 bytes (int2oct(len, 4)), not int2oct(len, 2)."
-        }
-      ]
+        "payloadType_SDP": "'9000'H"
+      }
     },
     {
       "pattern_name": "TCP_Connect_Block",
       "category": "precondition",
       "description": "TCP/TLS connection establishment. Used after SDP discovery to connect to discovered SECC.",
-      "preconditions": ["SDP discovery must have completed (position 1)", "V2GTP__TCP_TLS_Port must be mapped"],
-      "template_code": "// TCP connect block (handled by port adapter based on set_parameter ip_address/port)\n// The C++ port adapter reads V2G__UDP__SDP__Port__last_secc_ip_ and V2G__UDP__SDP__Port__last_secc_port_\n// to determine the TCP destination after SDP response is received.\n// In TTCN-3: just ensure the port is mapped and parameters are set.\nmap(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\n// Port adapter will establish TCP connection on first send() using shared SDP state",
+      "preconditions": ["SDP discovery must have completed (position 1)", "V2G_TCP_TLS_ALM_Port must be mapped"],
+      "template_code": "// TCP connect block (handled by port adapter based on set_parameter ip_address/port)\n// The C++ port adapter reads V2G__UDP__SDP__Port__last_secc_ip_ and V2G__UDP__SDP__Port__last_secc_port_\n// to determine the TCP destination after SDP response is received.\n// In TTCN-3: just ensure the port is mapped -- TCP connection is established on first send() using shared SDP state.\nmap(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\nmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);",
       "example_substitutions": [
         {
           "SUT": "SECC",
@@ -86,16 +83,49 @@
       }
     },
     {
+      "pattern_name": "V2GTP_Header_BadCase_Raw_Send",
+      "category": "test_behavior",
+      "description": "V2GTP layer BadCase tests (TC_SECC_CMN_VTB_V2GTPHeader_*) MUST send raw V2GTP bytes via the TCP port's raw variant. This is the ONLY exception to the structured union rule. The { raw := ... } variant of V2G_PortMessage bypasses EXI encoding and V2GTP patching entirely -- the C++ adapter sends the exact bytes as-is. Use this for testing invalid ProtocolVersion, invalid InverseProtocolVersion, invalid PayloadType, or mismatched PayloadLength.",
+      "preconditions": ["Only for V2GTP layer tests (protocol_layer=V2GTP, tc_id contains V2GTPHeader)", "TCP connection must already be established by InitConfiguration", "For all other V2G application messages, use structured union { v2g := ... } instead"],
+      "template_code": "// ================================================================\n// V2GTP Header BadCase: send malformed V2GTP header as raw octetstring\n//\n// V2GTP header format (8 bytes):\n//   byte 0: ProtocolVersion        -- must be 0x01 (BadCase: send 0x02)\n//   byte 1: InverseProtocolVersion -- must be 0xFE = 0x01 xor 0xFF (BadCase: 0xFD)\n//   byte 2-3: PayloadType          -- 0x8001=EXI, 0x9000=SDP (BadCase: any other)\n//   byte 4-7: PayloadLength        -- big-endian 32-bit\n//\n// The C++ adapter sends this bytes-as-is (no EXI encoding, no V2GTP patching).\n// ================================================================\ntimer tc_msg := PX_SECC_CMN_Message_Timeout;\ntc_msg.start(PX_SECC_CMN_Message_Timeout);\n\n// Example TC_SECC_CMN_VTB_V2GTPHeader_002: ProtocolVersion=0x02 (invalid)\nvar octetstring v2gtp_malformed := '0201FD0200000002'O;  // Ver=02,Inv=FD,Type=8001,Len=2,payload=0000\npt_V2G_TCP_TLS_ALM_SECC_Port.send({ raw := v2gtp_malformed });\n\nalt {\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"SECC accepted invalid ProtocolVersion -- V2G2-082 violation\");\n    }\n    [] tc_msg.timeout {\n        setverdict(pass, \"SECC correctly rejected invalid ProtocolVersion (timeout/close)\");\n    }\n}\nreturn getverdict;",
+      "example_substitutions": [
+        {
+          "tc_id": "TC_SECC_CMN_VTB_V2GTPHeader_002",
+          "description": "ProtocolVersion=0x02 (invalid, should be 0x01)",
+          "header_bytes": "'0201FD0200000002'O",
+          "comment": "Ver=02, Inv=FD(02^FF), Type=8001, Len=2, payload=0000"
+        },
+        {
+          "tc_id": "TC_SECC_CMN_VTB_V2GTPHeader_003",
+          "description": "InverseProtocolVersion=0x00 (invalid, should be 0xFE)",
+          "header_bytes": "'0100000180000002'O",
+          "comment": "Ver=01, Inv=00(invalid), Type=8001, Len=2, payload=0000"
+        }
+      ],
+      "common_errors": [
+        {
+          "error": "Using structured union { v2g := ... } for V2GTP header tests",
+          "fix": "V2GTP header tests MUST use { raw := ... } to send raw bytes. The v2g variant triggers EXI encoding and adds V2GTP header with ProtocolVersion=0x01 -- you cannot override it."
+        },
+        {
+          "error": "Sending { raw := ... } for V2G application messages (not V2GTP header tests)",
+          "fix": "{ raw := ... } is only for V2GTP layer BadCase tests (TC_SECC_CMN_VTB_V2GTPHeader_*). For all V2G application messages, use { v2g := { msgType := ... } }."
+        }
+      ]
+    },
+    {
       "pattern_name": "Alt_With_Timer_Pattern",
       "category": "test_behavior",
       "description": "Standard alt block with timer. Each non-timeout branch MUST stop the timer before setverdict.",
       "preconditions": ["Timer must be started before the alt block", "All port receive operations must be covered"],
-      "template_code": "timer tc_msg := {timer_value};\ntc_msg.start;\n{port_name}.send(v2gtp_msg);\nalt {\n    [] {port_name}.receive({expected_template}) {\n        tc_msg.stop;\n        setverdict(pass, \"{success_message}\");\n    }\n    [] {port_name}.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"{failure_message}\");\n    }\n    [] tc_msg.timeout {\n        setverdict(inconc, \"Timeout waiting for response\");\n    }\n}\nreturn getverdict;",
+      "template_code": "timer tc_msg := {timer_value};\ntc_msg.start;\npt_V2G_TCP_TLS_ALM_{SUT}_Port.send({ v2g := { msgType := md_CMN_MsgReq_001 } });\nalt {\n    [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive({ resType := mdw_{SUT}_MsgRes_001 }) {\n        tc_msg.stop;\n        setverdict(pass, \"{success_message}\");\n    }\n    [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"{failure_message}\");\n    }\n    [] tc_msg.timeout {\n        setverdict(inconc, \"Timeout waiting for response\");\n    }\n}\nreturn getverdict;",
       "example_substitutions": [
         {
+          "SUT": "SECC",
           "timer_value": "PX_SECC_CMN_Message_Timeout",
           "port_name": "pt_V2G_TCP_TLS_ALM_SECC_Port",
-          "expected_template": "mdw_SECC_SessionSetupRes_001",
+          "msg_type": "sessionSetupReq",
+          "res_type": "sessionSetupRes",
           "success_message": "SessionSetupRes received",
           "failure_message": "Unexpected message received"
         }
@@ -120,7 +150,7 @@
       "category": "infrastructure",
       "description": "Standard port map/unmap pattern for test case phases A and D.",
       "preconditions": ["Ports must be defined in ComponentsAndPorts.ttcn", "Port instance names must match generation_plan"],
-      "template_code": "// Phase A: Map ports (at beginning of testcase)\nmap(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\nmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);\n\n// Phase D: Unmap ports (at end of testcase, unconditional)\nf_{SUT}_CMN_PO_Default_001();\nunmap(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\nunmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);",
+      "template_code": "// Phase A: Map ports (at beginning of testcase)\nmap(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\nmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);\n\n// Phase D: Unmap ports (at end of testcase, unconditional)\nf_{SUT}_CMN_PO_InitialState_001();\nf_{SUT}_CMN_PO_ShutdownConfiguration_001();\nunmap(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\nunmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);",
       "example_substitutions": [
         {
           "SUT": "SECC",
@@ -132,7 +162,7 @@
         }
       ],
       "port_type_constraints": {
-        "V2G_TCP_TLS_Port": "type port V2G_TCP_TLS_Port message { out octetstring; in octetstring; }",
+        "V2G_TCP_TLS_Port": "type port V2G_TCP_TLS_Port message { out V2G_PortMessage; in V2G_MessageUnion; }",
         "V2G_UDP_SDP_Port": "type port V2G_UDP_SDP_Port message { out octetstring; in octetstring; }"
       },
       "common_errors": [
@@ -147,7 +177,7 @@
       "category": "verdict",
       "description": "Verdict logic for GoodCase tests (valid input, expect success).",
       "preconditions": ["test_type = GoodCase in generation_plan", "SeqNo = 001"],
-      "template_code": "// GoodCase: expect valid response\nvar verdicttype v_result;\nalt {\n    [] {port_name}.receive({expected_response}) {\n        tc_msg.stop;\n        setverdict(pass, \"Response matches expected\");\n        v_result := pass;\n    }\n    [] {port_name}.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"Unexpected response received\");\n        v_result := fail;\n    }\n    [] tc_msg.timeout {\n        setverdict(inconc, \"Timeout waiting for response\");\n        v_result := inconc;\n    }\n    // Note: connection closed is handled by the C++ adapter as unexpected message\n}",
+      "template_code": "// GoodCase: expect valid response\nvar verdicttype v_result;\ntimer tc_msg := PX_SECC_CMN_Message_Timeout;\ntc_msg.start;\npt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { msgType := md_CMN_MsgReq_001 } });\nalt {\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ resType := ? }) {\n        tc_msg.stop;\n        setverdict(pass, \"Response matches expected\");\n        v_result := pass;\n    }\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"Unexpected response received\");\n        v_result := fail;\n    }\n    [] tc_msg.timeout {\n        setverdict(inconc, \"Timeout waiting for response\");\n        v_result := inconc;\n    }\n}\nreturn getverdict;",
       "common_errors": [
         {
           "error": "setverdict(fail) on timeout in GoodCase",
@@ -160,7 +190,7 @@
       "category": "verdict",
       "description": "Verdict logic for BadCase tests (invalid input, expect rejection/timeout/close).",
       "preconditions": ["test_type = BadCase in generation_plan", "SeqNo >= 002"],
-      "template_code": "// BadCase: expect SUT to reject/ignore/close\nvar verdicttype v_result;\nalt {\n    [] {port_name}.receive({error_rejection_template}) {\n        tc_msg.stop;\n        setverdict(pass, \"SUT correctly rejected invalid input\");\n        v_result := pass;\n    }\n    [] {port_name}.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"SUT should reject this invalid input\");\n        v_result := fail;\n    }\n    [] tc_msg.timeout {\n        setverdict(pass, \"SUT correctly ignored invalid input (timeout)\");\n        v_result := pass;\n    }\n}",
+      "template_code": "// BadCase: expect SUT to reject/ignore/close\nvar verdicttype v_result;\ntimer tc_msg := PX_SECC_CMN_Message_Timeout;\ntc_msg.start;\n// Send malformed message via raw variant (V2GTP header BadCase)\npt_V2G_TCP_TLS_ALM_SECC_Port.send({ raw := '0201FD0200000002'O });\nalt {\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"SUT should reject this invalid input\");\n        v_result := fail;\n    }\n    [] tc_msg.timeout {\n        setverdict(pass, \"SUT correctly ignored invalid input (timeout)\");\n        v_result := pass;\n    }\n}\nreturn getverdict;",
       "common_errors": [
         {
           "error": "setverdict(pass) on valid response in BadCase",
@@ -176,58 +206,60 @@
       "position_semantics": {
         "position_1": {
           "description": "First precondition in chain",
-          "behavior": "SDP discovery via UDP multicast (f_{SUT}_CMN_PR_InitConfiguration_001)",
-          "protocol_layer": "SDP"
+          "behavior": "SDP discovery via UDP multicast + TCP port mapping (f_{SUT}_CMN_PR_InitConfiguration_001)"
         },
         "position_2": {
           "description": "Second precondition in chain",
-          "behavior": "SupportedAppProtocol exchange (f_{SUT}_CMN_PR_SupportedAppProtocol_001)",
-          "protocol_layer": "V2GTP Application Protocol Negotiation"
+          "behavior": "SupportedAppProtocol exchange (f_{SUT}_CMN_PR_SupportedAppProtocol_001)"
         },
         "position_3_to_n_minus_1": {
           "description": "Middle preconditions",
-          "behavior": "Subsequent V2G message exchanges (SessionSetup, ServiceDiscovery, etc.)",
-          "protocol_layer": "V2G Application Layer"
+          "behavior": "Subsequent V2G message exchanges (SessionSetup, ServiceDiscovery, etc.)"
         },
         "position_n": {
           "description": "Last precondition (message under test)",
-          "behavior": "Sends the message under test, expects response in alt block (f_{SUT}_CMN_TB_VTB_{MsgType}_{SeqNo})",
-          "protocol_layer": "V2G Application Layer (under test)"
+          "behavior": "Sends the message under test, expects response in alt block (f_{SUT}_{Category}_TB_VTB_{MsgType}_{SeqNo})"
         }
       },
       "example_chain_for_SessionSetup": [
-        "f_SECC_CMN_PR_InitConfiguration_001  (position 1: SDP)",
+        "f_SECC_CMN_PR_InitConfiguration_001  (position 1: SDP + port mapping)",
         "f_SECC_CMN_PR_SupportedAppProtocol_001  (position 2: AppProtocol)",
         "f_SECC_CMN_TB_VTB_SessionSetup_001  (position 3: message under test)"
       ]
     },
     {
-      "pattern_name": "Test_Behavior_Function_Return",
+      "pattern_name": "Test_Behavior_Function_Structured_Union",
       "category": "test_behavior",
-      "description": "Test behavior function must always end with 'return getverdict;' regardless of verdict outcome.",
-      "preconditions": ["Function must have return type verdicttype"],
-      "template_code": "function f_{SUT}_{Category}_TB_VTB_{MessageType}_{SeqNo}() runs on {SUT}Tester {\n    timer tc_msg := {timer_value};\n    tc_msg.start;\n    // CRITICAL: Use real valid EXI -- never '0022'O or other placeholders.\n    // NOTE: EXI payload hex string MUST have an even number of hex characters.\n    // If the raw EXI string has odd length, pad with '0' or '00' at the end.\n    var octetstring exi_payload := '8000EBAB9371D34B9B79D189A98989C1D191D191818999D26B9B3A232B30020000000001B75726E3A64696E3A37303132313A323031323A4D73674465660040000000880000'O; // Valid SupportedAppProtocolReq EXI (140 bytes, 280 hex chars)\n    var octetstring v2gtp := '01'O & 'FE'O & '8001'O & int2oct(lengthof(exi_payload), 4) & exi_payload;\n    {port_name}.send(v2gtp);\n    // ... alt block ...\n    return getverdict;\n}",
+      "description": "CORRECT test behavior function using structured union templates. MUST end with 'return getverdict;' regardless of verdict outcome.",
+      "preconditions": ["Function must have return type verdicttype", "For V2G application messages: use structured union templates"],
+      "template_code": "function f_{SUT}_{Category}_TB_VTB_{MessageType}_{SeqNo}()\n    runs on {SUT}Tester\n    return verdicttype\n{\n    timer tc_msg := PX_SECC_CMN_Message_Timeout;\n\n    // Send via V2G_PortMessage v2g variant -- ExiCodecAdapter handles V2GTP header + EXI encoding\n    tc_msg.start(PX_SECC_CMN_Message_Timeout);\n    pt_V2G_TCP_TLS_ALM_{SUT}_Port.send(\n        { v2g := { msgType := md_CMN_{MessageType}Req_001 } }\n    );\n\n    // Receive and set verdict\n    alt {\n        [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive(\n            { resType := ? }\n        ) {\n            tc_msg.stop;\n            log(\"{MessageType}Res received and matched\");\n            log(\"SessionID captured (C++ adapter stores it for subsequent messages)\");\n            setverdict(pass, \"{MessageType} exchange successful\");\n        }\n        [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive {\n            tc_msg.stop;\n            setverdict(fail, \"Unexpected message received during {MessageType}\");\n        }\n        [] tc_msg.timeout {\n            setverdict(inconc, \"Timeout waiting for {MessageType}Res\");\n        }\n    }\n\n    return getverdict;\n}",
       "common_errors": [
         {
           "error": "Missing return getverdict at end of test behavior function",
           "fix": "Always end with 'return getverdict;' so the testcase can capture and propagate the verdict."
+        },
+        {
+          "error": "Using raw octetstring send on TCP port for V2G application messages",
+          "fix": "Use structured union: pt_V2G_TCP_TLS_ALM_SECC_Port.send({ msgType := md_CMN_MsgReq_001 })"
         }
       ]
     },
     {
-      "pattern_name": "Generic_Precondition_Stub",
+      "pattern_name": "Precondition_V2G_Application_Message",
       "category": "precondition",
-      "description": "Generic precondition function stub for positions 2+ in the precondition chain.",
+      "description": "Generic precondition function for V2G application messages (position 2+ in the precondition chain). Use structured union templates for send/receive.",
       "preconditions": ["Position >= 2 in precondition_chain", "Message-specific implementation required"],
-      "template_code": "function f_{SUT}_CMN_PR_{MessageName}_{SeqNo}() runs on {SUT}Tester {\n    // Implement the specific protocol step for {MessageName}\n    // Send V2GTP-wrapped {MessageName}Req, receive {MessageName}Res\n    timer tc_step := {timeout};\n    tc_step.start;\n    var octetstring req := '01'O & 'FE'O & '8001'O & int2oct(lengthof(exi_req), 4) & exi_req;\n    {port_name}.send(req);\n    alt {\n        [] {port_name}.receive(?) -> value v_resp {\n            tc_step.stop;\n            // Manually check V2GTP header (cannot use ? with & in templates)\n            if (lengthof(v_resp) >= 4 and substr(v_resp, 0, 1) == '01'O\n                and substr(v_resp, 1, 1) == 'FE'O) {\n                log(\"{MessageName} exchange completed\");\n            } else {\n                log(\"{MessageName}: unexpected response\");\n            }\n        }\n        [] tc_step.timeout {\n            log(\"{MessageName} precondition timeout\");\n        }\n    }\n}",
+      "template_code": "function f_{SUT}_CMN_PR_{MessageName}_{SeqNo}()\n    runs on {SUT}Tester\n    return verdicttype\n{\n    timer tc_msg := PX_SECC_CMN_Message_Timeout;\n\n    log(\"Sending {MessageName}Req via V2G_PortMessage v2g variant...\");\n    tc_msg.start(PX_SECC_CMN_Message_Timeout);\n\n    // STEP 3: Send via V2G_PortMessage v2g variant -- ExiCodecAdapter encodes\n    pt_V2G_TCP_TLS_ALM_{SUT}_Port.send(\n        { v2g := { {msgName}Req := md_CMN_{MessageName}Req_001 } }\n    );\n\n    // STEP 4: Receive and set verdict\n    alt {\n        [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive(\n            { {msgName}Res := md_CMN_{MessageName}Res_001 }\n        ) {\n            tc_msg.stop;\n            log(\"{MessageName}Res received: exchange complete\");\n            setverdict(pass, \"{MessageName} exchange successful\");\n        }\n        [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive(\n            { {msgName}Res := md_CMN_{MessageName}Res_002 }\n        ) {\n            tc_msg.stop;\n            setverdict(fail, \"SECC rejected the {MessageName} negotiation\");\n        }\n        [] tc_msg.timeout {\n            setverdict(inconc, \"Timeout waiting for {MessageName}Res\");\n        }\n    }\n\n    return getverdict;\n}",
       "example_substitutions": [
         {
           "MessageName": "SupportedAppProtocol",
+          "msgName": "supportedAppProtocol",
           "SeqNo": "001",
           "result": "f_SECC_CMN_PR_SupportedAppProtocol_001"
         },
         {
           "MessageName": "SessionSetup",
+          "msgName": "sessionSetup",
           "SeqNo": "001",
           "result": "f_SECC_CMN_PR_SessionSetup_001"
         }
@@ -238,31 +270,51 @@
       "category": "postcondition",
       "description": "PostConditions MUST run regardless of preConVerdict value. Phase D is unconditional.",
       "preconditions": ["Phase D runs after Phase C verdict is set"],
-      "template_code": "// Phase B: Preconditions (conditional on success)\nvar verdicttype preConVerdict := pass;\nif (f_SECC_CMN_PR_InitConfiguration_001() != pass) {\n    preConVerdict := fail;\n}\n\n// Phase C: Test behavior (only if preconditions passed)\nvar verdicttype v_result := fail;\nif (preConVerdict == pass) {\n    v_result := f_SECC_CMN_TB_VTB_{MsgType}_{SeqNo}();\n    setverdict(v_result);\n}\n\n// Phase D: Postconditions (ALWAYS runs, regardless of preConVerdict or v_result)\nf_SECC_CMN_PO_Default_001();\nunmap(mtc:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);\nunmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);",
+      "template_code": "// Phase A+B: PreConditions\nvar verdicttype preConVerdict;\nif (f_SECC_CMN_PR_InitConfiguration_001() != pass) {\n    preConVerdict := fail;\n} else {\n    preConVerdict := f_SECC_CMN_PR_SupportedAppProtocol_001();\n}\nif (preConVerdict != pass) {\n    setverdict(inconc);\n    f_SECC_CMN_PO_InitialState_001();\n    f_SECC_CMN_PO_ShutdownConfiguration_001();\n    return;\n}\n\n// Phase C: Test behavior (only if preconditions passed)\nf_SECC_CMN_TB_VTB_{MsgType}_{SeqNo}();\n\n// Phase D: Postconditions (ALWAYS runs, regardless of preConVerdict or v_result)\nf_SECC_CMN_PO_InitialState_001();\nf_SECC_CMN_PO_ShutdownConfiguration_001();\nunmap(mtc:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);\nunmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);\nstop;",
       "common_errors": [
         {
           "error": "Postcondition calls inside preConVerdict check",
           "fix": "PostConditions must be called unconditionally after Phase C, regardless of whether preconditions passed."
         }
       ]
+    },
+    {
+      "pattern_name": "Direct_Import_Rule",
+      "category": "infrastructure",
+      "description": "TTCN-3 does NOT re-export symbols imported through intermediate modules. The main testcase module MUST directly import from EVERY individual function module it calls. Do NOT rely solely on the aggregator module for imports.",
+      "preconditions": ["None"],
+      "template_code": "module TC_SECC_CMN_VTB_{Msg}_{Seq} {\n    import from SECC_TestSystem all;\n    import from PreConditions_SECC_15118_2 all;   // aggregator -- transitive ONLY\n    import from PostConditions_SECC_15118_2 all;  // aggregator -- transitive ONLY\n    // CORRECT: Direct imports for ALL function modules called\n    import from f_SECC_CMN_PR_InitConfiguration_001 all;   // direct!\n    import from f_SECC_CMN_PR_SupportedAppProtocol_001 all; // direct!\n    import from f_SECC_CMN_TB_VTB_{Msg}_{Seq} all; // direct!\n    import from f_SECC_CMN_PO_InitialState_001 all;          // direct!\n    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all; // direct!\n\n    testcase TC_SECC_CMN_VTB_{Msg}_{Seq}()\n        runs on SECCTester system SystemSECC\n    {\n        var verdicttype preConVerdict;\n        // ... test body ...\n    }\n}",
+      "common_errors": [
+        {
+          "error": "Only importing aggregator modules, not individual function modules",
+          "fix": "TITAN does not re-export symbols through aggregator modules. Always add direct import from every function module called."
+        }
+      ]
     }
   ],
 
   "_metadata": {
-    "created_from": "Plan: 改进_core_agent_prompt_设计 (Phase 4)",
+    "created_from": "Plan: 改进_core_agent_prompt_设计 (Phase 4) -- REVISED",
     "source_sop": "ttcn3_generation_sop.json",
     "patterns_extracted": [
       "SDP discovery block",
-      "V2GTP header construction formula",
+      "V2G message send via V2G_PortMessage v2g variant (CORRECT for V2G app messages)",
+      "V2GTP Header BadCase via V2G_PortMessage raw variant (ONLY exception for TCP port)",
       "TCP connect block",
       "Alt with timer pattern",
       "Port mapping/unmapping pattern",
       "GoodCase verdict logic",
-      "BadCase verdict logic",
+      "BadCase verdict logic (V2GTP header BadCase)",
       "Precondition chain position semantics",
-      "Test behavior function return",
-      "Generic precondition stub",
-      "Pre/PostCondition unconditional run"
+      "Test behavior function (V2G_PortMessage v2g variant)",
+      "Precondition function (V2G application message)",
+      "Pre/PostCondition unconditional run",
+      "Direct import rule"
+    ],
+    "patterns_removed": [
+      "V2GTP_Header_Construction (REMOVED -- teaches wrong approach: manual V2GTP construction with int2oct, violates core constraints)",
+      "Test_Behavior_Function_Return (REMOVED -- same reason, teaches raw V2GTP header)",
+      "Generic_Precondition_Stub (REMOVED -- same reason, teaches raw octetstrings on TCP)"
     ]
   }
 }

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Backups
+*.bak
+*.backup
+*~
+
+# Pipeline run artifacts
+test_code/logs/
+test_code/generated/TC_*_2[0-9]*/
+
+# Old batch run logs (keep batch_results.jsonl as the canonical)
+batch_results/batch_run_*.jsonl
+batch_results/batch_run_*.log
+batch_results/case3_run_*.jsonl
+batch_results/batch_results.backup_*.jsonl
+batch_results/batch_results_with_llm.jsonl
+
+# Baseline snapshots
+test_code/.baseline_snapshot/
+
+# Empty placeholder
+!*.gitkeep

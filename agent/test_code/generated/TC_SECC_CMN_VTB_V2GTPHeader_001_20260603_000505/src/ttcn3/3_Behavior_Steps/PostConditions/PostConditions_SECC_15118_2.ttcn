@@ -1,6 +1,0 @@
-module PostConditions_SECC_15118_2 {
-    import from SECC_TestSystem all;
-    import from SECC_CmnTemplates all;
-    import from SECC_Constants all;
-    import from f_SECC_CMN_PO_InitialState_001 all;
-}

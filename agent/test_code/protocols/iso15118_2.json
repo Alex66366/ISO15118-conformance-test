@@ -1,0 +1,421 @@
+{
+  "protocol_id": "iso15118_2",
+  "protocol_name": "ISO 15118-2 (Vehicle to Grid Communication Interface - Part 2)",
+  "version": "2014",
+  "spec_documents": [
+    {
+      "id": "ISO 15118-2:2014",
+      "title": "Road vehicles - Vehicle to grid communication interface - Part 2: Network and application protocol requirements",
+      "tc_id_patterns": [
+        "TC_{SUT}_{Category}_VTB_{MessageType}_{SeqNo}"
+      ]
+    },
+    {
+      "id": "ISO 15118-4:2014",
+      "title": "Road vehicles - Vehicle to grid communication interface - Part 4: Network and application protocol conformance test (V2GTP_BR legacy format)",
+      "tc_id_patterns": [
+        "TC_V2GTP_BR_{MessageType}_{SeqNo}"
+      ]
+    }
+  ],
+  "suts": ["SECC", "EVCC"],
+  "categories": ["CMN", "AC", "DC"],
+  "wrapper_prefixes": [
+    "V2GTP",
+    "V2GTCP",
+    "V2GUDP"
+  ],
+  "tc_id_standard_pattern": "^TC_(SECC|EVCC)_(CMN|AC|DC)_VTB_.+_\\d{3}$",
+  "naming": {
+    "module": "TC_{SUT}_{Category}_VTB_{MessageType}_{SeqNo}",
+    "testcase": "TC_{SUT}_{Category}_VTB_{MessageType}_{SeqNo}",
+    "test_behavior_function": "f_{SUT}_{Category}_TB_VTB_{MessageType}_{SeqNo}",
+    "precondition_function": "f_{SUT}_{Category}_PR_{Name}_{SeqNo}",
+    "postcondition_function": "f_{SUT}_{Category}_PO_{Name}_{SeqNo}",
+    "send_template": "md_CMN_{MessageType}Req_{SeqNo}",
+    "receive_template": "mdw_{SUT}_{MessageType}Res_{SeqNo}",
+    "timer": "tc_V2G_{SUT}_Msg_Timer",
+    "timer_param": "par_V2G_{SUT}_Msg_Timeout_{MessageType}{Req|Res}",
+    "altstep": "a_{SUT}_{Name}",
+    "component_var": "vc_{Name}"
+  },
+  "transport": {
+    "default": "TCP_TLS",
+    "ports": {
+      "main": "pt_V2G_TCP_TLS_ALM_{SUT}_Port",
+      "sdp_udp_multicast": "pt_V2G_UDP_SDP_Port"
+    }
+  },
+  "protocol_layers": [
+    {
+      "id": "V2G_Application",
+      "encoding": "EXI",
+      "transport": "TCP_TLS",
+      "payload_type_hex": "8001"
+    },
+    {
+      "id": "V2GTP",
+      "encoding": "raw_header",
+      "transport": "TCP_TLS",
+      "payload_type_hex": "8001"
+    },
+    {
+      "id": "SDP",
+      "encoding": "raw_octetstring",
+      "transport": "UDP_multicast",
+      "payload_type_hex": "9000"
+    }
+  ],
+  "v2gtp_header_constants": {
+    "protocol_version_hex": "01",
+    "inv_protocol_version_hex": "FE",
+    "note": "V2GTP header is patched automatically by the C++ adapter; TTCN-3 code must NOT construct it manually."
+  },
+  "messages": [
+    {
+      "name": "SupportedAppProtocol",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+      "request_type": "SupportedAppProtocolReq",
+      "response_type": "SupportedAppProtocolRes",
+      "union_field": "supportedAppProtocolReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "SessionSetup",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "SessionSetupReq",
+      "response_type": "SessionSetupRes",
+      "union_field": "sessionSetupReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "ServiceDiscovery",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "ServiceDiscoveryReq",
+      "response_type": "ServiceDiscoveryRes",
+      "union_field": "serviceDiscoveryReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "ServicePaymentSelection",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "ServicePaymentSelectionReq",
+      "response_type": "ServicePaymentSelectionRes",
+      "union_field": "servicePaymentSelectionReq",
+      "alias_names": ["PaymentServiceSelection"],
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "PaymentDetails",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "PaymentDetailsReq",
+      "response_type": "PaymentDetailsRes",
+      "union_field": "paymentDetailsReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "Authorization",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "AuthorizationReq",
+      "response_type": "AuthorizationRes",
+      "union_field": "authorizationReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "CertificateInstallation",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "CertificateInstallationReq",
+      "response_type": "CertificateInstallationRes",
+      "union_field": "certificateInstallationReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "CertificateUpdate",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "CertificateUpdateReq",
+      "response_type": "CertificateUpdateRes",
+      "union_field": "certificateUpdateReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "CableCheck",
+      "category": "DC",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "CableCheckReq",
+      "response_type": "CableCheckRes",
+      "union_field": "cableCheckReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "ChargeParameterDiscovery",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "ChargeParameterDiscoveryReq",
+      "response_type": "ChargeParameterDiscoveryRes",
+      "union_field": "chargeParameterDiscoveryReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "PowerDelivery",
+      "category": "AC",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "PowerDeliveryReq",
+      "response_type": "PowerDeliveryRes",
+      "union_field": "powerDeliveryReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "SessionStop",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "SessionStopReq",
+      "response_type": "SessionStopRes",
+      "union_field": "sessionStopReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "ChargingStatus",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "ChargingStatusReq",
+      "response_type": "ChargingStatusRes",
+      "union_field": "chargingStatusReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "CurrentDemand",
+      "category": "DC",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "CurrentDemandReq",
+      "response_type": "CurrentDemandRes",
+      "union_field": "currentDemandReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "MeterReceipt",
+      "category": "AC",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "MeterReceiptReq",
+      "response_type": "MeterReceiptRes",
+      "union_field": "meterReceiptReq",
+      "alias_names": ["MeteringReceipt"],
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "PreCharge",
+      "category": "DC",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "PreChargeReq",
+      "response_type": "PreChargeRes",
+      "union_field": "preChargeReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "WeldingDetection",
+      "category": "DC",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "WeldingDetectionReq",
+      "response_type": "WeldingDetectionRes",
+      "union_field": "weldingDetectionReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "ServiceDetails",
+      "category": "CMN",
+      "protocol_layer": "V2G_Application",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "ServiceDetailsReq",
+      "response_type": "ServiceDetailsRes",
+      "union_field": "serviceDetailsReq",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ]
+    },
+    {
+      "name": "SDP",
+      "category": "CMN",
+      "protocol_layer": "SDP",
+      "transport": "UDP_multicast",
+      "uses_raw_octetstring": true,
+      "raw_request_hex": "01FE9000000000021000",
+      "raw_request_description": "V2GTP header (Ver=0x01, Inv=0xFE, Type=0x9000, Len=0x00000002) + SDP body '2100' (request SECC IPv6 + port)",
+      "response_timeout_seconds": 5.0,
+      "covered_by_precondition": "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "request_type": null,
+      "response_type": null,
+      "union_field": null,
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001"
+      ]
+    },
+    {
+      "name": "V2GTPHeader",
+      "category": "CMN",
+      "protocol_layer": "V2GTP",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": null,
+      "response_type": null,
+      "union_field": "v2g",
+      "union_field_note": "V2GTP-layer messages use the recursive 'v2g' field of V2G_MessageUnion (no per-message Req/Res type).",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001"
+      ],
+      "bad_case_hex_defaults": {
+        "TC_{SUT}_CMN_VTB_V2GTPHeader_002": "0201FD02000000020000",
+        "TC_{SUT}_CMN_VTB_V2GTPHeader_003": "0101FA8001000000020000",
+        "TC_{SUT}_CMN_VTB_V2GTPHeader_004": "0101FE00000000000000"
+      }
+    },
+    {
+      "name": "V2GTPSessionSetup",
+      "category": "CMN",
+      "protocol_layer": "V2GTP",
+      "transport": "TCP_TLS",
+      "uses_raw_octetstring": false,
+      "covered_by_precondition": null,
+      "request_type": "SessionSetupReq",
+      "response_type": "SessionSetupRes",
+      "union_field": "sessionSetupReq",
+      "wrapper_prefix": "V2GTP",
+      "canonical_name": "SessionSetup",
+      "default_precondition_chain": [
+        "f_{SUT}_CMN_PR_InitConfiguration_001",
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+      ],
+      "note": "The C++ adapter intercepts this message via V2GTP framing and EXI-decodes the inner SessionSetup. The wrapper prefix 'V2GTP' is stripped before generating template names so the canonical SessionSetup templates are reused."
+    }
+  ],
+  "source": {
+    "extracted_from": [
+      "ttcn3_generation_pipeline.py:_WRAPPER_PROTOCOL_PREFIXES",
+      "ttcn3_generation_pipeline.py:_STATE_MACHINE_COVERED",
+      "ttcn_static_renderer.py:_V2G_FIELD_MAP",
+      "ttcn_static_renderer.py:_V2GTPHEADER_BAD_HEX_DEFAULTS",
+      "ttcn3_generation_pipeline.py:hardcoded_sdp_request_hex",
+      "ttcn3_generation_pipeline.py:hardcoded_sdp_response_timeout",
+      "knowledge_base/ttcn3_generation_sop.json:naming_rules",
+      "knowledge_base/ttcn3_generation_sop.json:protocol_constants"
+    ],
+    "extraction_date": "2026-06-16",
+    "extraction_notes": [
+      "_V2G_FIELD_MAP is fully replicated as the per-message 'union_field' attribute.",
+      "Wrapper-prefixed messages (e.g. V2GTPSessionSetup) are now first-class messages in the registry instead of being handled by a stripping helper, which makes their full metadata (preconditions, transport, union field) discoverable.",
+      "Alias names (e.g. MeterReceipt <- MeteringReceipt, ServicePaymentSelection <- PaymentServiceSelection) are preserved in 'alias_names' so the registry resolves both old and new identifiers to the same message."
+    ]
+  }
+}

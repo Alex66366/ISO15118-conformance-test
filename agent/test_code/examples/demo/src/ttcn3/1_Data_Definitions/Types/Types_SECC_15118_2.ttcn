@@ -361,11 +361,12 @@ module SECC_Types {
     // encodes them to EXI, and prepends the V2GTP header before sending over TCP.
     //
     // Usage in test code:
-    //   pt_V2G_TCP_TLS_ALM_SECC_Port.send(md_CMN_SupportedAppProtocolReq_001);
-    //   pt_V2G_TCP_TLS_ALM_SECC_Port.receive(md_CMN_SupportedAppProtocolRes_001);
+    //   pt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { sessionSetupReq := md_CMN_SessionSetupReq_001 } });  // normal
+    //   pt_V2G_TCP_TLS_ALM_SECC_Port.send({ raw := '0201...'O });  // V2GTP header BadCase only
     //
-    // The bad-case exception: for V2GTP header fuzzing tests, you may still use
-    // raw octetstrings sent to the UDP/SDP port.
+    // For V2GTP header BadCase tests (TC_SECC_CMN_VTB_V2GTPHeader_*), send raw octetstrings
+    // via the raw variant of V2G_PortMessage so the C++ adapter sends bytes as-is without
+    // EXI encoding or V2GTP header patching.
 
     type union V2G_MessageUnion {
         SupportedAppProtocolReq       supportedAppProtocolReq,
@@ -403,7 +404,8 @@ module SECC_Types {
         WeldingDetectionReq         weldingDetectionReq,
         WeldingDetectionRes         weldingDetectionRes,
         ServiceDetailsReq           serviceDetailsReq,
-        ServiceDetailsRes           serviceDetailsRes
+        ServiceDetailsRes           serviceDetailsRes,
+        V2G_MessageUnion            v2g
     }
 
 } // end of module SECC_Types

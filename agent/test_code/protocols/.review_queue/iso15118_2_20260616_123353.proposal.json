@@ -1,0 +1,14 @@
+{
+  "target_protocol": "iso15118_2",
+  "proposed_at": "2026-06-16T12:33:53+0800",
+  "proposed_by": "test",
+  "proposed_during_tc": "TC_TEST_001",
+  "merge_path": {
+    "messages": [
+      {
+        "name": "TestMsg",
+        "union_field": "testMsgReq"
+      }
+    ]
+  }
+}

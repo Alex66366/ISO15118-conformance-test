@@ -28,7 +28,7 @@ module f_SECC_CMN_TB_VTB_SupportedAppProtocol_001 {
     {
         // TODO: Implement SupportedAppProtocol test behavior.
         // For SupportedAppProtocol as the primary test target:
-        //   - Send: pt_V2G_TCP_TLS_ALM_SECC_Port.send({ supportedAppProtocolReq := md_CMN_SupportedAppProtocolReq_001 })
+        //   - Send: pt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { supportedAppProtocolReq := md_CMN_SupportedAppProtocolReq_001 } })
         //   - Receive: { supportedAppProtocolRes := md_CMN_SupportedAppProtocolRes_001 }
         log("STUB: f_SECC_CMN_TB_VTB_SupportedAppProtocol_001 -- implement when adding SupportedAppProtocol test case");
         return pass;

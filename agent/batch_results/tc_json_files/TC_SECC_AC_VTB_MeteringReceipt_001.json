@@ -1,0 +1,38 @@
+{
+  "Test_Case": {
+    "TC_Id": "TC_SECC_AC_VTB_MeteringReceipt_001",
+    "TC_Name": "SECC AC VTB MeteringReceipt 001",
+    "Purpose": "Test System executes GoodCase procedure and sends a MeteringReceiptReq message with a valid signature, current sessionID, valid SAScheduleTupleId, metering information and all additional mandatory parameters.Test System then checks that the SUT sends a MeteringReceiptRes message with current SessionID, ResponseCode 'OK' and all additional mandatory parameters.",
+    "Document_Reference": {
+      "Requirements": [
+        "[V2G2-179]",
+        "[V2G2-180]",
+        "[V2G2-181]",
+        "[V2G2-183]",
+        "[V2G2-247]",
+        "[V2G2-248]",
+        "[V2G2-580]",
+        "[V2G2-752]",
+        "[V2G2-358]",
+        "[V2G2-359]",
+        "[V2G2-381]",
+        "[V2G2-457]",
+        "[V2G2-664]",
+        "[V2G2-665]",
+        "[V2G2-666]",
+        "[V2G2-667]",
+        "[V2G2-005]",
+        "[V2G2-007]",
+        "[V2G2-653]",
+        "[V2G2-665]",
+        "[V2G2-904]"
+      ]
+    }
+  },
+  "metadata": {
+    "sut_type": "SECC",
+    "message_type": "MeteringReceipt",
+    "test_type": "GoodCase",
+    "source_kb": "iso15118_4_ttcn_knowledge_base.json"
+  }
+}

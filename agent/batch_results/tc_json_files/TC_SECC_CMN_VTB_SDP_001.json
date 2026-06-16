@@ -1,0 +1,27 @@
+{
+  "Test_Case": {
+    "TC_Id": "TC_SECC_CMN_VTB_SDP_001",
+    "TC_Name": "SECC CMN VTB SDP 001",
+    "Purpose": "Test System executes GoodCase procedure and sends an SDP request message with 'Security' equals to '0x10'H and 'TransportProtocol' equals to '0x00'H. Test System then checks that the SUT sends an SDP response message with 'Security' equals to '0x10'H, 'TransportProtocol' equals to '0x00'H and a valid port and IP address.",
+    "Document_Reference": {
+      "Requirements": [
+        "[V2G2-123]",
+        "[V2G2-147]",
+        "[V2G2-150]",
+        "[V2G2-154]",
+        "[V2G2-624]",
+        "[V2G2-625]",
+        "[V2G2-027]",
+        "[V2G2-144]",
+        "[V2G2-915]",
+        "[V2G2-852]"
+      ]
+    }
+  },
+  "metadata": {
+    "sut_type": "SECC",
+    "message_type": "SDP_001TC_SECC",
+    "test_type": "GoodCase",
+    "source_kb": "iso15118_4_ttcn_knowledge_base.json"
+  }
+}

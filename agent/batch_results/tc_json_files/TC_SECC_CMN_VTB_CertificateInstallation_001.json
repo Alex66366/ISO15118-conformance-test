@@ -1,0 +1,49 @@
+{
+  "Test_Case": {
+    "TC_Id": "TC_SECC_CMN_VTB_CertificateInstallation_001",
+    "TC_Name": "SECC CMN VTB CertificateInstallation 001",
+    "Purpose": "Test System executes GoodCase procedure and sends a CertificateInstallationReq message with a valid signature, current SessionID, OEMProvisioning certificate and all additional mandatory parameters.Test System then checks that the SUT sends a CertificateInstallationRes message with a valid signature, current SessionID, ResponseCode 'OK', SAProvisioning certificate chain, contract certificate chain, ContractSignatureEncryptedPrivateKey, DHpublickey, EMAID and all additional mandatory parameters.",
+    "Document_Reference": {
+      "Requirements": [
+        "[V2G2-179]",
+        "[V2G2-180]",
+        "[V2G2-181]",
+        "[V2G2-183]",
+        "[V2G2-237]",
+        "[V2G2-238]",
+        "[V2G2-274]",
+        "[V2G2-275]",
+        "[V2G2-554]",
+        "[V2G2-752]",
+        "[V2G2-778]",
+        "[V2G2-779]",
+        "[V2G2-780]",
+        "[V2G2-781]",
+        "[V2G2-782]",
+        "[V2G2-783]",
+        "[V2G2-387]",
+        "[V2G2-399]",
+        "[V2G2-410]",
+        "[V2G2-457]",
+        "[V2G2-664]",
+        "[V2G2-665]",
+        "[V2G2-666]",
+        "[V2G2-667]",
+        "[V2G2-915]",
+        "[V2G2-653]",
+        "[V2G2-353]",
+        "[V2G2-354]",
+        "[V2G2-814]",
+        "[V2G2-004]",
+        "[V2G2-009]",
+        "[V2G2-656]"
+      ]
+    }
+  },
+  "metadata": {
+    "sut_type": "SECC",
+    "message_type": "CertificateInstallation_001TC_SECC",
+    "test_type": "GoodCase",
+    "source_kb": "iso15118_4_ttcn_knowledge_base.json"
+  }
+}

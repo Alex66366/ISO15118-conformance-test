@@ -34,7 +34,13 @@ public:
     void set_parameter(const char *parameter_name, const char *parameter_value);
     void Handle_Message(const unsigned char *message, size_t length);
     void outgoing_message(const unsigned char *message, size_t length);
-    void outgoing_send(const ::SECC__Types::V2G__MessageUnion& send_par) override;
+    // V2G_PortMessage variant -- TITAN calls this when port out type is V2G_PortMessage
+    // V2G__PortMessage is in SECC__TestSystem namespace (TITAN-generated from ComponentsAndPorts.ttcn)
+    void outgoing_send(const V2G__PortMessage& send_par);
+    // V2G_MessageUnion variant -- for normal V2G messages (EXI-encoded via JSON)
+    void outgoing_send(const ::SECC__Types::V2G__MessageUnion& send_par);
+    // OCTETSTRING raw variant -- V2GTP header BadCase tests (no EXI, no V2GTP patching)
+    void outgoing_send(const ::OCTETSTRING& raw_bytes);
     void send_data(const ::SECC__Types::V2G__MessageUnion& send_data, const char* send_fmt, ...);
 
 private:

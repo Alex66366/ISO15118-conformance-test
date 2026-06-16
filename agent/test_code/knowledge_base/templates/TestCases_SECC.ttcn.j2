@@ -1,0 +1,8 @@
+module TestCases_SECC {
+    import from SECC_TestSystem all;
+    import from {{ testcase_name }} all;
+
+    control {
+        execute({{ testcase_name }}());
+    }
+} // end module

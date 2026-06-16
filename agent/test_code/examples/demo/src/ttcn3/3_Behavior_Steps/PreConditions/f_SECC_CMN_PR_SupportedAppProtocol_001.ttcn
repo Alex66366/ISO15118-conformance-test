@@ -33,7 +33,7 @@ module f_SECC_CMN_PR_SupportedAppProtocol_001 {
         tc_V2G_EVCC_Msg_Timer.start(PX_SECC_CMN_Message_Timeout);
 
         pt_V2G_TCP_TLS_ALM_SECC_Port.send(
-            { supportedAppProtocolReq := md_CMN_SupportedAppProtocolReq_001 }
+            { v2g := { supportedAppProtocolReq := md_CMN_SupportedAppProtocolReq_001 } }
         );
 
         alt {

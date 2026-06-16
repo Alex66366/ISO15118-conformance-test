@@ -210,7 +210,7 @@ sed -i 's/^TTCN3_LIB = ttcn3-parallel-dynamic$/TTCN3_LIB = ttcn3-dynamic/' Makef
 sed -i 's/^TTCN3_LIB = ttcn3-parallel$/TTCN3_LIB = ttcn3-dynamic/' Makefile
 sed -i 's/^LINUX_LIBS = -lxml2$/LINUX_LIBS = -lxml2 -lpthread/' Makefile
 # (No JNI flags needed - using pure static data-driven decoder)
-sed -i 's|^CXXFLAGS = -Wall  $|CXXFLAGS = -Wall -I. -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++17 |' Makefile
+sed -i 's|^CXXFLAGS = -Wall  $|CXXFLAGS = -Wall -I. -I../../src/cpp_adapters/CD/exi_codec/fmt/include -I../../src/cpp_adapters/CD/exi_codec/fmt/fmt -I../../src/cpp_adapters/CD/exi_codec -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++17 |' Makefile
 # (No JNI flags needed - using pure static data-driven decoder)
 sed -i "s|^LDFLAGS =  $|LDFLAGS =  -D_GLIBCXX_USE_CXX11_ABI=0 |" Makefile
 # Fix LINUX_LIBS: add -ldl for dlopen

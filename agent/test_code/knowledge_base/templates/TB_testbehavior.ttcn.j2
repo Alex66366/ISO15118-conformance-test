@@ -1,0 +1,194 @@
+module {{ module_name }} {
+
+    import from SECC_TestSystem all;
+    import from SECC_Constants all;
+{% if structured_send %}
+    import from SECC_Types all;
+    import from SECC_CmnTemplates all;
+{% endif %}
+{% if sdp_send %}
+    // SDP uses raw octetstring payloads over UDP multicast, not EXI-encoded
+    // V2G messages. The SDP body is the standard 2-byte request "21 00"
+    // (request SECC IPv6 + port) per ISO 15118-3.
+    import from SECC_Types all;
+{% endif %}
+
+    /**
+     * @desc    Test behavior function: {{ func_name }}
+     *          {{ test_type }}: {{ plan.verdict_logic.pass_condition if plan.verdict_logic else '' }}
+     *          Port: {{ port_name }}
+{% if requirement %}
+     * @requirement {{ requirement }}
+{% endif %}
+     */
+
+    function {{ func_name }}()
+        runs on SECCTester
+        return verdicttype
+    {
+        timer {{ tc_timer_name }} := PX_SECC_CMN_Message_Timeout;
+{% if covered_by_precondition %}
+        // ================================================================
+        // STATE-MACHINE COVERAGE: short-circuit
+        // --------------------------------------------------------------
+        // The pre-condition chain for this test case has already completed
+        // the {{ message_type }} message exchange. The TB therefore does NOT
+        // re-send the same request: re-sending would either (a) collide with
+        // the pre-condition's queued response and trigger TITAN "unbound
+        // octetstring" errors, or (b) ask the SECC to repeat a step that
+        // has already advanced the state machine and time out waiting for
+        // a redundant response.
+        //
+        // The TC wrapper still invokes the post-condition chain
+        // unconditionally after this function returns, so the SECC
+        // connection is cleanly torn down before the next test case.
+        // ================================================================
+        // coverage_note: {{ coverage_note }}
+        log("{{ message_type }} exchange already performed by pre-condition; TB short-circuits to pass.");
+        setverdict(pass, "{{ message_type }} covered by pre-condition chain -- no duplicate exchange needed");
+        return getverdict;
+    }
+
+} // end module {{ module_name }}
+{% elif sdp_send %}
+        // ================================================================
+        // SDP Discovery: send raw octetstring via UDP multicast
+        //
+        // SDP request (10 bytes):
+        //   V2GTP header (8 bytes): Ver=0x01, Inv=0xFE, Type=0x9000 (SDP_REQ), Len=0x00000002
+        //   SDP body (2 bytes):    '2100' (request SECC IPv6 + port, plain TCP/TLS)
+        //
+        // The C++ V2G_UDP_SDP_Port adapter receives this in outgoing_send()
+        // and broadcasts it via IPv6 multicast ff02::1. The SECC responds
+        // on the same UDP socket; receive_thread_func() parses the V2GTP
+        // header and passes raw octetstring back to TTCN-3.
+        // ================================================================
+        var octetstring sdp_request := '{{ sdp_request_hex }}'O;
+        var octetstring sdp_response;
+
+        log("Sending SDP request via UDP multicast (payload: {{ sdp_request_hex }})...");
+        {{ tc_timer_name }}.start({{ sdp_response_timeout_seconds }});
+
+        // Map and send on the UDP SDP port (pt_V2G_UDP_SDP_Port)
+        map(self:{{ port_name }}, system:{{ port_name }});
+        {{ port_name }}.send(sdp_request);
+
+        alt {
+            [] {{ port_name }}.receive(sdp_response) {
+                {{ tc_timer_name }}.stop;
+                // SDP response is valid if it starts with V2GTP header
+                // (Ver=0x01, Inv=0xFE, Type=0x9001) and a 20-byte SDP body.
+                if (lengthof(sdp_response) >= 28 and
+                    sdp_response[0] == '01'O and
+                    sdp_response[1] == 'FE'O and
+                    sdp_response[2] == '90'O and
+                    sdp_response[3] == '01'O) {
+                    setverdict(pass,
+                        "SDP discovery successful -- SECC returned valid V2GTP response with IPv6+port");
+                } else {
+                    setverdict(fail,
+                        "SDP response malformed: expected V2GTP header (01 FE 90 01), got raw bytes");
+                }
+            }
+            [] {{ tc_timer_name }}.timeout {
+                setverdict(inconc,
+                    "SDP timeout -- no response from SECC within {{ sdp_response_timeout_seconds }} seconds");
+            }
+        }
+        unmap(self:{{ port_name }}, system:{{ port_name }});
+
+        return getverdict;
+    }
+
+} // end module {{ module_name }}
+{% elif raw_send %}
+        // ================================================================
+        // BadCase: send malformed V2GTP header as raw octetstring
+        //
+        // V2GTP header format (8 bytes):
+        //   byte 0: ProtocolVersion        -- must be 0x01
+        //   byte 1: InverseProtocolVersion -- must be 0xFE = 0x01 xor 0xFF
+        //   byte 2-3: PayloadType          -- 0x8001=EXI
+        //   byte 4-7: PayloadLength        -- big-endian 32-bit
+        //
+        // The C++ adapter sends these bytes as-is (no EXI encoding).
+        // ================================================================
+        var octetstring v2gtp_malformed := '{{ bad_hex_value }}'O;
+
+        log("Sending malformed V2GTP message: {{ bad_value_description }}");
+        {{ tc_timer_name }}.start(PX_SECC_CMN_Message_Timeout);
+
+        {{ port_name }}.send({ raw := v2gtp_malformed });
+
+        // BadCase verdict logic:
+        //   PASS: SECC closes TCP connection OR does not respond within timeout
+        //   FAIL: SECC returns a normal V2G application-layer response
+        alt {
+            [] {{ port_name }}.receive(?) {
+                {{ tc_timer_name }}.stop;
+                log("FAIL: SECC returned a response despite malformed V2GTP header");
+                setverdict(fail,
+                    "SECC should reject malformed V2GTP message -- {{ requirement }} violation");
+            }
+            [] {{ tc_timer_name }}.timeout {
+                log("PASS: SECC correctly rejected malformed V2GTP message (timeout)");
+                setverdict(pass,
+                    "SECC correctly ignored malformed V2GTP message: {{ bad_value_description }}");
+            }
+        }
+
+        return getverdict;
+    }
+
+} // end module {{ module_name }}
+{% else %}
+        // ================================================================
+        // GoodCase: send well-formed V2G message via structured union
+        //
+        // The C++ port adapter intercepts { v2g := { ... } } and:
+        //   1. Looks up the wire_hex for "{{ send_template_name }}" in exi_payload_library.json
+        //   2. Calls ExiCodecAdapter::encode() with the message key
+        //   3. Patches the V2GTP PayloadLength field
+        //   4. Sends the wire bytes over TCP
+        //
+        // On receive, the adapter gets wire bytes, logs, and passes them back
+        // to TTCN-3 for template matching.
+        // ================================================================
+        log("Sending {{ message_type }} message via structured union (template: {{ send_template_name }})...");
+        {{ tc_timer_name }}.start(PX_SECC_CMN_Message_Timeout);
+
+        {{ port_name }}.send(
+            { v2g := { {{ send_key }} := {{ send_template_name }} } }
+        );
+
+        alt {
+            // Port `in` is typed as V2G_MessageUnion (NOT V2G_PortMessage), so
+            // the receive template must match the union variant directly without
+            // a `{ v2g := ... }` outer wrapper. The C++ adapter unwraps the
+            // v2g field on the send side and re-enqueues the bare V2G_MessageUnion
+            // value on the receive side, so `{ v2g := { ... } }` here would never
+            // match an incoming message and the test would silently fall through
+            // to the wildcard arm after the 60s timer expires.
+            [] {{ port_name }}.receive(
+                { {{ receive_key }} := ? }
+            ) {
+                {{ tc_timer_name }}.stop;
+                log("{{ receive_template_name }} received and matched");
+                setverdict(pass,
+                    "{{ message_type }} exchange successful -- SECC accepted the valid message");
+            }
+            [] {{ port_name }}.receive {
+                {{ tc_timer_name }}.stop;
+                setverdict(fail, "Unexpected message received during {{ message_type }} exchange");
+            }
+            [] {{ tc_timer_name }}.timeout {
+                setverdict(inconc,
+                    "{{ message_type }} timeout -- no response from SECC within timeout period");
+            }
+        }
+
+        return getverdict;
+    }
+
+} // end module {{ module_name }}
+{% endif %}

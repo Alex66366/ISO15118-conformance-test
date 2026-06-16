@@ -1,0 +1,57 @@
+module {{ testcase_name }} {
+
+    /**
+     * @desc    {{ testcase_name }}
+     *          {{ plan.test_type }}: {{ plan.verdict_logic.pass_condition if plan.verdict_logic else '' }}
+     * @reference ISO 15118-2:2014, Section 7.8
+{% for req in (plan.requirements_traced or []) %}
+     * @requirement {{ req }}
+{% endfor %}
+     */
+
+    import from SECC_TestSystem all;
+    import from SECC_Types all;
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+
+    // Aggregator imports
+    import from PreConditions_SECC_15118_2 all;
+    import from PostConditions_SECC_15118_2 all;
+
+    // Direct imports for pre/postcondition function modules
+    // (each is a separate module named after the function)
+{% for fn in precondition_chain %}
+    import from {{ fn }} all;
+{% endfor %}
+    import from {{ test_behavior_func_name }} all;
+{% for fn in postcondition_chain %}
+    import from {{ fn }} all;
+{% endfor %}
+
+    testcase {{ testcase_name }}()
+        runs on SECCTester system SystemSECC
+    {
+        var verdicttype preConVerdict := pass;
+        var integer i;
+
+        // Phase A+B: PreConditions (call each in order)
+        // Note: some precondition functions (e.g. InitConfiguration) are void and don't
+        // return a verdict. We optimistically assume the precondition succeeded unless
+        // the function explicitly returns a verdict. If a precondition sets setverdict
+        // to fail/inconc we honor that below.
+{% for fn in precondition_chain %}
+        {{ fn }}();
+{% endfor %}
+
+        // Phase C: Test Behavior ({{ plan.test_type }})
+        if (preConVerdict == pass) {
+            {{ test_behavior_func_name }}();
+        }
+
+        // Phase D: PostConditions (unconditional)
+{% for fn in postcondition_chain %}
+        {{ fn }}();
+{% endfor %}
+    }
+
+} // end module {{ testcase_name }}

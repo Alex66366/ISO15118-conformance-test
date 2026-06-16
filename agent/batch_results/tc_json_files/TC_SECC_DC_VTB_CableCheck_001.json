@@ -1,0 +1,40 @@
+{
+  "Test_Case": {
+    "TC_Id": "TC_SECC_DC_VTB_CableCheck_001",
+    "TC_Name": "SECC DC VTB CableCheck 001",
+    "Purpose": "Test System executes GoodCase procedure, signals CP State C and sends a CableCheckReq message with the current SessionID and all additional mandatory parameters.Test System then checks that the SUT sends a CableCheckRes message with the current SessionID, ResponseCode 'OK', EVSEProcessing 'Finished' and all additional mandatory parameters. If a CableCheckRes message with EVSEProcessing 'Ongoing' was received before, the Test System sends another CableCheckReq message. This message sequence will be repeated until the cable check of the SUT has finished or 'V2G_EVCC_CableCheck_Timer' has expired.",
+    "Document_Reference": {
+      "Requirements": [
+        "[V2G2-179]",
+        "[V2G2-180]",
+        "[V2G2-181]",
+        "[V2G2-183]",
+        "[V2G2-251]",
+        "[V2G2-252]",
+        "[V2G2-584]",
+        "[V2G2-752]",
+        "[V2G2-364]",
+        "[V2G2-365]",
+        "[V2G2-366]",
+        "[V2G2-391]",
+        "[V2G2-395]",
+        "[V2G2-457]",
+        "[V2G2-634]",
+        "[V2G2-664]",
+        "[V2G2-665]",
+        "[V2G2-666]",
+        "[V2G2-667]",
+        "[V2G2-677]",
+        "[V2G2-917]",
+        "[V2G2-915]",
+        "[V2G2-665]"
+      ]
+    }
+  },
+  "metadata": {
+    "sut_type": "SECC",
+    "message_type": "CableCheck_001TC_SECC",
+    "test_type": "GoodCase",
+    "source_kb": "iso15118_4_ttcn_knowledge_base.json"
+  }
+}
