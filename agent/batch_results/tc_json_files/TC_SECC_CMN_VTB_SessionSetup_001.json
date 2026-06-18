@@ -1,0 +1,21 @@
+{
+  "Test_Case": {
+    "TC_Id": "TC_SECC_CMN_VTB_SessionSetup_001",
+    "TC_Name": "SECC CMN VTB SessionSetup 001",
+    "Purpose": "Test System executes GoodCase procedure and sends a SessionSetupReq message with the V2GTP header information 'protocolVersion' equals to '0x01'H, 'invProtocolVersion' equals to 'FE'H and 'payloadType' equals to '0x8001'H. (V2GTP Header is matched for V2G message content). Test System then checks that the SUT sends a SessionSetupRes message with the V2GTP header information 'protocolVersion' equals to '0x01'H, 'invProtocolVersion' equals to 'FE'H and 'payloadType' equals to '0x8001'H.",
+    "Document_Reference": {
+      "Requirements": [
+        "[V2G2-082]",
+        "[V2G2-086]",
+        "[V2G2-087]",
+        "[V2G2-088]"
+      ]
+    }
+  },
+  "metadata": {
+    "sut_type": "SECC",
+    "message_type": "SessionSetup",
+    "test_type": "GoodCase",
+    "source_kb": "iso15118_4_ttcn_knowledge_base.json"
+  }
+}

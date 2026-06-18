@@ -1,0 +1,23 @@
+nohup: 忽略输入
+=== Batch Runner ===
+Suite size: 1 test cases
+   1. TC_SECC_CMN_VTB_SessionSetup_001                        [ad_hoc]
+
+Resolving TC IDs against knowledge base (iso15118_4_ttcn_knowledge_base.json)...
+
+=== Running 1 cases serially ===
+Results: /home/dmc/桌面/platform/agent/batch_results/batch_results.jsonl
+
+--- [1/1] TC_SECC_CMN_VTB_SessionSetup_001 (SessionSetup) ---
+
+[TC_SECC_CMN_VTB_SessionSetup_001] RUNNING: /usr/bin/python3 -u /home/dmc/桌面/platform/agent/test_code/ttcn3_generation_pipeline.py --test-case-file /home/dmc/桌面/platform/agent/batch_results/tc_json_files/TC_SECC_CMN_VTB_SessionSetup_001.json --filter-tc-id TC_SECC_CMN_VTB_SessionSetup_001 --rule-based-plan --watchdog-timeout 1200
+[TC_SECC_CMN_VTB_SessionSetup_001] pipeline log: /home/dmc/桌面/platform/agent/test_code/logs/TC_SECC_CMN_VTB_SessionSetup_001/pipeline_20260618_212308.log
+[BATCH CLEANUP] Removed legacy non-timestamped dir: /home/dmc/桌面/platform/agent/test_code/generated/TC_SECC_CMN_VTB_SessionSetup_001
+  -> VERDICT_ERROR  (714.5s)
+
+=== Batch complete ===
+Total time:  1736.4s
+Pass:        0
+Fail:        0
+Error/etc:   1
+Results:     /home/dmc/桌面/platform/agent/batch_results/batch_results.jsonl

@@ -1,0 +1,30 @@
+module TC_SECC_CMN_VTB_SDP_001 {
+    import from SECC_TestSystem all;
+    import from SECC_Constants all;
+    
+    // Direct imports for all called functions
+    import from f_SECC_CMN_PR_InitConfiguration_001 all;
+    import from f_SECC_CMN_TB_VTB_SDP_001 all;
+    import from f_SECC_CMN_PO_InitialState_001 all;
+    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
+
+    /**
+     * @desc    Test case for SDP discovery (ISO 15118-2)
+     *          Verifies SECC SDP response via UDP multicast
+     *          Requirements: [V2G2-123], [V2G2-147], [V2G2-150], [V2G2-154]
+     * @verdict pass if SDP exchange completes successfully
+     */
+    testcase TC_SECC_CMN_VTB_SDP_001()
+        runs on SECCTester system SystemSECC
+    {
+        // Phase A+B: Preconditions (SDP discovery + port mapping)
+        f_SECC_CMN_PR_InitConfiguration_001();
+
+        // Phase C: Test behavior (SDP already covered by precondition)
+        f_SECC_CMN_TB_VTB_SDP_001();
+
+        // Phase D: Postconditions (unconditional cleanup)
+        f_SECC_CMN_PO_InitialState_001();
+        f_SECC_CMN_PO_ShutdownConfiguration_001();
+    }
+}

@@ -39,5 +39,35 @@
   "testcase_name": "TC_SECC_CMN_VTB_V2GTPSessionSetup_001",
   "test_sequences": [],
   "_plan_builder": "rule_based",
-  "_plan_builder_version": "1.3-registry"
+  "_plan_builder_version": "1.3-registry",
+  "_precondition_completeness": {
+    "referenced_preconditions": [
+      "f_SECC_CMN_PR_InitConfiguration_001",
+      "f_SECC_CMN_PR_SupportedAppProtocol_001"
+    ],
+    "available_preconditions": [
+      "PreConditions_SECC_15118_2",
+      "f_SECC_CMN_PR_Binding_001",
+      "f_SECC_CMN_PR_InitConfiguration_001",
+      "f_SECC_CMN_PR_InitConfiguration_002",
+      "f_SECC_CMN_PR_PLCLinkStatusCombinedTesting_001",
+      "f_SECC_CMN_PR_SetPowerFlowConfiguration_001",
+      "f_SECC_CMN_PR_SetProximityPilot_001",
+      "f_SECC_CMN_PR_StateA_001",
+      "f_SECC_CMN_PR_StateB_001",
+      "f_SECC_CMN_PR_SupportedAppProtocol_001"
+    ],
+    "missing_preconditions": [],
+    "referenced_postconditions": [
+      "f_SECC_CMN_PO_InitialState_001",
+      "f_SECC_CMN_PO_ShutdownConfiguration_001"
+    ],
+    "available_postconditions": [
+      "PostConditions_SECC_15118_2",
+      "f_SECC_CMN_PO_InitialState_001",
+      "f_SECC_CMN_PO_ShutdownConfiguration_001",
+      "f_SECC_PO_ShutdownConfiguration_002"
+    ],
+    "missing_postconditions": []
+  }
 }

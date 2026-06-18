@@ -50,6 +50,17 @@ from collections import namedtuple
 _subprocess_ref = None  # 保存当前活动的子进程引用
 _interrupt_requested = False  # 中断请求标志
 _llm_watchdog_timeout = 1200  # LLM 子代理最大空闲秒数，看门狗在此时间后终止
+# Phase 3.6: flag set by the idle watchdog when it kills a claude sub-process
+# after detecting >600s of no LLM output. Read by call_agent_with_timeout to
+# refuse a retry. Reset by main() at the start of each new TC run.
+_llm_silent_killed = False
+
+# Phase 3.7: flag set by the sandbox-lock scanner when Claude Code reports that
+# the sandbox is blocking file creation / shell write attempts. Re-calling the
+# agent in this state would just repeat the same refusal, so call_agent_with_timeout
+# refuses to retry when this flag is set. Reset by main() at the start of each
+# new TC run (alongside _llm_silent_killed).
+_sandbox_locked_flag = False
 
 
 def cleanup_claude_history() -> int:
@@ -988,7 +999,20 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
             _wd_start_time = time.time()
 
             def _watchdog_tick():
-                """Poll session file mtime every 30s. Kill agent if idle > _wd_timeout."""
+                """Poll session file mtime every 30s. Kill agent if idle > _wd_timeout.
+
+                Bug fix (2026-06-18): the previous logic used `_last_mtime = _watched_file.stat().st_mtime`
+                ONCE at startup. If a session file already existed before the pipeline started
+                (e.g. a prior crashed run), then the "idle" counter could include the time the
+                file had been untouched BEFORE we launched Claude, producing a false positive
+                like "idle for 601s" when only 127s had actually elapsed.
+
+                The fix: continuously re-pick the freshest mtime seen so far and ONLY start
+                counting idle time from the LATEST mtime update. Also require TWO consecutive
+                30s polls showing no progress (60s grace period) before considering the agent
+                truly idle — this prevents killing Claude during brief gaps between batch
+                flushes or tool calls.
+                """
                 if _wd_timeout <= 0:
                     return  # disabled
                 try:
@@ -1001,22 +1025,51 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
                     if not _our_sessions:
                         # Claude hasn't created its session file yet — sleep and retry
                         return
-                    _watched_file = max(_our_sessions, key=lambda p: p.stat().st_mtime)
-                    _last_mtime = _watched_file.stat().st_mtime
+                    # Pick the freshest mtime AMONG our sessions right now.
+                    _last_mtime = max(p.stat().st_mtime for p in _our_sessions)
+                    _consecutive_idle_polls = 0  # require 2 consecutive 30s polls (60s grace)
                     while True:
                         time.sleep(30)
                         try:
-                            _new_mtime = _watched_file.stat().st_mtime
+                            # Re-evaluate all our sessions each tick; pick the freshest mtime.
+                            _current_our_sessions = [
+                                p for p in _all_session_files
+                                if p.exists() and p.stat().st_mtime >= (_wd_start_time - 5)
+                            ]
+                            if not _current_our_sessions:
+                                _consecutive_idle_polls += 1
+                            else:
+                                _new_mtime = max(p.stat().st_mtime for p in _current_our_sessions)
+                                if _new_mtime > _last_mtime:
+                                    # Activity detected — reset baseline and idle counter.
+                                    _last_mtime = _new_mtime
+                                    _consecutive_idle_polls = 0
+                                    continue
+                                else:
+                                    _consecutive_idle_polls += 1
                         except (FileNotFoundError, OSError):
                             break
-                        if _new_mtime > _last_mtime:
-                            _last_mtime = _new_mtime
+                        # Require 2 consecutive 30s idle polls (60s grace) before counting toward timeout.
+                        # This eliminates the "false positive" seen when the file hasn't been
+                        # touched for a single 30s window but is about to be written to.
+                        if _consecutive_idle_polls < 2:
                             continue
                         _idle = int(time.time() - _last_mtime)
                         if _idle > _wd_timeout:
                             if not _watchdog_killed[0]:
                                 _watchdog_killed[0] = True
                                 log(f"[WATCHDOG] {agent_name} idle for {_idle}s (>{_wd_timeout}s), killing process group", "WARN")
+                                # Phase 3.6: set the global silent-kill flag so the
+                                # caller (call_agent_with_timeout) refuses to retry.
+                                # Without this, the empty response triggers an immediate
+                                # retry with 2x timeout, starting another 20+ minute
+                                # silent wait. With this flag, the LLM is declared
+                                # broken and the pipeline exits cleanly.
+                                try:
+                                    global _llm_silent_killed
+                                    _llm_silent_killed = True
+                                except Exception:
+                                    pass
                                 try:
                                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                                 except (ProcessLookupError, PermissionError, OSError):
@@ -1095,6 +1148,25 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
 
         # Collect streamed stderr lines for post-processing
         stderr_val = "".join(stderr_lines)
+
+        # === Phase 3.7: Sandbox-Lock Fail-Fast ===
+        # Scan the agent's combined output for known sandbox-restriction phrases.
+        # If found, raise _SandboxLocked immediately so the pipeline aborts THIS
+        # TC instead of looping with retries that will produce identical output.
+        # Without this guard, an Infra Agent that gets stuck trying to use
+        # `mkdir` / `touch` / `>` for file creation will trigger 3 retry
+        # iterations * 200s each = ~600s of pure token-burning before the
+        # pipeline finally gives up.
+        _sandbox_phrase = _scan_for_sandbox_lock(stdout_val, stderr_val)
+        if _sandbox_phrase:
+            global _sandbox_locked_flag
+            _sandbox_locked_flag = True
+            log(
+                f"[SANDBOX-LOCK] {agent_name} reported sandbox restriction "
+                f"(matched phrase: '{_sandbox_phrase}'). Aborting retries.",
+                "ERROR",
+            )
+            raise _SandboxLocked(agent_name, _sandbox_phrase)
 
         # Track token usage for metrics
         in_tok, out_tok = _parse_token_usage_from_claude_output(stderr_val, stdout_val)
@@ -1778,6 +1850,17 @@ def build_generation_plan_from_test_case(raw_input: Dict, sop: Dict, filter_tc_i
                 f"f_{sut_type}_CMN_PR_SupportedAppProtocol_001",
             ]
     precond_chain = [fn.replace("{SUT}", sut_type) for fn in precond_chain]
+
+    # ── 7b. Self-precondition injection ─────────────────────────────────────
+    # If the protocol registry declares a `self_precondition` for this message
+    # (e.g. SessionSetup -> f_..._PR_SessionSetup_001), append it to the chain.
+    # This makes THIS case responsible for generating its own precondition
+    # function module, so downstream cases that reference it can reuse the
+    # asset (Asset Promotion).
+    if _resolved is not None and getattr(_resolved, "self_precondition", None):
+        self_pre = _resolved.self_precondition
+        if self_pre and self_pre not in precond_chain:
+            precond_chain.append(self_pre)
 
     # ── 8. Postcondition chain ──────────────────────────────────────────────
     postcond_chain: List[str] = [
@@ -3029,14 +3112,69 @@ def call_agent_with_timeout(prompt: str, agent_name: str, retry_on_timeout: bool
         log_prompt_size(agent_name, prompt)
 
     timeout = get_agent_timeout(agent_name, len(prompt))
-    response = call_claude_agent(prompt, agent_name, timeout=timeout,
-                                 extra_allowed_tools=extra_allowed_tools,
-                                 read_only=read_only)
-    if not response and retry_on_timeout:
-        log(f"{agent_name} Agent 超时或无响应，触发重试 (timeout={timeout}s)", "WARN")
-        response = call_claude_agent(prompt, f"{agent_name} (retry)", timeout=timeout * 2,
+    # Phase 3.7: short-circuit before invoking Claude if a previous call in this
+    # TC run already raised _SandboxLocked. We can't recover by retrying — the
+    # sandbox state is environmental. Returning "" lets the caller detect the
+    # failure via the existing empty-response path without raising an
+    # exception through the call_agent_with_timeout contract.
+    if _sandbox_locked_flag:
+        log(
+            f"{agent_name} Agent call skipped — sandbox lock flag is set from "
+            f"a previous call in this TC run. No retry will be attempted.",
+            "ERROR",
+        )
+        return ""
+    try:
+        response = call_claude_agent(prompt, agent_name, timeout=timeout,
                                      extra_allowed_tools=extra_allowed_tools,
                                      read_only=read_only)
+    except _SandboxLocked:
+        # The sandbox lock is environmental and cannot be recovered by
+        # retrying. Propagate the empty response (caller will detect this as
+        # a normal failure via the existing empty-string contract) so the
+        # outer pipeline loop can exit cleanly.
+        log(
+            f"{agent_name} Agent call aborted by sandbox lock — returning empty "
+            f"response to caller (no retry, no escalation).",
+            "ERROR",
+        )
+        return ""
+    # Phase 3.6: Detect "silent failure" (LLM silent for >600s, killed by idle watchdog).
+    # On 2026-06-18 the user hit a token-burning bug: Core Agent / Infra Agent was
+    # called by claude, sat silent for 10+ minutes, got killed by idle watchdog
+    # returning "", then call_agent_with_timeout immediately re-invoked claude
+    # with 2x timeout -- starting another 20+ minute silent wait. We now:
+    #   1. Check the global _llm_silent_killed flag set by the idle watchdog.
+    #   2. If set, refuse to retry (the LLM is broken, more calls won't help).
+    #   3. The pipeline's existing silent-failure detection will then mark the
+    #      TC as failed and exit, instead of looping.
+    if not response and retry_on_timeout:
+        global _llm_silent_killed
+        if _llm_silent_killed:
+            log(f"{agent_name} Agent killed by idle watchdog -- NOT retrying "
+                "(API likely hung, will not recover with another call).", "WARN")
+            return response
+        # Phase 3.7: double-check the sandbox flag after the call too — if the
+        # call returned empty AND the sandbox flag is now set (race window),
+        # refuse to retry.
+        if _sandbox_locked_flag:
+            log(f"{agent_name} Agent returned empty AND sandbox lock flag is set "
+                f"— NOT retrying.", "WARN")
+            return response
+        log(f"{agent_name} Agent 超时或无响应，触发重试 (timeout={timeout}s)", "WARN")
+        try:
+            response = call_claude_agent(prompt, f"{agent_name} (retry)", timeout=timeout * 2,
+                                         extra_allowed_tools=extra_allowed_tools,
+                                         read_only=read_only)
+        except _SandboxLocked:
+            log(
+                f"{agent_name} Agent retry aborted by sandbox lock — returning empty.",
+                "ERROR",
+            )
+            return ""
+        # If retry also returns empty, the LLM is broken — do not loop further.
+        if not response:
+            log(f"{agent_name} Agent retry also returned empty -- giving up.", "ERROR")
     return response
 
 
@@ -3348,7 +3486,8 @@ def run_core_agent(generation_plan: Dict, references: Dict,
                    previous_core_files: Optional[List[Dict]] = None,
                    previous_infra_files: Optional[List[str]] = None,
                    is_fix_mode: bool = False,
-                   protocol_snapshot: Optional[Dict] = None) -> Dict[str, Any]:
+                   protocol_snapshot: Optional[Dict] = None,
+                   output_dir: Optional[object] = None) -> Dict[str, Any]:
     """运行 Core Agent，生成 TTCN-3 代码。
 
     Args:
@@ -3371,6 +3510,23 @@ def run_core_agent(generation_plan: Dict, references: Dict,
     # The prompt file has a {PROTOCOL_SNAPSHOT} placeholder.
     _snapshot_str = json.dumps(protocol_snapshot, indent=2, ensure_ascii=False) if protocol_snapshot else "{}"
     system_prompt = system_prompt.replace("{PROTOCOL_SNAPSHOT}", _snapshot_str)
+
+    # Phase 3.5: Inject the GENDIR absolute path so the LLM knows exactly where to
+    # write files. On 2026-06-18 the user hit a token-burning bug: the LLM
+    # wrote generated files to the project root (~/桌面/platform/src/...) instead
+    # of the per-TC GENDIR, which silently broke the build and triggered 3 retry
+    # cycles. We now hardcode the absolute path into the prompt and forbid any
+    # write outside it.
+    import os as _os_for_path
+    if output_dir is not None:
+        _output_dir_str = str(output_dir.resolve()) if hasattr(output_dir, "resolve") else str(output_dir)
+    else:
+        _output_dir_env = _os_for_path.environ.get("TTCN3_GENDIR_OVERRIDE", "").strip()
+        if _output_dir_env:
+            _output_dir_str = _output_dir_env
+        else:
+            _output_dir_str = str((GENERATED_DIR / tc_id).resolve())
+    system_prompt = system_prompt.replace("{OUTPUT_DIR}", _output_dir_str)
 
     # Build pre/postcondition params blocks (used by both fix-mode and normal-mode paths)
     # SIL mode: no parameters for pre/postcondition functions
@@ -4502,6 +4658,47 @@ module TestCases_SECC {
         demo_parts.append("- PreConditions/PostConditions function definitions: generated by Core Agent, placed by pipeline")
         demo_parts.append("DO NOT include these files in your output JSON.")
 
+        # === Asset-Promotion-aware focus directive (Phase 3.1) ===
+        # After Phase 2 ran, _precondition_completeness.promoted_preconditions contains
+        # modules the pipeline copied from a sibling run. If there are still missing
+        # precondition files, tell the agent to focus ONLY on those — not on
+        # infrastructure that's already pre-installed. This keeps the agent from
+        # re-doing boilerplate and lets it concentrate on synthesizing the few
+        # missing TTCN modules.
+        _missing_after_promote = generation_plan.get("_precondition_completeness", {}).get(
+            "missing_preconditions", []
+        )
+        _promoted_list = generation_plan.get("_precondition_completeness", {}).get(
+            "promoted_preconditions", []
+        )
+        _missing_focus_directive = ""
+        if _missing_after_promote:
+            _missing_lines = "\n".join(
+                f"  - `{fn}.ttcn` at `src/ttcn3/3_Behavior_Steps/PreConditions/{fn}.ttcn`"
+                for fn in _missing_after_promote
+            )
+            _missing_focus_directive = (
+                "\n\n## FOCUS DIRECTIVE — Generate ONLY the following missing precondition modules:\n"
+                f"{_missing_lines}\n\n"
+                "These are the ONLY files the agent must produce. Do NOT touch:\n"
+                "- build.sh (pipeline-managed)\n"
+                "- 12 C++ adapter files (pipeline-managed)\n"
+                "- Port adapter .cc files (pipeline-managed)\n"
+                "- Any file already marked as PRE-CREATED below\n\n"
+                "Keep your response under 30 seconds of generation. Output each missing file directly."
+            )
+            log(
+                f"[INFRA PROMPT] Asset promotion skipped {_missing_after_promote}; "
+                f"agent will synthesize (focused prompt injected)",
+                "INFO",
+            )
+        if _promoted_list:
+            log(
+                f"[INFRA PROMPT] Asset promotion reused {len(_promoted_list)} modules; "
+                f"agent does NOT need to regenerate them: {_promoted_list}",
+                "INFO",
+            )
+
         demo_summary_text = "\n".join(demo_parts)
 
         # === 截断 TTCN 代码（优化：超过阈值时只传递摘要信息）===
@@ -4609,6 +4806,8 @@ DO NOT guess a different filename. Use the filename provided above.
 ### Demo Reference Files:
 
 {demo_summary_text}
+
+{_missing_focus_directive if _missing_focus_directive else ""}
 
 Now generate the project structure by writing files directly to disk.
 
@@ -5552,6 +5751,194 @@ def _inject_condition_function_imports(
             log("[INJECT] Fixed stale import in TestCases_SECC.ttcn")
 
 
+def _write_simple_watchdog_metrics(tc_project_dir: Path, plan_tc_id: str, result: Dict) -> None:
+    """Write a minimal metrics.json when the Infra Agent is killed by watchdog.
+
+    Phase 3.2: instead of waiting through the full fix loop just to write
+    a build_failed metrics, this short-circuits and writes the essential
+    fields so the batch runner can record a clean "build_failed" status
+    without further LLM calls.
+    """
+    metrics_path = tc_project_dir / "metrics.json"
+    payload = {
+        "tc_id": plan_tc_id,
+        "timestamp": tc_project_dir.name.rsplit("_", 1)[-1] if "_" in tc_project_dir.name else "",
+        "verdict": result.get("verdict", {}),
+        "latency": result.get("latency", {}),
+        "compile_errors": result.get("compile_errors", []),
+        "infra_status": result.get("infra_status", "watchdog_killed"),
+    }
+    metrics_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False),
+                            encoding="utf-8")
+    log(f"[FIX LOOP] Wrote fallback metrics.json: {metrics_path}")
+
+
+def _promote_precondition_assets(tc_dir: Path, generation_plan: Dict, generated_root: Optional[Path] = None) -> List[str]:
+    """Reuse previously-generated PreConditions .ttcn files from past project directories.
+
+    Why this exists (Asset Promotion)
+    ---------------------------------
+    The Infra Agent is great at synthesizing precondition code from scratch — but on
+    large prompts (~58 KB) it can hang for 10+ minutes. When a sibling test case
+    (e.g. ``TC_SECC_CMN_VTB_V2GTPSessionSetup_001``) has already generated an
+    implementation for ``f_SECC_CMN_PR_SessionSetup_001.ttcn``, we should COPY
+    that asset into the new project instead of asking the agent to regenerate it.
+
+    This is a cache, NOT a hardcoded answer:
+      * The assets were LLM-generated in previous runs.
+      * We only copy from project directories whose ``metrics.json`` has a real
+        TITAN verdict (pass/fail/inconc) — meaning the source actually compiled
+        and ran.
+      * If nothing is in the cache for a given module, the Infra Agent is still
+        invoked normally — the dynamic plan -> generate flow stays intact.
+
+    Returns the list of module basenames that were promoted (caller can remove
+    them from ``missing_preconditions`` before building the Infra Agent prompt).
+    """
+    import re
+    from pathlib import Path as _P
+
+    if generated_root is None:
+        # generated_root = <repo>/agent/test_code/generated
+        generated_root = tc_dir.parent.parent / "generated"
+    if not generated_root.is_dir():
+        log(f"[ASSET PROMOTE] No generated/ root found at {generated_root}; skipping")
+        return []
+
+    completeness = generation_plan.get("_precondition_completeness", {}) or {}
+    missing = list(completeness.get("missing_preconditions", []) or [])
+    if not missing:
+        log("[ASSET PROMOTE] No missing preconditions reported by plan; nothing to promote")
+        return []
+
+    pre_dir = tc_dir / "src" / "ttcn3" / "3_Behavior_Steps" / "PreConditions"
+    pre_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect candidate source directories (timestamped project dirs from prior runs).
+    # Sort by mtime DESC so the newest, most likely-compatible asset wins.
+    candidates: List[_P] = []
+    for d in generated_root.iterdir():
+        if not d.is_dir():
+            continue
+        # Only consider dirs that look like <TC_ID>_<YYYYMMDD_HHMMSS>
+        if "_" not in d.name:
+            continue
+        # Skip the current target dir (and its non-timestamped sibling)
+        if d == tc_dir:
+            continue
+        # Must have a metrics.json with a real verdict
+        metrics_path = d / "metrics.json"
+        if not metrics_path.is_file():
+            continue
+        try:
+            with open(metrics_path, "r", encoding="utf-8") as mf:
+                m = json.loads(mf.read())
+        except (OSError, json.JSONDecodeError):
+            continue
+        verdict = (m.get("verdict") or {}).get("result")
+        if verdict not in {"pass", "fail", "inconc", "fix_success"}:
+            continue
+        # Must have a PreConditions dir
+        src_pre_dir = d / "src" / "ttcn3" / "3_Behavior_Steps" / "PreConditions"
+        if not src_pre_dir.is_dir():
+            continue
+        candidates.append(d)
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    promoted: List[str] = []
+    still_missing: List[str] = []
+    for mod_name in missing:
+        mod_filename = f"{mod_name}.ttcn"
+        found_src: Optional[_P] = None
+        for cand in candidates:
+            src_file = cand / "src" / "ttcn3" / "3_Behavior_Steps" / "PreConditions" / mod_filename
+            if not src_file.is_file():
+                continue
+            # Filter: skip stubs. Stubs are <=50 lines or contain the
+            # "Auto-generated stub precondition function." marker.
+            try:
+                content = src_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            line_count = content.count("\n")
+            if line_count <= 50 or "Auto-generated stub precondition function" in content:
+                continue
+            found_src = src_file
+            break
+        if found_src is None:
+            still_missing.append(mod_name)
+            continue
+        # Promote: copy the asset into the new project.
+        dst_file = pre_dir / mod_filename
+        try:
+            dst_file.write_text(found_src.read_text(encoding="utf-8", errors="replace"),
+                                encoding="utf-8")
+        except OSError as e:
+            log(f"[ASSET PROMOTE] Copy failed for {mod_filename}: {e}", "WARN")
+            still_missing.append(mod_name)
+            continue
+        promoted.append(mod_name)
+        # Source file path: <project_dir>/src/ttcn3/3_Behavior_Steps/PreConditions/<mod>.ttcn
+        # So .parent = PreConditions, .parent.parent = 3_Behavior_Steps,
+        # .parent.parent.parent = ttcn3, .parent.parent.parent.parent = src,
+        # .parent.parent.parent.parent.parent = <project_dir>
+        try:
+            project_dir_name = found_src.parent.parent.parent.parent.parent.name
+            src_metrics_path = found_src.parent.parent.parent.parent.parent / "metrics.json"
+            if src_metrics_path.is_file():
+                src_verdict = (json.loads(src_metrics_path.read_text(encoding="utf-8"))
+                               .get("verdict") or {}).get("result", "?")
+            else:
+                src_verdict = "(no metrics)"
+        except (OSError, json.JSONDecodeError):
+            project_dir_name = "<unknown>"
+            src_verdict = "(unreadable)"
+        log(f"[ASSET PROMOTE] {mod_filename} <- {project_dir_name} (verdict={src_verdict})")
+
+    # Wire promoted modules into the aggregator so TITAN sees them.
+    if promoted:
+        agg_path = pre_dir / "PreConditions_SECC_15118_2.ttcn"
+        try:
+            if agg_path.exists():
+                agg_content = agg_path.read_text(encoding="utf-8")
+            else:
+                agg_content = (
+                    "module PreConditions_SECC_15118_2 {\n"
+                    "    import from SECC_TestSystem all;\n"
+                    "    import from SECC_CmnTemplates all;\n"
+                    "    import from SECC_Constants all;\n"
+                    "}\n"
+                )
+            modified = False
+            for mod in promoted:
+                if f"import from {mod} all;" not in agg_content:
+                    agg_content = agg_content.replace(
+                        "} // end module PreConditions_SECC_15118_2",
+                        f"    import from {mod} all;\n}} // end module PreConditions_SECC_15118_2",
+                    )
+                    if f"import from {mod} all;" not in agg_content:
+                        # Insert just before the last closing brace as a fallback.
+                        agg_content = agg_content.rsplit("}", 1)[0] + f"    import from {mod} all;\n}}\n"
+                    modified = True
+            if modified:
+                agg_path.write_text(agg_content, encoding="utf-8")
+                log(f"[ASSET PROMOTE] Updated {agg_path.name} with promoted imports")
+        except OSError as e:
+            log(f"[ASSET PROMOTE] Could not update aggregator: {e}", "WARN")
+
+        # Update the plan so the Infra Agent is NOT asked to regenerate these.
+        completeness["missing_preconditions"] = still_missing
+        completeness["promoted_preconditions"] = promoted
+        generation_plan["_precondition_completeness"] = completeness
+        log(f"[ASSET PROMOTE] Promoted {len(promoted)} module(s): {promoted}")
+        if still_missing:
+            log(f"[ASSET PROMOTE] Still missing after scan: {still_missing}")
+    else:
+        log(f"[ASSET PROMOTE] No promotable assets found; Infra Agent will synthesize: {missing}")
+
+    return promoted
+
+
 def _ensure_missing_precondition_stubs(tc_dir: Path, generation_plan: Dict) -> None:
     """Generate minimal stubs for precondition functions that the TC file imports but no file exists.
 
@@ -6202,17 +6589,49 @@ def _install_canonical_runtime_config(tc_dir: Path) -> None:
         ../config/titan_runtime.cfg`` from ``tc_dir/build/bin``)
       - ``tc_dir/build/config/...``  (consumed by the build.sh's temp
         workspace rsync, in case anyone re-builds)
+
+    P0 FIX — Control File Generation:
+    This function generates ``TestCases_SECC.control`` in both config
+    directories AND mirrors it into ``tc_dir/build/bin/`` so TITAN can resolve
+    the bare filename in the ``[EXECUTE]`` directive. TITAN parses ``[EXECUTE]``
+    paths relative to its own startup cwd (``build/bin/`` when the pipeline
+    runs ``./TestExecutable ../config/titan_runtime.cfg``) and rejects any
+    value containing ``..`` with a parse error at the ``.`` token. Keeping the
+    canonical bare filename ``TestCases_SECC.control`` and mirroring the
+    control file to ``build/bin/`` is the only configuration that compiles
+    AND parses AND finds the control at runtime.
     """
     kb = Path(__file__).parent / "knowledge_base"
     src_cfg = kb / "canonical_titan_runtime.cfg"
     src_hw = kb / "canonical_hardware_env.json"
 
-    # Target dirs: tc_dir/config (consumed at runtime by pipeline's test step)
-    #              tc_dir/build/config (consumed by build.sh's rsync)
     target_dirs = [
         (tc_dir / "config", "config/"),
         (tc_dir / "build" / "config", "build/config/"),
     ]
+
+    # ── P0: Generate the .control file in both config/ directories AND in
+    #    build/bin/ (TestExecutable's startup cwd). Content is always the
+    #    single line "TestCases_SECC.control" — a bare filename, no path
+    #    prefix, because TITAN's cfg parser rejects any path containing "..".
+    control_text = "TestCases_SECC.control\n"
+    runtime_dirs = list(target_dirs) + [
+        (tc_dir / "build" / "bin", "build/bin/"),
+    ]
+    for target_dir, label in runtime_dirs:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        ctrl = target_dir / "TestCases_SECC.control"
+        ctrl.write_text(control_text, encoding="utf-8")
+        log(f"[CONFIG] Generated TestCases_SECC.control in {label}")
+
+    # ── P0: Keep the [EXECUTE] directive as the canonical bare filename.
+    #    Earlier versions patched this to "../config/TestCases_SECC.control"
+    #    which made TITAN abort with: "Parse error ... at or before token '.'
+    #    ... expecting $end". Verified working with canonical bare filename
+    #    + .control mirrored into build/bin/ on 20260617.
+    cfg_text = src_cfg.read_text(encoding="utf-8")
+    patched_cfg = cfg_text  # no-op: keep canonical bare filename
+
     pairs = [
         (src_cfg, "titan_runtime.cfg"),
         (src_hw, "hardware_env.json"),
@@ -6225,7 +6644,8 @@ def _install_canonical_runtime_config(tc_dir: Path) -> None:
             try:
                 target_dir.mkdir(parents=True, exist_ok=True)
                 dest = target_dir / fname
-                dest.write_text(src_file.read_text(encoding="utf-8"), encoding="utf-8")
+                content = patched_cfg if fname == "titan_runtime.cfg" else src_file.read_text(encoding="utf-8")
+                dest.write_text(content, encoding="utf-8")
                 log(f"[CONFIG] Canonical {fname} installed to {label}")
             except Exception as e:
                 log(f"[CONFIG] ERROR: failed to install {fname} to {label}: {e}", "ERROR")
@@ -6986,17 +7406,52 @@ DEMO_SHARED_FILES = [
     "src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_SDP_001.ttcn",
     "src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_SupportedAppProtocol_001.ttcn",
     "src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.ttcn",
-    # TestCases: entry point + the single demo TC file the entry point imports.
-    # The entry point module (`TestCases_SECC.ttcn`) is overwritten by
-    # `_rebuild_testcases_module` for every new case, but the TC file it
-    # executes by default is needed for the demo baseline to compile in
-    # isolation (precompile gate).
+    # TestCases: entry point + a minimal demo testcase for precompile gate.
+    # P2 FIX: The demo's TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn was
+    # removed from DEMO_SHARED_FILES to prevent cross-contamination between test cases.
+    # The precompile gate now uses DemoPassTC.ttcn (a minimal always-pass testcase
+    # that imports only the shared skeleton symbols) to verify demo syntax.
+    # The _scrub_stale_testcase_files() call in install_shared_ttcn_files()
+    # cleans up DemoPassTC.ttcn from generated projects at runtime.
     "src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn",
-    "src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn",
+    "src/ttcn3/4_TestCases/TestCases_SECC/DemoPassTC.ttcn",
 ]
 
 
-def install_shared_ttcn_files(tc_dir: Path) -> int:
+def _scrub_stale_testcase_files(tc_dir: Path, keep_tc_id: str) -> int:
+    """Remove stale .ttcn files from TestCases_SECC/ that don't belong to the current TC.
+
+    This is the P2 isolation fix: when switching from one test case to another
+    (e.g., SessionSetup_001 → SDP_001), the previous TC's .ttcn file stays in
+    TestCases_SECC/ and confuses TITAN's module resolution.  We only keep:
+      - TestCases_SECC.ttcn (the aggregator)
+      - The TC file for the current test case (keep_tc_id)
+
+    Returns the number of files removed.
+    """
+    tc_cases_dir = tc_dir / "src/ttcn3/4_TestCases/TestCases_SECC"
+    if not tc_cases_dir.is_dir():
+        return 0
+
+    removed = 0
+    keep_base = keep_tc_id + ".ttcn"
+    for f in tc_cases_dir.glob("*.ttcn"):
+        if f.name in ("TestCases_SECC.ttcn", keep_base, "DemoPassTC.ttcn"):
+            continue
+        # Also skip any TB files that are part of DEMO_SHARED_FILES
+        # (they're needed as verified pre/postcondition baselines)
+        if any(f.name == Path(p).name for p in DEMO_SHARED_FILES):
+            continue
+        try:
+            f.unlink()
+            log(f"[ISOLATION] Removed stale file: {f.relative_to(tc_dir)}")
+            removed += 1
+        except OSError as e:
+            log(f"[ISOLATION] Failed to remove {f}: {e}", "WARN")
+    return removed
+
+
+def install_shared_ttcn_files(tc_dir: Path, current_tc_id: str = "") -> int:
     """Copy shared TTCN-3 files from the demo project into the generated test project.
 
     The demo files contain valid, syntax-verified type/template/constant definitions
@@ -7005,9 +7460,19 @@ def install_shared_ttcn_files(tc_dir: Path) -> int:
     2. No LLM-generated syntax errors in shared files
     3. Consistent baseline across all generated projects
 
+    P2 ISOLATION FIX:
+    Before copying, _scrub_stale_testcase_files() removes any .ttcn files from
+    TestCases_SECC/ that don't belong to the current test case.  This prevents
+    cross-contamination when the batch runner switches between TCs (e.g.,
+    SessionSetup_001's .ttcn polluting SDP_001's project).
+
     Returns:
         Number of files successfully copied.
     """
+    # P2: Isolate the project — remove stale test case files before copying
+    if current_tc_id:
+        _scrub_stale_testcase_files(tc_dir, current_tc_id)
+
     written = 0
     for rel_path in DEMO_SHARED_FILES:
         src = DEMO_ROOT / rel_path
@@ -7538,6 +8003,27 @@ def run_build_and_test(
         # Read execution time from wall-clock (not from log parser)
         execution_wallclock = round(test_end_time - test_start_time, 3)
 
+        # === Phase 3.8: Pre-compute runtime outcome hints for downstream metrics ===
+        # Inspect the test_result + wallclock once, at the source of truth, so
+        # that the verdict classifier in _build_metrics_dict can pick up
+        # nuanced outcomes (early crash vs. genuine timeout) without having to
+        # re-implement the same heuristics. This block is intentionally
+        # non-destructive -- it only adds fields to test_result; the existing
+        # "completed" status is preserved for backward compatibility.
+        _combined_for_diag = (test_log_content or "") + "\n" + (run_result.stdout or "")
+        if "Overall verdict: pass" in _combined_for_diag:
+            test_result["verdict_hint"] = "pass"
+        elif "Overall verdict: inconc" in _combined_for_diag:
+            test_result["verdict_hint"] = "inconc"
+        elif "Overall verdict: fail" in _combined_for_diag:
+            test_result["verdict_hint"] = "fail"
+        elif execution_wallclock < 1.0 and run_result.returncode not in (None, 0):
+            test_result["verdict_hint"] = "runtime_silent_exit"
+        elif execution_wallclock < 5.0 and run_result.returncode == 0:
+            test_result["verdict_hint"] = "runtime_no_verdict"
+        else:
+            test_result["verdict_hint"] = "runtime_inconc"
+
         return {
             "status": "completed",
             "executable_path": str(exec_path),
@@ -7770,7 +8256,7 @@ def _preflight_infrastructure_check(tc_dir: Path, compile_errors: List[Dict],
     if compile_errors:
         first_error = compile_errors[0].get("message", "").lower()
         if any(kw in first_error for kw in ["cannot find module", "import missing", "makefilegen"]):
-            installed = install_shared_ttcn_files(tc_dir)
+            installed = install_shared_ttcn_files(tc_dir, tc_id)
             if installed > 0:
                 log(f"[PREFLIGHT] Reinstalled {installed} shared TTCN files from demo")
                 fixed = True
@@ -8397,6 +8883,54 @@ class _PipelineEarlyExit(Exception):
     pass
 
 
+class _SandboxLocked(Exception):
+    """Raised when Claude Code CLI reports that the sandbox is blocking all file
+    creation / shell write operations. Detected in call_claude_agent() by scanning
+    the agent's stdout/stderr for known sandbox-restriction phrases.
+
+    This is NOT a normal LLM failure (where the agent returned text but the code
+    didn't compile). Re-calling the agent cannot recover from this — the sandbox
+    state is environmental. Callers MUST propagate this exception out of the
+    pipeline rather than retrying, to avoid burning tokens in a doomed retry loop.
+    """
+    def __init__(self, agent_name: str, evidence: str):
+        self.agent_name = agent_name
+        self.evidence = evidence
+        super().__init__(
+            f"{agent_name} Agent reported sandbox restrictions; aborting immediately."
+        )
+
+
+# Phrases that indicate the Claude Code sandbox is blocking file creation / shell
+# write attempts. Sourced from real failure output captured in
+# logs/TC_SECC_CMN_VTB_SessionSetup_001/pipeline_20260618_192505.log on 2026-06-18.
+# Keep this list short and high-precision: a false positive here costs us a
+# complete pipeline abort, so prefer phrases that only appear in genuine sandbox
+# refusal messages.
+_SANDBOX_LOCK_PATTERNS = (
+    "sandbox restrictions",
+    "may only create or modify files in the allowed working directories",
+    "mkdir blocked",
+    "output redirection (blocked)",
+    "writing to /tmp (blocked)",
+    "use install command (requires approval)",
+)
+
+
+def _scan_for_sandbox_lock(stdout_val: str, stderr_val: str) -> str:
+    """Return the first sandbox-lock phrase found in (stdout|stderr), or '' if none.
+
+    Case-insensitive substring scan — the messages we observed in production logs
+    all share consistent wording, so substring matching is sufficient and avoids
+    the false-positive risk of regex.
+    """
+    haystack = ((stdout_val or "") + "\n" + (stderr_val or "")).lower()
+    for pat in _SANDBOX_LOCK_PATTERNS:
+        if pat in haystack:
+            return pat
+    return ""
+
+
 def generate_code_for_test_case(
     test_case: Dict,
     sut_type: Optional[str] = None,
@@ -8654,10 +9188,16 @@ def generate_code_for_test_case(
         global _llm_watchdog_timeout
         _llm_watchdog_timeout = watchdog_timeout
         try:
+            # Phase 3.5: derive the GENDIR path the same way Step 5 does so the
+            # Core Agent prompt can be injected with the absolute path BEFORE
+            # Step 5 creates the directory. This guarantees the LLM knows where
+            # to write even if the directory doesn't exist yet.
+            _gendir_for_prompt = GENERATED_DIR / (plan_tc_id + "_" + run_timestamp)
             core_result = run_core_agent(
                 generation_plan, references, few_shot_examples, sop, "",
                 sut_mode="SIL", local_ref_section=local_ref_section,
                 protocol_snapshot=_reg.snapshot(_reg.active_protocol()) if _reg.active_protocol() else None,
+                output_dir=_gendir_for_prompt,
             )
         except Exception as _e:
             log(f"[Core Agent] 调用异常: {_e}，回退到静态渲染", "WARN")
@@ -8894,6 +9434,14 @@ def generate_code_for_test_case(
     _inject_condition_function_imports(tc_project_dir, pre_condition_files, post_condition_files, plan_tc_id)
     _ensure_tc_direct_imports(tc_project_dir, output_filename, pre_condition_files, post_condition_files)
 
+    # === Step 5a.5: ASSET PROMOTION ===
+    # Before falling back to stubs or the Infra Agent, search previously-successful
+    # project directories for matching PreConditions .ttcn files. If found, copy
+    # them into the new project so the Infra Agent is NOT asked to regenerate code
+    # that a sibling case already produced. This is a cache of LLM-generated
+    # artifacts, NOT hardcoded content.
+    _promote_precondition_assets(tc_project_dir, generation_plan)
+
     # === Step 5c: GENERATE MISSING PRECONDITION STUBS ===
     # Core Agent sometimes writes `import from f_XYZ_001 all;` in the TC file
     # without generating the corresponding stub file (Module Name Mismatch Bug).
@@ -8977,7 +9525,7 @@ def generate_code_for_test_case(
     # 2. NUCLEAR COPY: Install ALL verified demo TTCN skeleton files proactively.
     # This guarantees a clean compilation baseline before Infrastructure Agent runs.
     # Any LLM-generated version of these files will be overwritten.
-    ttcn_installed = install_shared_ttcn_files(tc_project_dir)
+    ttcn_installed = install_shared_ttcn_files(tc_project_dir, plan_tc_id)
     log(f"[SCAFFOLD] Nuclear TTCN copy: {ttcn_installed} files from demo")
 
     # 3. Create directory structure first (V2G ports need these paths)
@@ -9050,24 +9598,97 @@ def generate_code_for_test_case(
     log(f"[SCAFFOLD] V2G ports: {ports_copied}/{len(demo_port_files)} copied")
 
     # ================================================================
-
-    try:
-        infra_result = run_infrastructure_agent(
-            generation_plan=generation_plan,
-            ttcn3_code=ttcn3_code,
-            tc_id=plan_tc_id,
-            sut_ip=sut_ip,
-            tc_output_filename=tc_output_filename,
-            output_dir=tc_project_dir,
-            protocol_snapshot=_reg.snapshot(_active_protocol, include_full_messages=True) if _active_protocol else None,
-        )
-    except RuntimeError as e:
-        log(f"[WARN] Infrastructure Agent threw RuntimeError: {e}", "WARN")
-        infra_result = {"status": "error", "message": str(e)}
-    infra_agent_elapsed = time.time() - t3
-    log(f"[Infrastructure Agent] 耗时: {infra_agent_elapsed:.1f}s")
+    # --no-llm-render guard: bypass the Infrastructure Agent LLM call
+    # entirely when the user explicitly opts out of LLM rendering. The
+    # scaffold above has already populated every required file from demo/,
+    # so we can hand a "completed / no changes" result back to the caller
+    # and proceed straight to compilation. Saves ~8 minutes per TC that
+    # would otherwise be burned on a sandbox-blocked Infrastructure Agent.
+    if no_llm_render:
+        log("[Infrastructure Agent] --no-llm-render: skipping LLM call, "
+            "using scaffold-only output")
+        infra_result = {
+            "status": "completed",
+            "mode": "no_llm_render_scaffold",
+            "files_written": [],
+            "build_output_summary": "Skipped Infrastructure Agent LLM call per --no-llm-render",
+        }
+        # Mirror existing scaffold state (Static Renderer / scaffolding already
+        # produced the .ttcn tree; just make sure the project directory flag
+        # is set so the build step runs against this directory).
+        try:
+            detected_mode, detected_files = detect_direct_write_mode(tc_project_dir)
+            log(f"[Infrastructure Agent] --no-llm-render: detected {detected_mode} "
+                f"with {len(detected_files)} files (using scaffold verbatim)")
+        except RuntimeError as _dmw_err:
+            log(f"[Infrastructure Agent] --no-llm-render: detect_direct_write_mode "
+                f"warn: {_dmw_err}", "WARN")
+            detected_mode, detected_files = "scaffold_only", []
+        infra_agent_elapsed = time.time() - t3
+        log(f"[Infrastructure Agent] 耗时: {infra_agent_elapsed:.1f}s (LLM skipped)")
+    else:
+        try:
+            infra_result = run_infrastructure_agent(
+                generation_plan=generation_plan,
+                ttcn3_code=ttcn3_code,
+                tc_id=plan_tc_id,
+                sut_ip=sut_ip,
+                tc_output_filename=tc_output_filename,
+                output_dir=tc_project_dir,
+                protocol_snapshot=_reg.snapshot(_active_protocol, include_full_messages=True) if _active_protocol else None,
+            )
+        except RuntimeError as e:
+            log(f"[WARN] Infrastructure Agent threw RuntimeError: {e}", "WARN")
+            infra_result = {"status": "error", "message": str(e)}
+        infra_agent_elapsed = time.time() - t3
+        log(f"[Infrastructure Agent] 耗时: {infra_agent_elapsed:.1f}s")
 
     # === Process Infrastructure Agent result ===
+    # Phase 3.2: detect whether the agent was killed by the watchdog so we can
+    # short-circuit the fix loop instead of re-invoking it (and burning another
+    # 1200s on a known-bad call).
+    infra_was_killed_by_watchdog = False
+    infra_elapsed_threshold = float(os.environ.get("INFRA_AGENT_HANG_THRESHOLD", "900"))
+    if infra_agent_elapsed >= infra_elapsed_threshold:
+        infra_was_killed_by_watchdog = True
+        log(
+            f"[WATCHDOG] Infrastructure Agent took {infra_agent_elapsed:.1f}s "
+            f"(>= {infra_elapsed_threshold:.0f}s threshold) -- "
+            f"likely killed by watchdog. Will NOT retry in fix loop.",
+            "WARN",
+        )
+
+    # Phase 3.4: detect a "silent LLM call" -- the agent returned successfully
+    # (no exception, no hang) but produced ZERO files on disk. This is the
+    # classic "API blocked / disabled / rate-limited" signature: claude returns
+    # an empty or near-empty response immediately. We should NOT burn another
+    # full watchdog cycle retrying; treat this the same as a watchdog kill.
+    infra_silent_no_files_written = False
+    if not infra_was_killed_by_watchdog and infra_result is not None:
+        _written_files = infra_result.get("files") or []
+        _note = infra_result.get("note", "")
+        if len(_written_files) == 0 and _note in (
+            "files_written_via_tools",  # empty response -> assumed via tools
+            "short_response_via_tools",  # short response -> assumed via tools
+        ):
+            # Cross-check with detect_direct_write_mode: did the agent actually
+            # write anything to disk?
+            try:
+                _silent_mode, _silent_files = detect_direct_write_mode(tc_project_dir)
+                if not _silent_files:
+                    infra_silent_no_files_written = True
+                    log(
+                        "[SILENT] Infrastructure Agent returned empty/short response "
+                        "AND wrote 0 files to disk. Will NOT retry in fix loop "
+                        "(API likely blocked).",
+                        "WARN",
+                    )
+            except Exception:
+                pass
+    if infra_silent_no_files_written and not infra_was_killed_by_watchdog:
+        infra_was_killed_by_watchdog = True
+        result["infra_status"] = "silent_failure"
+
     if infra_result is None or infra_result.get("status") == "error":
         log(f"[FATAL] Infrastructure Agent failed: {infra_result.get('message', 'unknown') if infra_result else 'No result'}", "ERROR")
         result["infra_status"] = "error"
@@ -9198,9 +9819,54 @@ def generate_code_for_test_case(
 
                 log(f"\n--- Step 7: Infrastructure Agent Fix Loop (max 3 iterations) ---")
 
+                # Phase 3.2 hardening: if the Infrastructure Agent was already killed
+                # by the watchdog on the first attempt, do NOT re-invoke it in the
+                # fix loop -- we already know it hangs. Escalate to static fallback
+                # immediately and let the build fail with a clear error.
                 INFRA_FIX_MAX_ITER = 3
                 _infra_fix_succeeded = False
                 _remaining_errors = compile_errors
+
+                # Phase 3.3: track the file count BEFORE each retry iteration, so we can
+                # detect a "silent fix loop" -- the LLM is invoked, returns 0 chars (API
+                # blocked, network down, or quota exhausted), and writes nothing to disk,
+                # but the pipeline keeps retrying forever and burns token. If 2 consecutive
+                # retries both produce ZERO new files, we declare silent failure and exit.
+                # This is the case the user hit on 2026-06-18: API was disabled mid-run,
+                # empty responses kept coming back, and the loop ran 19 minutes straight.
+                _pre_fix_file_count = 0
+                try:
+                    _pre_fix_mode, _pre_fix_files = detect_direct_write_mode(tc_project_dir)
+                    _pre_fix_file_count = len(_pre_fix_files) if _pre_fix_files else 0
+                except Exception:
+                    _pre_fix_file_count = 0
+                _consecutive_empty_fixes = 0
+
+                if infra_was_killed_by_watchdog:
+                    log(
+                        "[FIX LOOP] Skipping Infrastructure Agent retries -- "
+                        "agent was killed by watchdog on first attempt. "
+                        "Writing fallback metrics and exiting fix loop.",
+                        "WARN",
+                    )
+                    result["infra_status"] = "watchdog_killed"
+                    result["compile_errors"] = compile_errors
+                    result["latency"] = result.get("latency", {})
+                    result["latency"]["fault_correction_seconds"] = 0.0
+                    result["latency"]["total_pipeline_seconds"] = time.time() - t0
+                    result["verdict"] = {
+                        "result": "build_failed",
+                        "build_status": "watchdog_killed",
+                        "compile_errors_count": len(compile_errors),
+                        "note": "Infrastructure Agent hung past watchdog threshold; "
+                                "fix loop skipped to avoid wasting another 1200s.",
+                    }
+                    try:
+                        _write_simple_watchdog_metrics(tc_project_dir, plan_tc_id, result)
+                    except Exception as _wm_err:
+                        log(f"[FIX LOOP] _write_simple_watchdog_metrics failed: {_wm_err}", "WARN")
+                    # Set iter count to 0 so the for-loop below is a no-op.
+                    INFRA_FIX_MAX_ITER = 0
 
                 # 2D: Pre-compute the missing-PR remediation directive ONCE so the
                 # Infrastructure Agent sees the same mandatory file list on every
@@ -9312,6 +9978,50 @@ def generate_code_for_test_case(
                         log(f"[Infra Fix] FATAL: {e}", "ERROR")
                         raise
 
+                    # Phase 3.3: silent-fix detection. If the LLM was invoked but produced
+                    # NO new files (or even fewer than before), this iteration is wasted
+                    # -- the LLM is silent / API blocked. Track consecutive empty fixes;
+                    # after 2 in a row, break and let the build fail with a clear error
+                    # rather than burning 3 more 1200s retries.
+                    _new_files_count = len(detected_files) if detected_files else 0
+                    if _new_files_count <= _pre_fix_file_count:
+                        _consecutive_empty_fixes += 1
+                        log(
+                            f"[SILENT FIX] Iteration {_infra_fix_iter} produced NO new files "
+                            f"(pre={_pre_fix_file_count}, post={_new_files_count}). "
+                            f"Consecutive empty fixes: {_consecutive_empty_fixes}/2",
+                            "WARN",
+                        )
+                        if _consecutive_empty_fixes >= 2:
+                            log(
+                                "[SILENT FIX] 2 consecutive Infra Fix iterations produced no new files. "
+                                "This means the Infrastructure Agent is silent (API blocked / disabled / "
+                                "rate-limited). Breaking fix loop to avoid burning more token.",
+                                "ERROR",
+                            )
+                            result["infra_status"] = "silent_failure"
+                            result["infra_message"] = (
+                                f"Infrastructure Agent returned 0 new files across "
+                                f"{_consecutive_empty_fixes} consecutive fix iterations. "
+                                f"API is likely blocked or disabled. Re-enable API and re-run."
+                            )
+                            result["compile_errors"] = _remaining_errors
+                            try:
+                                _write_simple_watchdog_metrics(tc_project_dir, plan_tc_id, result)
+                            except Exception as _wm_err:
+                                log(f"[SILENT FIX] _write_simple_watchdog_metrics failed: {_wm_err}", "WARN")
+                            _infra_fix_succeeded = False
+                            break
+                    else:
+                        # Got new files! Reset counter and update baseline.
+                        log(
+                            f"[SILENT FIX] Iteration {_infra_fix_iter} produced "
+                            f"{_new_files_count - _pre_fix_file_count} new file(s).",
+                            "INFO",
+                        )
+                        _consecutive_empty_fixes = 0
+                        _pre_fix_file_count = _new_files_count
+
                     t_final_build = time.time()
                     final_build_result = run_build_and_test(
                         tc_dir=tc_project_dir, tc_id=plan_tc_id,
@@ -9355,7 +10065,33 @@ def generate_code_for_test_case(
             combined_output = log_content + "\n" + stdout_content
             test_passed = "Overall verdict: pass" in combined_output
 
-            if test_passed:
+            # === Phase 3.8: Early-exit gate for runtime Fault Corrector ===
+            # When the verdict_hint pre-computed in run_build_and_test tells us
+            # the TestExecutable crashed silently or returned 0 with no verdict
+            # line, calling run_fault_corrector is pointless -- there is no
+            # TTCN-3 log to analyze. Without this gate, the runtime corrector
+            # spins for 30-60s and then returns 0 useful repairs, while the
+            # metrics still report "inconc" -- a complete telemetry loss.
+            verdict_hint = test_result_data.get("verdict_hint")
+            if verdict_hint in ("runtime_silent_exit", "runtime_no_verdict"):
+                log(
+                    f"[FC-GATE] Skipping runtime Fault Corrector: verdict_hint="
+                    f"{verdict_hint!r}. TestExecutable did not produce a TTCN-3 "
+                    f"verdict; further LLM analysis cannot recover the run.",
+                    "WARN",
+                )
+                result["runtime_repair"] = {
+                    "status": "skipped",
+                    "iterations_used": 0,
+                    "runtime_verdict": verdict_hint,
+                    "reason": (
+                        "TestExecutable returned without writing 'Overall verdict:' "
+                        "line. No TTCN-3 log available for LLM analysis. "
+                        "Verdict classified as error:runtime_silent_exit or "
+                        "error:runtime_no_verdict by the metrics layer."
+                    ),
+                }
+            elif test_passed:
                 log("Test passed (Overall verdict: pass) -- skipping runtime Fault Corrector.")
                 result["test_passed"] = True
             else:
@@ -9758,6 +10494,7 @@ def _build_metrics_dict(
     fc_calls = _agent_call_counts.get("Fault Corrector", 0)
 
     verdict_result = "not_run"
+    runtime_diagnosis = "not_run"  # Phase 3.8: rich diagnosis distinct from verdict_result
     execution_time = 0.0
     build_status = "skipped"
     compile_errors_count = 0
@@ -9765,8 +10502,7 @@ def _build_metrics_dict(
         build_status = build_result.get("status", "unknown")
         # `not_run` is the initial sentinel. If we entered this branch with
         # a build_result but no verdict line was found, the test really did
-        # run but produced no parseable verdict -- treat as "inconc" so the
-        # downstream validator doesn't reject metrics.json as malformed.
+        # run but produced no parseable verdict -- see state machine below.
         # If build_status already says "error" the lines below override
         # verdict_result explicitly.
         build_status = build_result.get("status", "unknown")
@@ -9777,21 +10513,80 @@ def _build_metrics_dict(
             # returned 0 with no TTCN-3 verdict emitted). We require explicit
             # evidence of a TTCN-3 verdict from the log/stdout -- a bare
             # `returncode == 0` is NOT sufficient for a pass verdict.
+            #
+            # Phase 3.8 (rich verdict state machine): we now distinguish
+            # several distinct runtime outcomes that the previous single-string
+            # "inconc" bucket was conflating. 0.033s "TestExecutable silently
+            # exited" and "TITAN ran for 60s and produced no verdict" have
+            # completely different root causes (binary crash vs. protocol
+            # timeout) and the metrics/dashboard must tell them apart.
             test_res = build_result.get("test_result") or {}
             combined = (test_res.get("log_content", "") if test_res else "") + "\n" + (test_res.get("stdout", "") if test_res else "")
+            # Parse wall-clock FIRST so we can use it in the diagnosis step.
+            wallclock = build_result.get("execution_wallclock_seconds", 0.0) or 0.0
+            # Process return code from the test binary (not the build).
+            test_returncode = (test_res.get("returncode") if test_res else None)
+
+            # --- Layer 1: did the binary write an "Overall verdict:" line? ---
             if "Overall verdict: pass" in combined:
                 verdict_result = "pass"
+                runtime_diagnosis = "runtime_pass"
             elif "Overall verdict: inconc" in combined:
                 verdict_result = "inconc"
+                runtime_diagnosis = "runtime_inconc"
             elif "Overall verdict: fail" in combined:
                 verdict_result = "fail"
+                runtime_diagnosis = "runtime_fail"
             else:
-                # No explicit TTCN-3 verdict line found. Mark as inconclusive
-                # to be honest about the telemetry gap. Do NOT default to pass.
-                verdict_result = "inconc"
-                log(f"[VERDICT] build=completed but no 'Overall verdict:' line found in log; marking as inconc (no pass credit).")
+                # --- Layer 2: no explicit verdict line. Disambiguate by
+                # wall-clock + return code so dashboards can tell early
+                # crashes from genuine timeouts. ---
+                if wallclock < 1.0 and test_returncode not in (None, 0):
+                    # TestExecutable crashed within 1 second. TITAN never
+                    # even started the testcase. Common causes: missing
+                    # port mapping, segfault in C++ adapter, dynamic linker
+                    # error.
+                    verdict_result = "error"
+                    runtime_diagnosis = "runtime_silent_exit"
+                    log(
+                        f"[VERDICT] TestExecutable exited with code={test_returncode} "
+                        f"in {wallclock:.3f}s without writing an 'Overall verdict:' "
+                        f"line. Marked as error:runtime_silent_exit (binary crash, "
+                        f"not a TTCN-3 inconclusive).",
+                        "ERROR",
+                    )
+                elif wallclock < 5.0 and test_returncode == 0:
+                    # Binary returned 0 in <5s but no verdict line was
+                    # written. TITAN exited cleanly without executing any
+                    # testcase. This is the "SupportedAppProtocol 0.033s"
+                    # failure mode seen on 2026-06-18 -- the testcase body
+                    # never ran, so we must NOT credit this as inconc.
+                    verdict_result = "error"
+                    runtime_diagnosis = "runtime_no_verdict"
+                    log(
+                        f"[VERDICT] TestExecutable returned 0 in {wallclock:.3f}s "
+                        f"without writing 'Overall verdict:'. Marked as "
+                        f"error:runtime_no_verdict (testcase body never executed, "
+                        f"likely port-mapping or SUT-connect failure -- not a "
+                        f"TTCN-3 inconclusive).",
+                        "ERROR",
+                    )
+                else:
+                    # Binary ran for >=5s but produced no verdict line.
+                    # This is a genuine inconclusive: the testcase ran but
+                    # the timeout fired, or the verdict was suppressed by
+                    # the runtime. Preserved as "inconc" for backwards
+                    # compatibility with downstream validators.
+                    verdict_result = "inconc"
+                    runtime_diagnosis = "runtime_inconc"
+                    log(
+                        f"[VERDICT] build=completed, wallclock={wallclock:.3f}s, "
+                        f"no 'Overall verdict:' line found. Marked as "
+                        f"inconc:runtime_inconc (testcase ran but produced "
+                        f"no parseable verdict).",
+                        "WARN",
+                    )
             # Parse execution time: prefer wall-clock (most reliable), fall back to log parser
-            wallclock = build_result.get("execution_wallclock_seconds", 0.0)
             if wallclock and wallclock > 0:
                 execution_time = round(wallclock, 3)
             else:
@@ -9801,6 +10596,7 @@ def _build_metrics_dict(
                 execution_time = round(wallclock or parsed_log_time, 3)
         elif build_status == "build_failed":
             verdict_result = "error"
+            runtime_diagnosis = "build_failed"
             compile_errors_count = len(build_result.get("compile_errors", []))
         elif build_status == "stale_binary_requires_rebuild":
             # Filesystem had a TestExecutable from a prior attempt, but the
@@ -9808,6 +10604,7 @@ def _build_metrics_dict(
             # represent the current source state. verdict must be honest:
             # runtime did not execute on the current code -- mark as error.
             verdict_result = "error"
+            runtime_diagnosis = "stale_binary_requires_rebuild"
             compile_errors_count = 0
             log("[FS-TRUTH] verdict=error: stale binary on disk does not match current sources, runtime not executed.")
 
@@ -9873,6 +10670,7 @@ def _build_metrics_dict(
         },
         "verdict": {
             "result": verdict_result,
+            "runtime_diagnosis": runtime_diagnosis,
             "execution_time_seconds": round(execution_time, 3),
             "build_status": build_status,
             "compile_errors_count": compile_errors_count,
@@ -10170,6 +10968,13 @@ def run_pipeline(
 
 
 def main():
+    # Phase 3.6: reset the silent-kill flag at the start of every pipeline run.
+    # Without this reset, a previous TC's idle watchdog kill would propagate
+    # and incorrectly short-circuit the next TC's agent call.
+    global _llm_silent_killed, _sandbox_locked_flag
+    _llm_silent_killed = False
+    _sandbox_locked_flag = False
+
     parser = argparse.ArgumentParser(
         description="ISO 15118-2 TTCN-3 代码生成流水线\n\n"
                     "支持多种输入模式:\n"

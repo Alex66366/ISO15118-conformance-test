@@ -117,6 +117,7 @@ class ResolvedMessage:
     raw_request_description: Optional[str] = None
     response_timeout_seconds: Optional[float] = None
     covered_by_precondition: Optional[str] = None
+    self_precondition: Optional[str] = None
     default_precondition_chain: List[str] = None
     send_template_name: Optional[str] = None
     receive_template_name: Optional[str] = None
@@ -151,6 +152,7 @@ class ResolvedMessage:
             "response_timeout_seconds": self.response_timeout_seconds,
             "covered_by_precondition": self.covered_by_precondition is not None,
             "covered_by_precondition_fn": self.covered_by_precondition,
+            "self_precondition": self.self_precondition,
             "default_precondition_chain": self.default_precondition_chain,
         }
 
@@ -462,6 +464,12 @@ class ProtocolRegistry:
         chain = [fn.replace("{SUT}", sut) for fn in msg.get("default_precondition_chain", [])]
         covered_raw = msg.get("covered_by_precondition")
         covered = covered_raw.replace("{SUT}", sut) if covered_raw else None
+        # Self-precondition (the function module this message owns).
+        # When set, the Plan Builder appends it to the chain so this case
+        # actually generates the .ttcn file for its own precondition — making
+        # the asset available for downstream cases to reuse.
+        self_pre_raw = msg.get("self_precondition")
+        self_pre = self_pre_raw.replace("{SUT}", sut) if self_pre_raw else None
         # Template names — use canonical (stripped) name so templates match
         effective_name = msg.get("canonical_name") or msg["name"]
         send_t = recv_t = None
@@ -488,7 +496,8 @@ class ProtocolRegistry:
             raw_request_hex=msg.get("raw_request_hex"),
             raw_request_description=msg.get("raw_request_description"),
             response_timeout_seconds=msg.get("response_timeout_seconds"),
-            covered_by_precondition=covered, default_precondition_chain=chain,
+            covered_by_precondition=covered, self_precondition=self_pre,
+            default_precondition_chain=chain,
             send_template_name=send_t, receive_template_name=recv_t,
             send_key=uf_req, receive_key=uf_res, note=note,
         )

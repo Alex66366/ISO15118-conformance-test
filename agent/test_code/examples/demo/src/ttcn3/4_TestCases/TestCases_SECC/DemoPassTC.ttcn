@@ -1,0 +1,14 @@
+module DemoPassTC {
+    import from SECC_TestSystem all;
+    import from SECC_Constants all;
+
+    testcase DemoPassTC()
+        runs on SECCTester system SystemSECC
+    {
+        setverdict(pass, "Demo baseline: all shared symbols are syntactically valid");
+    }
+
+    control {
+        execute(DemoPassTC());
+    }
+}

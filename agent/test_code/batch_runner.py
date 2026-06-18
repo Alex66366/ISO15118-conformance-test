@@ -191,6 +191,8 @@ def run_one_case(
     work_dir: Path,
     extra_args: Optional[List[str]] = None,
     timeout: int = 1800,
+    watchdog_timeout: int = 1200,
+    no_llm_render: bool = False,
 ) -> Dict[str, Any]:
     """
     Run the pipeline for a single test case and return a result record.
@@ -227,14 +229,20 @@ def run_one_case(
     # Make test-case JSON file for the pipeline
     tc_json_path = make_test_case_file(kb_record, work_dir)
 
-    # Build the pipeline command
+    # Build the pipeline command.
+    # Default: ENABLE LLM rendering so the Core Agent + Infrastructure Agent
+    # can generate code for unusual test cases. Pass --no-llm-render to fall
+    # back to the static-renderer-only path (faster, deterministic, but won't
+    # adapt to edge cases that aren't covered by generation_patterns.json).
     cmd = [
         sys.executable, "-u", str(PIPELINE_SCRIPT),
         "--test-case-file", str(tc_json_path),
         "--filter-tc-id", tc_id,
         "--rule-based-plan",
-        "--watchdog-timeout", "1200",
+        "--watchdog-timeout", str(watchdog_timeout),
     ]
+    if no_llm_render:
+        cmd.append("--no-llm-render")
     if extra_args:
         cmd.extend(extra_args)
 
@@ -503,6 +511,17 @@ def main() -> int:
         "--no-clean-between", action="store_true",
         help="Skip the .claude/ and /tmp/titan_build_* cleanup between cases.",
     )
+    parser.add_argument(
+        "--no-llm-render", action="store_true",
+        help="Skip LLM-based code generation (Core Agent + Infrastructure Agent). "
+             "When set, pipeline uses static-renderer-only output. Use this when "
+             "Claude CLI sandbox is blocked (e.g. non-ASCII paths). Default is OFF "
+             "(LLM rendering enabled) so LLM can generate code for unusual cases.",
+    )
+    parser.add_argument(
+        "--watchdog-timeout", type=int, default=1200,
+        help="Per-LLM-call watchdog in seconds (default: 1200 = 20 min).",
+    )
     args = parser.parse_args()
 
     # Optionally save the default suite file
@@ -585,6 +604,8 @@ def main() -> int:
             work_dir=args.output_dir / "tc_json_files",
             extra_args=None,
             timeout=args.per_case_timeout,
+            watchdog_timeout=args.watchdog_timeout,
+            no_llm_render=args.no_llm_render,
         )
 
         # Append to JSONL (write-then-rename for atomicity)

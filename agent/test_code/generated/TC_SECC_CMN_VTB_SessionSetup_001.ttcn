@@ -1,28 +1,13 @@
-module TC_SECC_CMN_VTB_Authorization_001 {
+module TC_SECC_CMN_VTB_SessionSetup_001 {
 
     /**
-     * @desc    TC_SECC_CMN_VTB_Authorization_001
+     * @desc    TC_SECC_CMN_VTB_SessionSetup_001
      *          GoodCase: SECC returns a valid response matching the expected message
      * @reference ISO 15118-2:2014, Section 7.8
-     * @requirement [V2G2-179]
-     * @requirement [V2G2-180]
-     * @requirement [V2G2-181]
-     * @requirement [V2G2-183]
-     * @requirement [V2G2-212]
-     * @requirement [V2G2-213]
-     * @requirement [V2G2-563]
-     * @requirement [V2G2-752]
-     * @requirement [V2G2-856]
-     * @requirement [V2G2-377]
-     * @requirement [V2G2-391]
-     * @requirement [V2G2-457]
-     * @requirement [V2G2-634]
-     * @requirement [V2G2-664]
-     * @requirement [V2G2-665]
-     * @requirement [V2G2-666]
-     * @requirement [V2G2-667]
-     * @requirement [V2G2-915]
-     * @requirement [V2G2-665]
+     * @requirement [V2G2-082]
+     * @requirement [V2G2-086]
+     * @requirement [V2G2-087]
+     * @requirement [V2G2-088]
      */
 
     import from SECC_TestSystem all;
@@ -39,13 +24,11 @@ module TC_SECC_CMN_VTB_Authorization_001 {
     import from f_SECC_CMN_PR_InitConfiguration_001 all;
     import from f_SECC_CMN_PR_SupportedAppProtocol_001 all;
     import from f_SECC_CMN_PR_SessionSetup_001 all;
-    import from f_SECC_CMN_PR_ServiceDiscovery_001 all;
-    import from f_SECC_CMN_PR_PaymentServiceSelection_001 all;
-    import from f_SECC_CMN_TB_VTB_Authorization_001 all;
+    import from f_SECC_CMN_TB_VTB_SessionSetup_001 all;
     import from f_SECC_CMN_PO_InitialState_001 all;
     import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
 
-    testcase TC_SECC_CMN_VTB_Authorization_001()
+    testcase TC_SECC_CMN_VTB_SessionSetup_001()
         runs on SECCTester system SystemSECC
     {
         var verdicttype preConVerdict := pass;
@@ -59,12 +42,10 @@ module TC_SECC_CMN_VTB_Authorization_001 {
         f_SECC_CMN_PR_InitConfiguration_001();
         f_SECC_CMN_PR_SupportedAppProtocol_001();
         f_SECC_CMN_PR_SessionSetup_001();
-        f_SECC_CMN_PR_ServiceDiscovery_001();
-        f_SECC_CMN_PR_PaymentServiceSelection_001();
 
         // Phase C: Test Behavior (GoodCase)
         if (preConVerdict == pass) {
-            f_SECC_CMN_TB_VTB_Authorization_001();
+            f_SECC_CMN_TB_VTB_SessionSetup_001();
         }
 
         // Phase D: PostConditions (unconditional)
@@ -72,4 +53,4 @@ module TC_SECC_CMN_VTB_Authorization_001 {
         f_SECC_CMN_PO_ShutdownConfiguration_001();
     }
 
-} // end module TC_SECC_CMN_VTB_Authorization_001
+} // end module TC_SECC_CMN_VTB_SessionSetup_001

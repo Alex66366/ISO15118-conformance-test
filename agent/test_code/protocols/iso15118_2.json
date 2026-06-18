@@ -87,21 +87,22 @@
         "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
       ]
     },
-    {
-      "name": "SessionSetup",
-      "category": "CMN",
-      "protocol_layer": "V2G_Application",
-      "transport": "TCP_TLS",
-      "uses_raw_octetstring": false,
-      "covered_by_precondition": null,
-      "request_type": "SessionSetupReq",
-      "response_type": "SessionSetupRes",
-      "union_field": "sessionSetupReq",
-      "default_precondition_chain": [
-        "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
-      ]
-    },
+  {
+    "name": "SessionSetup",
+    "category": "CMN",
+    "protocol_layer": "V2G_Application",
+    "transport": "TCP_TLS",
+    "uses_raw_octetstring": false,
+    "covered_by_precondition": null,
+    "request_type": "SessionSetupReq",
+    "response_type": "SessionSetupRes",
+    "union_field": "sessionSetupReq",
+    "self_precondition": "f_{SUT}_CMN_PR_SessionSetup_001",
+    "default_precondition_chain": [
+      "f_{SUT}_CMN_PR_InitConfiguration_001",
+      "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+    ]
+  },
     {
       "name": "ServiceDiscovery",
       "category": "CMN",

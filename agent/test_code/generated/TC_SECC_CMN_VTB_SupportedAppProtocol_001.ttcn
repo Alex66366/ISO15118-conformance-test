@@ -1,0 +1,77 @@
+module TC_SECC_CMN_VTB_SupportedAppProtocol_001 {
+
+    /**
+     * @desc    TC_SECC_CMN_VTB_SupportedAppProtocol_001
+     *          GoodCase: SECC returns a valid response matching the expected message
+     * @reference ISO 15118-2:2014, Section 7.8
+     * @requirement [V2G2-165]
+     * @requirement [V2G2-168]
+     * @requirement [V2G2-169]
+     * @requirement [V2G2-176]
+     * @requirement [V2G2-178]
+     * @requirement [V2G2-541]
+     * @requirement [V2G2-026]
+     * @requirement [V2G2-030]
+     * @requirement [V2G2-031]
+     * @requirement [V2G2-033]
+     * @requirement [V2G2-377]
+     * @requirement [V2G2-381]
+     * @requirement [V2G2-391]
+     * @requirement [V2G2-395]
+     * @requirement [V2G2-634]
+     * @requirement [V2G2-664]
+     * @requirement [V2G2-665]
+     * @requirement [V2G2-666]
+     * @requirement [V2G2-667]
+     * @requirement [V2G2-915]
+     * @requirement [V2G2-721]
+     * @requirement [V2G2-602]
+     * @requirement [V2G2-626]
+     * @requirement [V2G2-665]
+     * @requirement [V2G2-068]
+     * @requirement [V2G2-871]
+     * @requirement [V2G2-852]
+     */
+
+    import from SECC_TestSystem all;
+    import from SECC_Types all;
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+
+    // Aggregator imports
+    import from PreConditions_SECC_15118_2 all;
+    import from PostConditions_SECC_15118_2 all;
+
+    // Direct imports for pre/postcondition function modules
+    // (each is a separate module named after the function)
+    import from f_SECC_CMN_PR_InitConfiguration_001 all;
+    import from f_SECC_CMN_PR_SupportedAppProtocol_001 all;
+    import from f_SECC_CMN_TB_VTB_SupportedAppProtocol_001 all;
+    import from f_SECC_CMN_PO_InitialState_001 all;
+    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
+
+    testcase TC_SECC_CMN_VTB_SupportedAppProtocol_001()
+        runs on SECCTester system SystemSECC
+    {
+        var verdicttype preConVerdict := pass;
+        var integer i;
+
+        // Phase A+B: PreConditions (call each in order)
+        // Note: some precondition functions (e.g. InitConfiguration) are void and don't
+        // return a verdict. We optimistically assume the precondition succeeded unless
+        // the function explicitly returns a verdict. If a precondition sets setverdict
+        // to fail/inconc we honor that below.
+        f_SECC_CMN_PR_InitConfiguration_001();
+        f_SECC_CMN_PR_SupportedAppProtocol_001();
+
+        // Phase C: Test Behavior (GoodCase)
+        if (preConVerdict == pass) {
+            f_SECC_CMN_TB_VTB_SupportedAppProtocol_001();
+        }
+
+        // Phase D: PostConditions (unconditional)
+        f_SECC_CMN_PO_InitialState_001();
+        f_SECC_CMN_PO_ShutdownConfiguration_001();
+    }
+
+} // end module TC_SECC_CMN_VTB_SupportedAppProtocol_001
