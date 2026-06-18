@@ -8,8 +8,7 @@
   "protocol_layer": "V2G_Application",
   "precondition_chain": [
     "f_SECC_CMN_PR_InitConfiguration_001",
-    "f_SECC_CMN_PR_SupportedAppProtocol_001",
-    "f_SECC_CMN_PR_SessionSetup_001"
+    "f_SECC_CMN_PR_SupportedAppProtocol_001"
   ],
   "postcondition_chain": [
     "f_SECC_CMN_PO_InitialState_001",
@@ -44,8 +43,7 @@
   "_precondition_completeness": {
     "referenced_preconditions": [
       "f_SECC_CMN_PR_InitConfiguration_001",
-      "f_SECC_CMN_PR_SupportedAppProtocol_001",
-      "f_SECC_CMN_PR_SessionSetup_001"
+      "f_SECC_CMN_PR_SupportedAppProtocol_001"
     ],
     "available_preconditions": [
       "PreConditions_SECC_15118_2",
@@ -59,9 +57,7 @@
       "f_SECC_CMN_PR_StateB_001",
       "f_SECC_CMN_PR_SupportedAppProtocol_001"
     ],
-    "missing_preconditions": [
-      "f_SECC_CMN_PR_SessionSetup_001"
-    ],
+    "missing_preconditions": [],
     "referenced_postconditions": [
       "f_SECC_CMN_PO_InitialState_001",
       "f_SECC_CMN_PO_ShutdownConfiguration_001"
