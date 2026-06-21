@@ -1,0 +1,12 @@
+nohup: 忽略输入
+=== Batch Runner ===
+Suite size: 5 test cases
+   1. TC_SECC_CMN_VTB_SDP_001                                 [ad_hoc]
+   2. TC_SECC_CMN_VTB_SupportedAppProtocol_001                [ad_hoc]
+   3. TC_SECC_CMN_VTB_V2GTPSessionSetup_001                   [ad_hoc]
+   4. TC_SECC_CMN_VTB_ServiceDiscovery_001                    [ad_hoc]
+   5. TC_SECC_CMN_VTB_PaymentServiceSelection_001             [ad_hoc]
+
+Resolving TC IDs against knowledge base (iso15118_4_ttcn_knowledge_base.json)...
+--resume: skipping 5 already-completed cases
+Nothing to do.

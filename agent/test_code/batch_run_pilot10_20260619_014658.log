@@ -1,0 +1,17 @@
+nohup: 忽略输入
+=== Batch Runner ===
+Suite size: 10 test cases
+   1. TC_SECC_CMN_VTB_SDP_001                                 [SDP]
+   2. TC_SECC_CMN_VTB_SupportedAppProtocol_001                [SupportedAppProtocol]
+   3. TC_SECC_CMN_VTB_V2GTPSessionSetup_001                   [V2GTPSessionSetup]
+   4. TC_SECC_CMN_VTB_ServiceDiscovery_001                    [ServiceDiscovery]
+   5. TC_SECC_CMN_VTB_PaymentServiceSelection_001             [PaymentServiceSelection]
+   6. TC_SECC_CMN_VTB_Authorization_001                       [Authorization]
+   7. TC_SECC_CMN_VTB_CertificateInstallation_001             [CertificateInstallation]
+   8. TC_SECC_AC_VTB_PowerDelivery_001                        [PowerDelivery_AC]
+   9. TC_SECC_AC_VTB_MeteringReceipt_001                      [MeteringReceipt_AC]
+  10. TC_SECC_DC_VTB_CableCheck_001                           [CableCheck_DC]
+
+Resolving TC IDs against knowledge base (iso15118_4_ttcn_knowledge_base.json)...
+--resume: skipping 10 already-completed cases
+Nothing to do.

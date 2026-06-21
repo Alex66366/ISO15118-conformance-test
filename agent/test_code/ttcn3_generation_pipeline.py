@@ -672,6 +672,7 @@ AgentMetrics = namedtuple("AgentMetrics", ["elapsed_seconds", "input_tokens", "o
 _agent_input_tokens = {}
 _agent_output_tokens = {}
 _agent_call_counts = {}
+_claude_model_name = None  # set once from first CLI response for experiment_metadata
 
 
 def _extract_text_from_message_event(msg_event: dict) -> str:
@@ -698,70 +699,212 @@ def _extract_text_from_message_event(msg_event: dict) -> str:
 
 
 def _parse_token_usage_from_claude_output(stderr, stdout=""):
-    """Parse token usage from Claude Code CLI's --output-format json output.
+    """Multi-path resolver for token usage from Claude Code CLI output.
 
-    The CLI emits a single top-level JSON object on stdout with this structure:
-        {
-          "type": "result",
-          "result": "<final assistant text>",
-          "modelUsage": { "<model_name>": {"inputTokens": N, "outputTokens": M, ...} },
-          "totalUsage": {"input_tokens": N, "outputTokens": M, ...},   # CUMULATIVE!
-          ...
-        }
+    CLI OUTPUT FORMAT (--output-format json):
+      Streaming NDJSON — each line is a complete JSON object:
+        [{"type":"system","subtype":"init",...},
+         {"type":"assistant","message":{"role":"assistant","content":[{...}],"usage":{...}},...},
+         {"type":"result","result":"...",...}]
 
-    CRITICAL: we MUST extract per-model usage from modelUsage, not re.search
-    the combined text. A bare regex over `stderr + stdout` will pick up the
-    `totalUsage.input_tokens` value (which is cumulative across the entire
-    Claude session, not the current invocation), leading to severe double
-    counting. E.g., 2 calls into a 50-turn session would each report the
-    full session's tokens, inflating infrastructure_agent.input_tokens into
-    the millions.
+    Token data lives in THREE distinct locations across the stream (Path A/B/C):
+      Path A: {type:"assistant", message:{content:[...], usage:{input_tokens:N, output_tokens:N}}}
+              "usage" is the canonical per-invocation source from the API response.
+      Path B: {type:"result", result:"...", modelUsage:{...}}          (older CLI format)
+      Path C: raw-text regex scan of stdout for "Input: N tokens" patterns.
+
+    IMPORTANT: stderr is ALWAYS empty in the current setup (Unix Popen with streaming
+    threads). All token data MUST be extracted from stdout's NDJSON stream.
+
+    Returns:
+        (input_tokens, output_tokens)
     """
     import json as _json
 
     input_tok = 0
     output_tok = 0
+    debug_info = {
+        "path_a_assistant_found": False,
+        "path_a_tokens": (0, 0),
+        "path_b_modelUsage_found": False,
+        "path_b_tokens": (0, 0),
+        "path_c_regex_found": False,
+        "path_c_tokens": (0, 0),
+        "ndjson_lines_scanned": 0,
+        "ndjson_parse_errors": 0,
+        "active_path": None,
+    }
 
-    # Preferred path: parse stdout as JSON and read modelUsage (per-model, per-invocation).
-    try:
-        parsed = _json.loads(stdout) if stdout else None
-    except (ValueError, TypeError):
-        parsed = None
+    # ------------------------------------------------------------------
+    # Helper: safely extract ints from a dict with snake/camel variants
+    # ------------------------------------------------------------------
+    def _get_tokens(d):
+        if not isinstance(d, dict):
+            return 0, 0
+        # Try snake_case first (Anthropic API standard), then camelCase
+        in_t  = d.get("input_tokens")  or d.get("inputTokens")  or 0
+        out_t = d.get("output_tokens") or d.get("outputTokens") or 0
+        return int(in_t or 0), int(out_t or 0)
 
-    if isinstance(parsed, dict):
-        # === Per-model usage (current invocation) ===
-        model_usage = parsed.get("modelUsage", {})
-        if isinstance(model_usage, dict):
-            for _model, u in model_usage.items():
-                if not isinstance(u, dict):
+    # ------------------------------------------------------------------
+    # PATH A — NDJSON streaming: scan for assistant messages with usage
+    # This is the PRIMARY path for current Claude Code CLI versions.
+    #
+    # The CLI can emit output in two physical layouts:
+    #   Multi-line:  [{"type":"system"...}\n{"type":"assistant"...}\n{"type":"result"...}\n]
+    #   Single-line: [{"type":"system"...},{"type":"assistant"...},{"type":"result"...}]
+    #
+    # Both produce valid JSON arrays. We handle both by first splitting on \n,
+    # then falling back to bracket-aware parsing if a single-line array was
+    # mistaken for one "unparseable" chunk.
+    # ------------------------------------------------------------------
+    last_assistant_usage = (0, 0)
+    _candidates = []  # [(raw_line_str, is_from_multiline), ...]
+
+    if stdout:
+        raw = stdout.strip()
+        raw_lines = raw.split("\n")
+        for rl in raw_lines:
+            stripped = rl.strip().rstrip(",")
+            if stripped and stripped not in ("[", "]"):
+                _candidates.append((stripped, True))
+
+        # If after \n-split we got no valid candidates (single-line array case),
+        # fall back to bracket-aware slicing so we don't skip the entire stream.
+        if not _candidates:
+            depth, buf_start = 0, -1
+            for i, ch in enumerate(raw):
+                if ch in ("{", "["):
+                    if depth == 0:
+                        buf_start = i
+                    depth += 1
+                elif ch in ("}", "]"):
+                    depth -= 1
+                    if depth == 0 and buf_start >= 0:
+                        chunk = raw[buf_start:i + 1]
+                        buf_start = -1
+                        _candidates.append((chunk, False))
+
+        for raw_line, from_multiline in _candidates:
+            debug_info["ndjson_lines_scanned"] += 1
+            try:
+                parsed = _json.loads(raw_line)
+            except _json.JSONDecodeError:
+                debug_info["ndjson_parse_errors"] += 1
+                continue
+
+            # parsed can be a list (when the single-line array wasn't split by \n)
+            # or a dict (normal NDJSON line). Normalise to a list of dicts.
+            items = parsed if isinstance(parsed, list) else [parsed]
+
+            for obj in items:
+                if not isinstance(obj, dict):
                     continue
-                # Newer CLI uses camelCase inputTokens/outputTokens
-                in_t = u.get("inputTokens", 0) or u.get("input_tokens", 0)
-                out_t = u.get("outputTokens", 0) or u.get("output_tokens", 0)
-                input_tok += int(in_t)
-                output_tok += int(out_t)
-            if input_tok or output_tok:
-                return (input_tok, output_tok)
 
-        # === Fallback: top-level usage field (rare) ===
-        top_usage = parsed.get("usage", {})
-        if isinstance(top_usage, dict):
-            in_t = top_usage.get("input_tokens", 0) or top_usage.get("inputTokens", 0)
-            out_t = top_usage.get("output_tokens", 0) or top_usage.get("outputTokens", 0)
-            if in_t or out_t:
-                return (int(in_t), int(out_t))
+                # Capture model name from system/init or assistant events (first seen wins)
+                global _claude_model_name  # noqa: F821
+                if _claude_model_name is None:
+                    _model = obj.get("model") or (
+                        obj.get("message", {}).get("model")
+                        if isinstance(obj.get("message"), dict) else None
+                    )
+                    if _model:
+                        _claude_model_name = _model
+                        log(f"[TOKEN][MODEL] detected: {_model}", "DEBUG")
 
-    # === Last-resort fallback: legacy regex on combined text ===
-    # NOTE: This path is kept only for compatibility with non-JSON stderr formats
-    # (e.g. "[Token Usage] Input: N tokens | Output: M tokens"). It must NOT be the
-    # primary code path, because re.search on stdout will pick up totalUsage (cumulative).
-    combined = stderr + stdout
-    inp = re.search(r"Input:\s*(\d+)\s*tokens?", combined)
-    out = re.search(r"Output:\s*(\d+)\s*tokens?", combined)
-    if inp:
-        input_tok = int(inp.group(1))
-    if out:
-        output_tok = int(out.group(1))
+                # Path A: {type:"assistant", message:{..., usage:{...}}}
+                if obj.get("type") == "assistant":
+                    msg = obj.get("message")
+                    if isinstance(msg, dict):
+                        usage = msg.get("usage")
+                        in_t, out_t = _get_tokens(usage)
+                        if in_t or out_t:
+                            last_assistant_usage = (in_t, out_t)
+                            log(f"[TOKEN][PATH_A] assistant usage: in={in_t} out={out_t}", "DEBUG")
+
+                # Path B: {type:"result", modelUsage:{...}}  (older CLI format)
+                if obj.get("type") == "result":
+                    mu = obj.get("modelUsage")
+                    if isinstance(mu, dict):
+                        for _model, u in mu.items():
+                            if not isinstance(u, dict):
+                                continue
+                            in_t, out_t = _get_tokens(u)
+                            if in_t or out_t:
+                                input_tok += in_t
+                                output_tok += out_t
+                                debug_info["path_b_modelUsage_found"] = True
+                                debug_info["path_b_tokens"] = (in_t, out_t)
+                                log(f"[TOKEN][PATH_B] modelUsage: in={in_t} out={out_t}", "DEBUG")
+
+    # Promote the last assistant usage as the Path A result
+    if last_assistant_usage != (0, 0):
+        debug_info["path_a_assistant_found"] = True
+        debug_info["path_a_tokens"] = last_assistant_usage
+        if not debug_info["path_b_modelUsage_found"]:
+            input_tok, output_tok = last_assistant_usage
+
+    # ------------------------------------------------------------------
+    # PATH C — Regex fallback (last resort; activates when Paths A & B fail)
+    # ------------------------------------------------------------------
+    if not debug_info["path_a_assistant_found"] and not debug_info["path_b_modelUsage_found"]:
+        debug_info["active_path"] = "C"
+        combined = stdout  # NOTE: stderr is always empty, but include it anyway
+        _input_patterns = [
+            (r"Input[:\s]+(\d+)[\s]*tokens?",              "Input: N tokens"),
+            (r"input\s*tokens?[:\s]+(\d+)",                "input tokens: N"),
+            (r"Input\s+Tokens?\s*[:\-=]\s*(\d+)",          "Input Tokens: N"),
+            (r"prompt.*?(\d+).*?tokens?",                  "prompt ... N tokens"),
+        ]
+        _output_patterns = [
+            (r"Output[:\s]+(\d+)[\s]*tokens?",             "Output: N tokens"),
+            (r"output\s*tokens?[:\s]+(\d+)",               "output tokens: N"),
+            (r"Output\s+Tokens?\s*[:\-=]\s*(\d+)",         "Output Tokens: N"),
+            (r"response.*?(\d+).*?tokens?",                "response ... N tokens"),
+        ]
+        found_in = None
+        found_out = None
+        for pattern, label in _input_patterns:
+            m = re.search(pattern, combined, re.IGNORECASE)
+            if m:
+                found_in = int(m.group(1))
+                log(f"[TOKEN][PATH_C] input pattern '{label}' -> {found_in}", "DEBUG")
+                break
+        for pattern, label in _output_patterns:
+            m = re.search(pattern, combined, re.IGNORECASE)
+            if m:
+                found_out = int(m.group(1))
+                log(f"[TOKEN][PATH_C] output pattern '{label}' -> {found_out}", "DEBUG")
+                break
+        if found_in is not None or found_out is not None:
+            input_tok  = found_in  if found_in  is not None else 0
+            output_tok = found_out if found_out is not None else 0
+            debug_info["path_c_regex_found"] = True
+            debug_info["path_c_tokens"] = (input_tok, output_tok)
+
+    # ------------------------------------------------------------------
+    # Determine active path for debug logging
+    # ------------------------------------------------------------------
+    if debug_info["path_a_assistant_found"]:
+        debug_info["active_path"] = "A"
+    elif debug_info["path_b_modelUsage_found"]:
+        debug_info["active_path"] = "B"
+    elif debug_info["path_c_regex_found"]:
+        debug_info["active_path"] = "C"
+    else:
+        debug_info["active_path"] = "NONE"
+
+    # ------------------------------------------------------------------
+    # Verbose debug log — THE canonical signal for paper-grade traceability
+    # ------------------------------------------------------------------
+    log(f"[TOKEN] ██ resolved={debug_info['active_path']} "
+        f"path_a={debug_info['path_a_assistant_found']}({debug_info['path_a_tokens']}) "
+        f"path_b={debug_info['path_b_modelUsage_found']}({debug_info['path_b_tokens']}) "
+        f"path_c={debug_info['path_c_regex_found']}({debug_info['path_c_tokens']}) "
+        f"scanned={debug_info['ndjson_lines_scanned']} "
+        f"parse_err={debug_info['ndjson_parse_errors']} "
+        f"in={input_tok} out={output_tok}", "DEBUG")
+
     return (input_tok, output_tok)
 
 
@@ -773,10 +916,11 @@ def _accumulate_tokens(agent_name, input_tok, output_tok):
 
 
 def _reset_metrics():
-    global _agent_input_tokens, _agent_output_tokens, _agent_call_counts
+    global _agent_input_tokens, _agent_output_tokens, _agent_call_counts, _claude_model_name
     _agent_input_tokens.clear()
     _agent_output_tokens.clear()
     _agent_call_counts.clear()
+    _claude_model_name = None
 
 
 
@@ -1150,14 +1294,29 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
         stderr_val = "".join(stderr_lines)
 
         # === Phase 3.7: Sandbox-Lock Fail-Fast ===
-        # Scan the agent's combined output for known sandbox-restriction phrases.
-        # If found, raise _SandboxLocked immediately so the pipeline aborts THIS
-        # TC instead of looping with retries that will produce identical output.
-        # Without this guard, an Infra Agent that gets stuck trying to use
-        # `mkdir` / `touch` / `>` for file creation will trigger 3 retry
-        # iterations * 200s each = ~600s of pure token-burning before the
-        # pipeline finally gives up.
-        _sandbox_phrase = _scan_for_sandbox_lock(stdout_val, stderr_val)
+        # Scan only stderr for known sandbox-restriction phrases. We deliberately
+        # DO NOT scan stdout here because Claude Code CLI embeds permission_denials,
+        # permissionMode, and shell-blocked-error transcripts in every JSON event
+        # stream on stdout — scanning stdout produces false positives on otherwise
+        # successful runs (the agent briefly tried mkdir, was blocked, then
+        # recovered by emitting the required JSON, but its stdout still contains
+        # the blocked-mkdir transcript).
+        #
+        # IMPORTANT: we ONLY abort if the agent produced NO usable output.
+        # If stdout has >= 1000 chars of content the agent succeeded despite any
+        # in-flight sandbox errors (those errors are echoed inside the agent's
+        # thinking/recovery loop but the final message contains the requested JSON).
+        # Aborting in that case would waste tokens on a perfect-good response.
+        _dbg("phase_3_7_sandbox_check", {
+            "agent_name": agent_name,
+            "stderr_len": len(stderr_val),
+            "stderr_preview": stderr_val[:500] if stderr_val else "",
+            "stdout_len": len(stdout_val),
+        })
+        stdout_has_output = bool(stdout_val and len(stdout_val) >= 1000)
+        _sandbox_phrase = None
+        if not stdout_has_output:
+            _sandbox_phrase = _scan_for_sandbox_lock("", stderr_val)
         if _sandbox_phrase:
             global _sandbox_locked_flag
             _sandbox_locked_flag = True
@@ -1167,6 +1326,11 @@ def call_claude_agent(prompt: str, agent_name: str, timeout: int = 120,
                 "ERROR",
             )
             raise _SandboxLocked(agent_name, _sandbox_phrase)
+        else:
+            _dbg("phase_3_7_skip_sandbox", {
+                "reason": "stdout has usable output (>= 1000 chars)",
+                "agent_name": agent_name,
+            })
 
         # Track token usage for metrics
         in_tok, out_tok = _parse_token_usage_from_claude_output(stderr_val, stdout_val)
@@ -2405,6 +2569,381 @@ def sanitize_ttcn3_hex_strings(text: str) -> str:
     return result
 
 
+def sanitize_pr_nesting(text: str, file_label: str = "<unknown>") -> str:
+    """Strip nested precondition calls from generated PR function bodies.
+
+    Root cause of a real bug (2026-06-20): the LLM would occasionally generate
+    PR functions that call other PR functions (e.g. SessionSetup PR calling
+    `f_SECC_CMN_PR_SupportedAppProtocol_001`). This violates ISO 15118-2:
+    each PR is atomic, the test case (TC) is responsible for chaining PRs.
+    Nested PR calls cause the SECC to receive an out-of-sequence request
+    and emit `EXIDecodingError("Premature EOS")`, closing the TCP/TLS
+    connection. The C++ adapter is correct; the LLM-generated PR was wrong.
+
+    This sanitizer is a defence-in-depth safety net (Pipeline's Core-Agent
+    prompt now also enforces the HARD INVARIANT, but we sanitize anyway
+    so a regression in the prompt cannot silently break the suite).
+
+    Detection rule (intentionally simple and conservative):
+      1. Use regex + brace-balanced scanner to locate the body of every
+         function whose name matches `f_SECC_CMN_PR_<X>_001`.
+      2. Within each such body, find any line containing a call to a
+         DIFFERENT `f_SECC_CMN_PR_<Y>_001` and replace that line with
+         a TTCN-3 single-line comment carrying a `[SANITIZER]` marker.
+
+    The sanitizer ONLY inspects files whose function name matches the PR
+    pattern; for non-PR files (testcase, postconditions, services) it is a
+    no-op so we don't accidentally strip legitimate helper-function calls.
+
+    Args:
+        text: Raw TTCN-3 source text (possibly containing multiple modules).
+        file_label: For logging only — the file basename, e.g. `f_SECC_CMN_PR_SessionSetup_001.ttcn`.
+
+    Returns:
+        Text with all illegal nested PR calls removed/commented-out.
+    """
+    import re
+
+    if not text or "f_SECC_CMN_PR_" not in text:
+        return text
+
+    fn_header_re = re.compile(
+        r'\bfunction\s+(f_SECC_CMN_PR_[A-Za-z0-9_]+_001)\s*\([^)]*\)[^{]*\{',
+    )
+    nested_call_re = re.compile(r'\b(f_SECC_CMN_PR_[A-Za-z0-9_]+_001)\s*\(')
+    line_comment_re = re.compile(r'//.*$')
+
+    # First pass: locate every PR function body span using brace matching.
+    fn_spans = []  # list of (fn_name, char_start, char_end)
+    for m in fn_header_re.finditer(text):
+        fn_name = m.group(1)
+        # Position of the opening '{' in the matched header
+        brace_pos = m.end() - 1
+        depth = 0
+        pos = brace_pos
+        while pos < len(text):
+            c = text[pos]
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    fn_spans.append((fn_name, m.start(), pos + 1))
+                    break
+            pos += 1
+
+    if not fn_spans:
+        return text
+
+    # Map each line index to the (first) PR function that encloses it.
+    line_to_fn = {}
+    for fn_name, cstart, cend in fn_spans:
+        li_start = text.count('\n', 0, cstart)
+        li_end = text.count('\n', 0, cend)
+        for li in range(li_start, li_end + 1):
+            line_to_fn.setdefault(li, fn_name)
+
+    # Second pass: scan lines, comment out nested calls to other PR functions.
+    lines = text.splitlines(keepends=True)
+    sanitized_lines = []
+    removed_total = 0
+    for li, line in enumerate(lines):
+        enclosing_fn = line_to_fn.get(li)
+        if enclosing_fn is None:
+            sanitized_lines.append(line)
+            continue
+        code_part = line_comment_re.sub('', line)
+        nested_match = None
+        for call_m in nested_call_re.finditer(code_part):
+            called_fn = call_m.group(1)
+            if called_fn == enclosing_fn:
+                continue
+            nested_match = (call_m, called_fn)
+            break
+        if nested_match is None:
+            sanitized_lines.append(line)
+            continue
+        _, called_fn = nested_match
+        stripped = line.lstrip()
+        indent = line[:len(line) - len(stripped)]
+        if stripped.startswith('//'):
+            sanitized_lines.append(line)
+        else:
+            sanitized_lines.append(
+                f"{indent}// [SANITIZER] Removed illegal nested PR call "
+                f"({called_fn} inside {enclosing_fn})\n"
+            )
+            removed_total += 1
+
+    if removed_total > 0:
+        log(f"[SANITIZER] Removed {removed_total} illegal nested PR call(s) in {file_label}")
+    return "".join(sanitized_lines)
+
+
+def sanitize_v2g_wrapper(text: str, file_label: str = "<unknown>") -> str:
+    """Auto-wrap bare receive/send templates in { v2g := { ... } }.
+
+    Root cause of a real bug (2026-06-20): the LLM generated receive templates
+    without the top-level V2G union wrapper, e.g.:
+        receive({ sessionSetupRes := ? })       // WRONG
+        send({ serviceDiscoveryReq := ... })    // WRONG
+
+    The C++ adapter crashes on bare union fields because it expects the outer
+    V2GMessage struct envelope.  The correct form is always:
+        receive({ v2g := { sessionSetupRes := ? } })
+        send({ v2g := { serviceDiscoveryReq := ... } })
+
+    This sanitizer is a defence-in-depth safety net (Pipeline's Core-Agent
+    prompt now also enforces the CRITICAL UNION WRAPPER invariant, but we
+    sanitize anyway so a regression cannot silently break the suite).
+
+    Detection rules (conservative — we ONLY fix the clearly-wrong patterns):
+      Pattern A — bare `receive({ <field> := ? })` at top level of receive arg
+                  NOT already wrapped in `v2g :=` or `raw :=\`;
+      Pattern B — bare `send({ <field> := ... })` at top level of send arg
+                  NOT already wrapped in `v2g :=` or `raw :=\`.
+
+    We use a regex that matches the "field :=" or "field :=" sentinel at the
+    top brace level only, so we don't accidentally touch nested sub-expressions.
+
+    Args:
+        text: Raw TTCN-3 source text.
+        file_label: For logging only — the file basename.
+
+    Returns:
+        Text with all bare v2g union fields wrapped in { v2g := { ... } }.
+    """
+    import re
+
+    if not text:
+        return text
+
+    # Pattern A: receive({ <bare_field> := [?] })  where <bare_field> is NOT
+    # already v2g or raw.  We look for 'receive({ ' followed eventually by
+    # 'fieldName :=' at the same brace depth, without an intervening v2g/raw.
+    # Strategy: for each 'receive' call, find its argument block (balanced braces)
+    # and check whether it starts with 'v2g :=' or 'raw :=\'.  If not, and the
+    # first content is a known V2G message field, wrap it.
+
+    KNOWN_V2G_FIELDS = {
+        # General / SDP
+        "sessionSetupReq", "sessionSetupRes",
+        "sessionSetupV2gtpRes",
+        "serviceDiscoveryReq", "serviceDiscoveryRes",
+        "serviceDetailReq", "serviceDetailRes",
+        "serviceListReq", "serviceListRes",
+        "servicePaymentSelectionReq", "servicePaymentSelectionRes",
+        "chargeParameterDiscoveryReq", "chargeParameterDiscoveryRes",
+        "powerDeliveryReq", "powerDeliveryRes",
+        "chargerErrorReq", "chargerErrorRes",
+        "paymentDetailsReq", "paymentDetailsRes",
+        "certificateInstallationReq", "certificateInstallationRes",
+        "certificateUpdateReq", "certificateUpdateRes",
+        "sessionStopReq", "sessionStopRes",
+        "weldingDiagnosisReq", "weldingDiagnosisRes",
+        "supportedAppProtocolReq", "supportedAppProtocolRes",
+        "v2gSetupReq", "v2gSetupRes",
+        "v2gResponseReq", "v2gResponseRes",
+        "AC_ChargeParameterDiscoveryReq", "AC_ChargeParameterDiscoveryRes",
+        "DC_ChargeParameterDiscoveryReq", "DC_ChargeParameterDiscoveryRes",
+        "DC_WeldingDetectionReq", "DC_WeldingDetectionRes",
+        "DC_CableCheckReq", "DC_CableCheckRes",
+        "DC_PreChargeReq", "DC_PreChargeRes",
+        "EVSEStatusReq", "EVSEStatusRes",
+        "currentDemandReq", "currentDemandRes",
+        "chargingStatusReq", "chargingStatusRes",
+        "meteringConfirmationReq", "meteringConfirmationRes",
+        "reassembly", "v2gtpRes", "sdpRes",
+        "primitive", "msg", "body", "header", "sdpReq", "sdpRes",
+    }
+
+    total_fixes = 0
+
+    # ---- Pattern A: receive without v2g/raw wrapper ----
+    # Match 'receive(' then find the balanced arg, check if first field is bare.
+    # Regex: receive(\s*(\([^)]*\)|\([^)]*\([^)]*\)[^)]*\))) but with balanced braces.
+    # We use a brace-scanning approach: for each 'receive(' we scan to the
+    # matching ')' and inspect the content.
+    receive_pattern = re.compile(r'\breceive\s*\(')
+
+    def _fix_receive(text: str) -> str:
+        result = []
+        pos = 0
+        fixes = 0
+        while True:
+            m = re.search(receive_pattern, text[pos:])
+            if not m:
+                result.append(text[pos:])
+                break
+            chunk_start = pos + m.start()
+            result.append(text[pos:chunk_start])
+            # Now scan from chunk_start to find the balanced closing ')'
+            open_pos = text.find('(', chunk_start)
+            if open_pos == -1:
+                result.append(text[chunk_start:])
+                break
+            depth = 0
+            scan = open_pos
+            while scan < len(text):
+                c = text[scan]
+                if c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                scan += 1
+            arg = text[open_pos + 1:scan]  # content inside receive(...)
+            stripped = arg.strip()
+            # Check if already wrapped
+            if stripped.startswith('v2g :=') or stripped.startswith('raw :=') or stripped.startswith('{'):
+                # Already has a union wrapper (possibly more complex)
+                # Still check: does it have a bare field at top level without v2g/raw?
+                # For safety, pass through as-is for simple cases
+                result.append(text[chunk_start:scan + 1])
+            else:
+                # Check if first token looks like a V2G field.
+                # Use re.search + MULTILINE so we match across lines even when
+                # stripped starts with whitespace/newlines before the field name.
+                # (re.match would fail because it anchors at position 0.)
+                field_match = re.search(r'([A-Za-z_]\w*)\s*:=\s*\?', stripped, re.MULTILINE)
+                if field_match and field_match.group(1) in KNOWN_V2G_FIELDS:
+                    rest = stripped[field_match.end():].lstrip()
+                    wrapped_arg = f"v2g := {{ {field_match.group(1)} := ?{rest} }}"
+                    result.append(f"receive({{{wrapped_arg}}})")
+                    fixes += 1
+                else:
+                    result.append(text[chunk_start:scan + 1])
+            pos = scan + 1
+        return "".join(result), fixes
+
+    text, fixes_a = _fix_receive(text)
+    total_fixes += fixes_a
+
+    # ---- Pattern B: send without v2g/raw wrapper ----
+    # Match 'send(' similarly.
+    send_pattern = re.compile(r'\bsend\s*\(')
+
+    def _fix_send(text: str) -> str:
+        result = []
+        pos = 0
+        fixes = 0
+        while True:
+            m = re.search(send_pattern, text[pos:])
+            if not m:
+                result.append(text[pos:])
+                break
+            chunk_start = pos + m.start()
+            result.append(text[pos:chunk_start])
+            open_pos = text.find('(', chunk_start)
+            if open_pos == -1:
+                result.append(text[chunk_start:])
+                break
+            depth = 0
+            scan = open_pos
+            while scan < len(text):
+                c = text[scan]
+                if c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                scan += 1
+            arg = text[open_pos + 1:scan].strip()
+            if arg.startswith('v2g :=') or arg.startswith('raw :=') or arg.startswith('{'):
+                result.append(text[chunk_start:scan + 1])
+            else:
+                # Non-greedy .+? prevents the regex from eating nested braces.
+                # Bracket-balance fallback: extract the value after ":=" and scan
+                # for the outermost balanced brace pair, so the exact value
+                # boundary is never ambiguous regardless of regex match quality.
+                def _extract_balanced_value(s: str) -> str:
+                    """Return the content after ':=' trimmed to the first balanced {} block."""
+                    colon = s.find(':=')
+                    if colon == -1:
+                        return s.strip()
+                    val = s[colon + 2:].strip()
+                    depth = 0
+                    end = 0
+                    for i, c in enumerate(val):
+                        if c == '{':
+                            depth += 1
+                        elif c == '}':
+                            depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                    return val[:end] if end else val
+
+                field_match = re.search(r'([A-Za-z_]\w*)\s*:=\s*(.+?)\s*$', arg, re.DOTALL)
+                if field_match and field_match.group(1) in KNOWN_V2G_FIELDS:
+                    raw_value = field_match.group(2)
+                    # Use bracket-balance algorithm for precise boundary detection
+                    value_clean = _extract_balanced_value(arg)
+                    # Strip the outermost braces of the value itself
+                    value_clean = value_clean.strip().lstrip('{').rstrip('}').strip()
+                    wrapped_arg = f"v2g := {{ {field_match.group(1)} := {value_clean} }}"
+                    result.append(f"send({{{wrapped_arg}}})")
+                    fixes += 1
+                else:
+                    result.append(text[chunk_start:scan + 1])
+            pos = scan + 1
+        return "".join(result), fixes
+
+    text, fixes_b = _fix_send(text)
+    total_fixes += fixes_b
+
+    if total_fixes > 0:
+        log(f"[SANITIZER] Fixed {total_fixes} bare union wrapper(s) in {file_label}")
+    return text
+
+
+def _sanitize_extracted_text(code: str) -> str:
+    """Apply hex-string, PR-nesting, and v2g-wrapper sanitizers to a single
+    chunk of extracted TTCN-3 source.
+
+    Used by `extract_core_agent_output` to ensure EVERY extracted TTCN-3
+    string is free of all three defect classes:
+      * odd-length octetstring hex literals (compile error);
+      * illegal nested calls from PR functions to other PR functions
+        (causes SECC state-machine corruption at runtime);
+      * bare receive/send templates missing the { v2g := { ... } } wrapper
+        (causes C++ adapter crash at runtime).
+    """
+    if not code:
+        return code
+    code = sanitize_ttcn3_hex_strings(code)
+    code = sanitize_pr_nesting(code, file_label="<extracted>")
+    code = sanitize_v2g_wrapper(code, file_label="<extracted>")
+    return code
+
+
+def _apply_sanitizers_to_extracted(parsed: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply all three sanitizers to every TTCN-3 field of a parsed Core-Agent dict.
+
+    Iterates over `testcase` plus every entry in `precondition_files` and
+    `postcondition_files` (each entry is expected to be a dict with
+    `filename` + `content` keys), running both sanitizers on each chunk.
+    """
+    try:
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("testcase"), str):
+                parsed["testcase"] = _sanitize_extracted_text(parsed["testcase"])
+            for k in ("precondition_files", "postcondition_files"):
+                files = parsed.get(k)
+                if isinstance(files, list):
+                    for entry in files:
+                        if isinstance(entry, dict) and isinstance(entry.get("content"), str):
+                            label = entry.get("filename", k)
+                            content = entry["content"]
+                            content = _sanitize_extracted_text(content)
+                            entry["content"] = content
+    except Exception as exc:
+        log(f"[SANITIZER] Error applying sanitizers: {exc}", "WARN")
+    return parsed
+
+
 def extract_core_agent_output(text: str) -> Dict[str, Any]:
     """从 Core Agent 响应中提取 JSON 格式的完整输出（包括 testcase + pre/post condition 文件）。
 
@@ -2595,13 +3134,14 @@ def extract_core_agent_output(text: str) -> Dict[str, Any]:
         try:
             parsed = _json.loads(attempt_text)
             if isinstance(parsed, dict) and "testcase" in parsed:
-                return parsed
+                return _apply_sanitizers_to_extracted(parsed)
             # Re-wrap a bare list or bare string into the expected dict shape
             if isinstance(parsed, list):
                 return {"testcase": "", "precondition_files": [], "postcondition_files": [],
                         "_parse_error": True, "_raw_list_len": len(parsed)}
             if isinstance(parsed, str):
-                return {"testcase": sanitize_ttcn3_hex_strings(parsed), "precondition_files": [], "postcondition_files": []}
+                return {"testcase": _sanitize_extracted_text(parsed),
+                        "precondition_files": [], "postcondition_files": []}
         except (_json.JSONDecodeError, ValueError):
             # Try truncation recovery on this candidate
             recovered = _recover_truncated_json(attempt_text)
@@ -2657,7 +3197,7 @@ def extract_core_agent_output(text: str) -> Dict[str, Any]:
             code = candidate[:end_pos + 1].strip()
             if _is_valid_ttcn3_code(code):
                 log("extract_core_agent_output: Tier-2 TTCN-3 module block salvaged from malformed response", "WARN")
-                return {"testcase": sanitize_ttcn3_hex_strings(code),
+                return {"testcase": _sanitize_extracted_text(code),
                         "precondition_files": [], "postcondition_files": []}
 
     # --- All tiers exhausted ---
@@ -3574,18 +4114,7 @@ def run_core_agent(generation_plan: Dict, references: Dict,
     # Load shared project file contents for injection into prompt.
     # These files are generated by Infrastructure Agent; providing their content
     # to Core Agent prevents "cannot find definition" errors.
-    CORE_AGENT_SHARED_REFS = {}
-    _shared_files_for_core = {
-        "TimerAndConstants": "src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn",
-        "CmnTemplates":      "src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn",
-    }
-    for _name, _rel_path in _shared_files_for_core.items():
-        _full_path = DEMO_ROOT / _rel_path
-        if _full_path.exists():
-            content = _full_path.read_text(encoding="utf-8")
-            CORE_AGENT_SHARED_REFS[_name] = truncate_text(content, 4000)
-        else:
-            CORE_AGENT_SHARED_REFS[_name] = ""
+    CORE_AGENT_SHARED_REFS = _load_core_shared_refs()
 
     # Build reference code section (used in both normal and fix mode)
     ref_code_parts = []
@@ -5795,6 +6324,32 @@ def _write_simple_watchdog_metrics(tc_project_dir: Path, plan_tc_id: str, result
     log(f"[FIX LOOP] Wrote fallback metrics.json: {metrics_path}")
 
 
+def _load_core_shared_refs() -> Dict[str, str]:
+    """Load shared TTCN reference files needed by the Core Agent prompt.
+
+    These files are copied from the demo project. Providing their content in the
+    prompt prevents "cannot find definition" errors when the LLM references
+    TimerAndConstants and CmnTemplates.
+
+    Cached on first call per process so we don't re-read the filesystem repeatedly.
+    """
+    import functools as _functools
+    @_functools.lru_cache(maxsize=1)
+    def _cached() -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        for _name, _rel_path in {
+            "TimerAndConstants": "src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn",
+            "CmnTemplates":      "src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn",
+        }.items():
+            _full_path = DEMO_ROOT / _rel_path
+            if _full_path.exists():
+                result[_name] = truncate_text(_full_path.read_text(encoding="utf-8"), 4000)
+            else:
+                result[_name] = ""
+        return result
+    return _cached()
+
+
 def _promote_precondition_assets(tc_dir: Path, generation_plan: Dict, generated_root: Optional[Path] = None) -> List[str]:
     """Reuse previously-generated PreConditions .ttcn files from past project directories.
 
@@ -6087,6 +6642,79 @@ def _ensure_missing_precondition_stubs(tc_dir: Path, generation_plan: Dict) -> N
                 log(f"[STUB GEN] Updated PreConditions_SECC_15118_2.ttcn with {len(generated_stubs)} stubs")
         except Exception as e:
             log(f"[STUB GEN] Failed to update aggregator: {e}", "WARN")
+
+
+def _heal_misplaced_condition_modules(tc_dir: Path) -> int:
+    """Move misplaced precondition/postcondition files back to their proper directories.
+
+    Core Agent (LLM) often writes PR_/PO_ function modules to the
+    ``TestBehavior/`` directory because the output JSON's path template is
+    ambiguous.  This causes ``makefilegen`` to fail with::
+
+        error: Both files `.../TestBehavior/f_X_PR_Y.ttcn` and
+               `.../PreConditions/f_X_PR_Y.ttcn` contain TTCN-3 module `f_X_PR_Y`.
+
+    because the same module name is declared in two different files.  This
+    self-heal step moves any ``*_PR_*`` / ``*_PO_*`` files found in
+    ``TestBehavior/`` to the correct ``PreConditions/`` / ``PostConditions/``
+    directory.  If a file with the same name already exists in the target
+    directory, the misplaced copy is deleted (the original in the proper
+    directory is the authoritative one — it was already validated by
+    ``install_shared_ttcn_files``).
+
+    Returns:
+        Number of files moved (or deleted as duplicates).
+    """
+    import re
+    import shutil
+
+    testbehavior_dir = tc_dir / "src" / "ttcn3" / "3_Behavior_Steps" / "TestBehavior"
+    pre_dir = tc_dir / "src" / "ttcn3" / "3_Behavior_Steps" / "PreConditions"
+    post_dir = tc_dir / "src" / "ttcn3" / "3_Behavior_Steps" / "PostConditions"
+
+    if not testbehavior_dir.exists():
+        return 0
+
+    pr_re = re.compile(r'_PR_[A-Za-z]+_\d{3}\.ttcn$')
+    po_re = re.compile(r'_PO_[A-Za-z]+_\d{3}\.ttcn$')
+
+    moved = 0
+    for src_file in list(testbehavior_dir.glob("*.ttcn")):
+        name = src_file.name
+        if pr_re.search(name):
+            target_dir = pre_dir
+        elif po_re.search(name):
+            target_dir = post_dir
+        else:
+            continue
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_file = target_dir / name
+
+        if target_file.exists():
+            # Duplicate: the proper directory already has this module.
+            # The copy in TestBehavior/ is the LLM misplacement; delete it.
+            try:
+                src_file.unlink()
+                log(f"[HEAL] Deleted duplicate misplaced file: TestBehavior/{name} "
+                    f"(authoritative copy already in {target_dir.name}/)")
+                moved += 1
+            except OSError as e:
+                log(f"[HEAL] Failed to delete duplicate {src_file}: {e}", "WARN")
+        else:
+            # Move the file to its proper home.
+            try:
+                shutil.move(str(src_file), str(target_file))
+                log(f"[HEAL] Moved misplaced file: TestBehavior/{name} -> "
+                    f"{target_dir.name}/{name}")
+                moved += 1
+            except OSError as e:
+                log(f"[HEAL] Failed to move {src_file} -> {target_file}: {e}", "WARN")
+
+    if moved:
+        log(f"[HEAL] Self-heal complete: relocated/cleaned {moved} misplaced "
+            f"PR/PO file(s) in TestBehavior/")
+    return moved
 
 
 def _ensure_tc_direct_imports(tc_dir: Path, tc_filename: str,
@@ -6658,15 +7286,18 @@ def _install_canonical_runtime_config(tc_dir: Path) -> None:
         (src_cfg, "titan_runtime.cfg"),
         (src_hw, "hardware_env.json"),
     ]
+    # Also copy to build/bin/ so TestExecutable can resolve config when run from
+    # that directory directly (e.g. not via the pipeline's "../config/titan_runtime.cfg" path).
+    all_target_dirs = list(target_dirs) + [(tc_dir / "build" / "bin", "build/bin/")]
     for src_file, fname in pairs:
         if not src_file.exists():
             log(f"[CONFIG] WARNING: canonical {fname} not found in knowledge_base", "WARN")
             continue
-        for target_dir, label in target_dirs:
+        content = patched_cfg if fname == "titan_runtime.cfg" else src_file.read_text(encoding="utf-8")
+        for target_dir, label in all_target_dirs:
             try:
                 target_dir.mkdir(parents=True, exist_ok=True)
                 dest = target_dir / fname
-                content = patched_cfg if fname == "titan_runtime.cfg" else src_file.read_text(encoding="utf-8")
                 dest.write_text(content, encoding="utf-8")
                 log(f"[CONFIG] Canonical {fname} installed to {label}")
             except Exception as e:
@@ -7278,6 +7909,20 @@ def pre_build_validate(tc_dir: Path) -> List[str]:
     if missing_demo_files:
         issues.append(f"[严重] demo 文件复制不完整，缺少: {', '.join(missing_demo_files)}")
 
+    # Self-heal: if build.sh is missing a TC file reference, delete it and
+    # force _install_build_script to regenerate it dynamically so that ALL
+    # TTCN files in 4_TestCases/ are included in the makefilegen.
+    _stale_build_sh = tc_dir / "build.sh"
+    if any("makefilegen 未包含" in issue for issue in issues):
+        log("[BUILD] WARNING: build.sh does not include TC file — forcing dynamic regeneration", "WARN")
+        try:
+            _stale_build_sh.unlink()
+            log("[BUILD] Removed stale build.sh")
+        except OSError:
+            pass
+        _install_build_script(tc_dir)
+        log("[BUILD] Regenerated build.sh with dynamic find (includes all TTCN_TESTS)")
+
     return issues
 
 
@@ -7471,6 +8116,41 @@ def _scrub_stale_testcase_files(tc_dir: Path, keep_tc_id: str) -> int:
         except OSError as e:
             log(f"[ISOLATION] Failed to remove {f}: {e}", "WARN")
     return removed
+
+
+def _purge_unreferenced_precondition_artifacts(tc_dir: Path, precondition_chain: List[str]) -> None:
+    """Remove PR .ttcn files not referenced in precondition_chain after demo copy.
+
+    Called AFTER install_shared_ttcn_files() so the target directory is
+    populated.  Scans the PreConditions/ directory and deletes any
+    f_SECC_CMN_PR_*.ttcn files whose module name is not in the chain.
+
+    This prevents demo scaffolding pollution (StateA, Binding, etc.) from
+    confusing the LLM and the makefilegen.
+    """
+    pre_dir = tc_dir / "src/ttcn3/3_Behavior_Steps/PreConditions"
+    if not pre_dir.exists():
+        return
+    expected = set(precondition_chain)
+    removed_count = 0
+    for f in pre_dir.glob("f_SECC_CMN_PR_*.ttcn"):
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        m = re.search(r'^\s*module\s+(\S+)\s*\{', content, re.MULTILINE)
+        if not m:
+            continue
+        module_name = m.group(1)
+        if module_name not in expected:
+            try:
+                f.unlink()
+                log(f"[CLEAN] Removed demo artifact: {f.name}")
+                removed_count += 1
+            except OSError:
+                pass
+    if removed_count > 0:
+        log(f"[CLEAN] Removed {removed_count} unreferenced demo PR artifact(s) from PreConditions/")
 
 
 def install_shared_ttcn_files(tc_dir: Path, current_tc_id: str = "") -> int:
@@ -8728,7 +9408,7 @@ def _runtime_self_repair(
                     for f_data in fixed_pre + fixed_post:
                         f_path = tc_project_dir / f_data["path"]
                         f_path.parent.mkdir(parents=True, exist_ok=True)
-                        fixed_content = sanitize_ttcn3_hex_strings(f_data["content"])
+                        fixed_content = _sanitize_extracted_text(f_data["content"])
                         f_path.write_text(fixed_content, encoding="utf-8")
                     if fixed_pre or fixed_post:
                         log(f"已写入 {len(fixed_pre)} 个 pre + {len(fixed_post)} 个 post 文件")
@@ -8923,34 +9603,697 @@ class _SandboxLocked(Exception):
         )
 
 
-# Phrases that indicate the Claude Code sandbox is blocking file creation / shell
-# write attempts. Sourced from real failure output captured in
-# logs/TC_SECC_CMN_VTB_SessionSetup_001/pipeline_20260618_192505.log on 2026-06-18.
-# Keep this list short and high-precision: a false positive here costs us a
-# complete pipeline abort, so prefer phrases that only appear in genuine sandbox
-# refusal messages.
-_SANDBOX_LOCK_PATTERNS = (
-    "sandbox restrictions",
-    "may only create or modify files in the allowed working directories",
-    "mkdir blocked",
-    "output redirection (blocked)",
-    "writing to /tmp (blocked)",
-    "use install command (requires approval)",
+# Phrases that Claude Code CLI emits when its MCP sandbox blocks shell writes
+# (mkdir, install -d, cat > file, etc.). When seen in agent stdout/stderr we
+# MUST abort the TC immediately — re-calling the agent cannot recover from a
+# sandbox-state failure and only burns tokens.
+#
+# Note: "permission_denials" is intentionally NOT in this list because Claude
+# Code CLI emits `"permission_denials":[]` in every successful JSON response
+# (an empty array of denied permissions), which would trigger a false-positive
+# sandbox-lock on every successful run. The real signals we want are the
+# human-readable error messages from blocked mkdir / approval requests.
+_SANDBOX_LOCK_PHRASES = (
+    "may only create directories in the allowed working directories",
+    "this command requires approval",
+    "this bash command contains multiple operations",
+    "mkdir was blocked",
+    "create_file was blocked",
+    "edit_file was blocked",
 )
 
 
-def _scan_for_sandbox_lock(stdout_val: str, stderr_val: str) -> str:
-    """Return the first sandbox-lock phrase found in (stdout|stderr), or '' if none.
+def _scan_for_sandbox_lock(stdout: str, stderr: str) -> Optional[str]:
+    """Return the first sandbox-restriction phrase found in agent output, or None.
 
-    Case-insensitive substring scan — the messages we observed in production logs
-    all share consistent wording, so substring matching is sufficient and avoids
-    the false-positive risk of regex.
+    Phase 3.7 in call_claude_agent() calls this after every agent invocation.
+    If a sandbox-restriction phrase is detected, the caller raises _SandboxLocked
+    so the pipeline aborts the TC instead of retrying a doomed loop.
+
+    Args:
+        stdout: Agent stdout (may contain JSON event stream from Claude Code CLI).
+        stderr: Agent stderr (may contain progress / error lines).
+
+    Returns:
+        The matched phrase string, or None if no sandbox-restriction is detected.
     """
-    haystack = ((stdout_val or "") + "\n" + (stderr_val or "")).lower()
-    for pat in _SANDBOX_LOCK_PATTERNS:
-        if pat in haystack:
-            return pat
-    return ""
+    combined = ((stdout or "") + "\n" + (stderr or "")).lower()
+    for phrase in _SANDBOX_LOCK_PHRASES:
+        if phrase.lower() in combined:
+            return phrase
+    return None
+
+
+class GenerationFailedError(RuntimeError):
+    """Raised when LLM generation produces no output and no partial artifacts exist.
+
+    This is the Fail-Fast anchor for Dimension 1 of the self-completing pipeline
+    architecture. When the Core Agent is called to generate a missing Precondition
+    function and returns nothing (API error, empty response, or no .ttcn file on
+    disk), we MUST NOT fall back to a stub. Stub files cause TITAN compilation
+    to silently succeed while runtime behavior is wrong or broken.
+
+    Instead, we raise this exception immediately so the pipeline fails explicitly
+    and loudly. The operator must investigate the Core Agent failure before
+    re-running. This is intentional: better an explicit failure than a silent
+    stub that corrupts downstream compilation.
+    """
+    def __init__(self, agent_name: str, reason: str, module_name: str = ""):
+        self.agent_name = agent_name
+        self.reason = reason
+        self.module_name = module_name
+        detail = module_name and f" (module={module_name})" or ""
+        super().__init__(
+            f"{agent_name} failed to generate missing precondition function{detail}: "
+            f"{reason}. Pipeline aborted without generating a stub. "
+            f"Fix the agent or provide the missing module manually."
+        )
+
+
+# ============================================================
+# Global Asset Promotion Pool (Dimension 3)
+# ============================================================
+
+# Fixed path — lives inside generated/, visible to all run directories.
+_GLOBAL_ASSET_POOL_DIR = GENERATED_DIR / "_global_asset_pool"
+_GLOBAL_ASSET_INDEX_PATH = _GLOBAL_ASSET_POOL_DIR / "index.json"
+
+
+def _ensure_global_asset_pool() -> None:
+    """Ensure the global asset pool directory and index exist."""
+    _GLOBAL_ASSET_POOL_DIR.mkdir(parents=True, exist_ok=True)
+    if not _GLOBAL_ASSET_INDEX_PATH.exists():
+        _GLOBAL_ASSET_INDEX_PATH.write_text("{}", encoding="utf-8")
+
+
+def _load_global_asset_index() -> Dict[str, Dict]:
+    """Load the global asset pool index, or return empty dict on error."""
+    try:
+        if _GLOBAL_ASSET_INDEX_PATH.exists():
+            return json.loads(_GLOBAL_ASSET_INDEX_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _save_global_asset_index(index: Dict[str, Dict]) -> None:
+    """Persist the global asset pool index to disk."""
+    try:
+        _ensure_global_asset_pool()
+        _GLOBAL_ASSET_INDEX_PATH.write_text(
+            json.dumps(index, indent=2, ensure_ascii=False),
+            encoding="utf-8"
+        )
+    except OSError as e:
+        log(f"[GLOBAL POOL] Failed to persist index: {e}", "WARN")
+
+
+def _promote_to_global_pool(generated_ttcn_path: Path, module_name: str,
+                             source_run_dir: str) -> bool:
+    """Copy a successfully-generated PR/TB .ttcn file to the global pool.
+
+    Global pool location: generated/_global_asset_pool/
+    Pool index: _global_asset_pool/index.json
+
+    The file is only added if it is not already present (existing entries are
+    preserved — first writer wins semantics).
+
+    Args:
+        generated_ttcn_path: Absolute path to the generated .ttcn file.
+        module_name: Module name, e.g. "f_SECC_CMN_PR_SessionSetup_001".
+        source_run_dir: Name of the run directory that produced this file,
+                       e.g. "TC_SECC_CMN_VTB_ServiceDiscovery_001_20260619_161423".
+
+    Returns:
+        True if the file was promoted (new or updated), False if skipped.
+    """
+    _ensure_global_asset_pool()
+
+    index = _load_global_asset_index()
+    dest_path = _GLOBAL_ASSET_POOL_DIR / f"{module_name}.ttcn"
+
+    try:
+        content = generated_ttcn_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        log(f"[GLOBAL POOL] Cannot read source file {generated_ttcn_path}: {e}", "WARN")
+        return False
+
+    # Stub filter: reject files that are empty, tiny, or contain the stub marker.
+    line_count = content.count("\n")
+    if line_count <= 50 or "Auto-generated stub precondition function" in content:
+        log(f"[GLOBAL POOL] Skipping {module_name}: looks like a stub "
+            f"(lines={line_count}); not promoted to global pool", "WARN")
+        return False
+
+    try:
+        dest_path.write_text(content, encoding="utf-8")
+    except OSError as e:
+        log(f"[GLOBAL POOL] Failed to write {dest_path}: {e}", "WARN")
+        return False
+
+    # Update index.
+    import datetime as _dt
+    index[module_name] = {
+        "file": f"{module_name}.ttcn",
+        "first_promoted_by": source_run_dir,
+        "promoted_at": _dt.datetime.utcnow().isoformat() + "Z",
+        "compilable": True,
+        "line_count": line_count,
+    }
+    _save_global_asset_index(index)
+    log(f"[GLOBAL POOL] Promoted {module_name}.ttcn <- {source_run_dir} "
+        f"({line_count} lines)")
+    return True
+
+
+def _upgrade_promote_precondition_assets(
+    tc_dir: Path,
+    generation_plan: Dict,
+    generated_root: Optional[Path] = None,
+    current_run_dir: str = "",
+) -> List[str]:
+    """Upgraded version of _promote_precondition_assets: checks global pool first.
+
+    Priority order:
+    1. Global asset pool (_global_asset_pool/) — most authoritative
+    2. Per-run directories in generated/ — fallback
+
+    The stub filter (>50 lines, no "Auto-generated stub" marker) is applied
+    to both sources.
+
+    This replaces the existing _promote_precondition_assets() function at
+    runtime by monkey-patching it into the module namespace. Callers should
+    use _upgrade_promote_precondition_assets directly after installing this upgrade.
+
+    Returns list of module names that were promoted.
+    """
+    import re as _re
+    from pathlib import Path as _P
+
+    if generated_root is None:
+        generated_root = tc_dir.parent.parent / "generated"
+    if not generated_root.is_dir():
+        log(f"[ASSET PROMOTE] No generated/ root found at {generated_root}; skipping")
+        return []
+
+    completeness = generation_plan.get("_precondition_completeness", {}) or {}
+    missing = list(completeness.get("missing_preconditions", []) or [])
+    if not missing:
+        log("[ASSET PROMOTE] No missing preconditions reported by plan; nothing to promote")
+        return []
+
+    pre_dir = tc_dir / "src" / "ttcn3" / "3_Behavior_Steps" / "PreConditions"
+    pre_dir.mkdir(parents=True, exist_ok=True)
+
+    promoted: List[str] = []
+    still_missing: List[str] = []
+
+    # ---- Priority 1: Global asset pool ----
+    _ensure_global_asset_pool()
+    global_index = _load_global_asset_index()
+
+    for mod_name in missing:
+        mod_filename = f"{mod_name}.ttcn"
+        found_src: Optional[_P] = None
+
+        # Check global pool first.
+        if mod_name in global_index:
+            pool_file = _GLOBAL_ASSET_POOL_DIR / mod_filename
+            if pool_file.is_file():
+                try:
+                    content = pool_file.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    content = ""
+                line_count = content.count("\n")
+                if line_count > 50 and "Auto-generated stub" not in content:
+                    found_src = pool_file
+
+        # ---- Priority 2: Per-run directory scan (existing logic) ----
+        if found_src is None:
+            # Collect candidate source directories sorted by mtime DESC.
+            candidates: List[_P] = []
+            for d in generated_root.iterdir():
+                if not d.is_dir():
+                    continue
+                if "_" not in d.name:
+                    continue
+                if d == tc_dir:
+                    continue
+                metrics_path = d / "metrics.json"
+                if not metrics_path.is_file():
+                    continue
+                try:
+                    m = json.loads(metrics_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                verdict = (m.get("verdict") or {}).get("result")
+                if verdict not in {"pass", "fail", "inconc", "fix_success"}:
+                    continue
+                src_pre_dir = d / "src" / "ttcn3" / "3_Behavior_Steps" / "PreConditions"
+                if not src_pre_dir.is_dir():
+                    continue
+                candidates.append(d)
+            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+            for cand in candidates:
+                src_file = cand / "src" / "ttcn3" / "3_Behavior_Steps" / "PreConditions" / mod_filename
+                if not src_file.is_file():
+                    continue
+                try:
+                    content = src_file.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                line_count = content.count("\n")
+                if line_count <= 50 or "Auto-generated stub" in content:
+                    continue
+                found_src = src_file
+                break
+
+        if found_src is None:
+            still_missing.append(mod_name)
+            continue
+
+        # Promote: copy the asset into the new project.
+        dst_file = pre_dir / mod_filename
+        try:
+            dst_file.write_text(found_src.read_text(encoding="utf-8", errors="replace"),
+                                encoding="utf-8")
+        except OSError as e:
+            log(f"[ASSET PROMOTE] Copy failed for {mod_filename}: {e}", "WARN")
+            still_missing.append(mod_name)
+            continue
+
+        promoted.append(mod_name)
+        src_dir_name = found_src.parent.parent.parent.parent.parent.name
+        log(f"[ASSET PROMOTE] {mod_filename} <- {src_dir_name} "
+            f"(global_pool={str(found_src).find('_global_asset_pool') >= 0})")
+
+    # Wire promoted modules into the aggregator.
+    if promoted:
+        agg_path = pre_dir / "PreConditions_SECC_15118_2.ttcn"
+        try:
+            if agg_path.exists():
+                agg_content = agg_path.read_text(encoding="utf-8")
+            else:
+                agg_content = (
+                    "module PreConditions_SECC_15118_2 {\n"
+                    "    import from SECC_TestSystem all;\n"
+                    "    import from SECC_CmnTemplates all;\n"
+                    "    import from SECC_Constants all;\n"
+                    "}\n"
+                )
+            modified = False
+            for mod in promoted:
+                if f"import from {mod} all;" not in agg_content:
+                    agg_content = agg_content.replace(
+                        "} // end module PreConditions_SECC_15118_2",
+                        f"    import from {mod} all;\n}} // end module PreConditions_SECC_15118_2",
+                    )
+                    if f"import from {mod} all;" not in agg_content:
+                        agg_content = (agg_content.rsplit("}", 1)[0]
+                                      + f"    import from {mod} all;\n}}\n")
+                    modified = True
+            if modified:
+                agg_path.write_text(agg_content, encoding="utf-8")
+                log(f"[ASSET PROMOTE] Updated {agg_path.name} with promoted imports")
+        except OSError as e:
+            log(f"[ASSET PROMOTE] Could not update aggregator: {e}", "WARN")
+
+        completeness["missing_preconditions"] = still_missing
+        completeness["promoted_preconditions"] = promoted
+        generation_plan["_precondition_completeness"] = completeness
+        log(f"[ASSET PROMOTE] Promoted {len(promoted)} module(s): {promoted}")
+        if still_missing:
+            log(f"[ASSET PROMOTE] Still missing after scan: {still_missing}")
+    else:
+        log(f"[ASSET PROMOTE] No promotable assets found; Core Agent will synthesize: {missing}")
+
+    return promoted
+
+
+# ============================================================
+# Dimension 1+2: Real Recursive Generation (replaces stubs)
+# ============================================================
+
+def _derive_message_type_from_module(module_name: str) -> str:
+    """Derive a plausible message_type from a function module name.
+
+    Examples:
+      f_SECC_CMN_PR_SessionSetup_001  -> "SessionSetup"
+      f_SECC_CMN_PR_ServiceDiscovery_001 -> "ServiceDiscovery"
+      f_SECC_CMN_PR_PaymentServiceSelection_001 -> "PaymentServiceSelection"
+    """
+    import re
+    m = re.match(r'^f_[A-Z]+_PR_([A-Za-z]+)_\d+$', module_name)
+    if m:
+        return m.group(1)
+    return "V2GMessage"
+
+
+def _generate_missing_precondition_functions(
+    tc_dir: Path,
+    generation_plan: Dict,
+    missing_modules: List[str],
+    references: Dict,
+    few_shot_examples: Dict,
+    sop: Dict,
+    run_timestamp: str = "",
+) -> List[str]:
+    """Call Core Agent to generate real TTCN-3 implementations for missing PR functions.
+
+    This replaces the legacy _ensure_missing_precondition_stubs() which generated empty
+    no-op stubs. Instead, we now invoke the Core Agent with full context so that it
+    produces genuine implementations containing send/receive/alt/setverdict logic.
+
+    Fail-Fast Decision Tree:
+      Case A — No output (API error, empty response, or no .ttcn file on disk):
+        Raise GenerationFailedError immediately. No stub is written.
+      Case B — Has output (files exist on disk):
+        Pass through to downstream Infra Agent + Fault Corrector. Even if the
+        code has syntax errors, the normal compile-loop/Fault Corrector self-repair
+        mechanism will iterate on it. This is the desired self-completing behavior.
+
+    Aggregator recognition: After each successful write, _inject_condition_function_imports()
+    is called so the PreConditions_SECC_15118_2.ttcn aggregator has correct imports.
+
+    Args:
+        tc_dir: Project directory.
+        generation_plan: The generation plan for the current test case.
+        missing_modules: List of missing function module names, e.g.
+            ["f_SECC_CMN_PR_SessionSetup_001"].
+        references: references dict from Summarizer (may be empty).
+        few_shot_examples: few_shot_examples from run_pipeline().
+        sop: SOP dict from run_pipeline().
+        run_timestamp: Timestamp string of the current run (for global pool logging).
+
+    Returns:
+        List of module names that were successfully generated.
+
+    Raises:
+        GenerationFailedError: Case A — Core Agent produced no usable output.
+    """
+    if not missing_modules:
+        return []
+
+    pre_dir = tc_dir / "src/ttcn3/3_Behavior_Steps/PreConditions"
+    pre_dir.mkdir(parents=True, exist_ok=True)
+
+    # Read canonical few-shot reference: SupportedAppProtocol from demo.
+    ref_pr_path = DEMO_ROOT / "src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn"
+    if ref_pr_path.exists():
+        ref_code = ref_pr_path.read_text(encoding="utf-8")
+        log(f"[MISSING PR GEN] Canonical reference loaded from SupportedAppProtocol "
+            f"({ref_code.count(chr(10))} lines)")
+    else:
+        ref_code = "(canonical reference file not found in demo; generation may be less accurate)"
+        log("[MISSING PR GEN] WARNING: SupportedAppProtocol reference not found", "WARN")
+
+    successfully_generated: List[str] = []
+
+    for mod_name in missing_modules:
+        log(f"[MISSING PR GEN] Generating missing precondition function: {mod_name}")
+
+        # Build a focused generation plan targeting only this one function.
+        message_type = _derive_message_type_from_module(mod_name)
+        focused_plan: Dict[str, Any] = {
+            "tc_id": generation_plan.get("tc_id", "UnknownTC"),
+            "testcase_name": mod_name,
+            "precondition_chain": [mod_name],
+            "postcondition_chain": generation_plan.get("postcondition_chain", []),
+            "test_type": "PreconditionFunction",
+            "message_type": message_type,
+            "protocol": generation_plan.get("protocol", "ISO15118_2"),
+            "sut_type": generation_plan.get("sut_type", "SECC"),
+            "purpose": (
+                f"Generate the missing precondition function {mod_name} that is required "
+                f"as part of the ISO 15118-2 state machine. "
+                f"This function exchanges {message_type} messages with the SECC."
+            ),
+            "expected_behavior": (
+                f"Send {message_type}Req via pt_V2G_TCP_TLS_ALM_SECC_Port using the "
+                f"structured union {{ v2g := {{ {message_type.lower()}Req := md_CMN_{message_type}Req_001 }} }}, "
+                f"receive the response in an alt block, and return a verdicttype."
+            ),
+        }
+
+        # Load shared TTCN reference files (TimerAndConstants, CmnTemplates).
+        # This is the same loader the regular Core Agent path uses; the variable
+        # was previously only defined inside call_core_agent_with_prompt() which
+        # is not in scope here, causing a NameError on the fallback path.
+        core_agent_shared_refs = _load_core_shared_refs()
+
+        # Build a focused prompt with mandatory few-shot injection.
+        # We bypass the standard run_core_agent() entry point and call the LLM
+        # directly so we can inject the canonical reference and a precise directive.
+        system_prompt_text = load_text(CORE_AGENT_PROMPT_PATH)
+
+        _snapshot_str = "{}"
+        system_prompt_text = system_prompt_text.replace("{PROTOCOL_SNAPSHOT}", _snapshot_str)
+
+        # Inject the actual output directory so the Core Agent writes its JSON
+        # response's `path` field to the correct generated project (NOT the
+        # demo project under /home/dmc/桌面/platform/src/...).
+        # Without this, the agent sees literal "{OUTPUT_DIR}" in the prompt and
+        # either fails to parse it, or -- as observed -- finds the demo file
+        # under src/ and "declares the task complete" without producing JSON.
+        _output_dir_str = str(tc_dir.resolve())
+        system_prompt_text = system_prompt_text.replace("{OUTPUT_DIR}", _output_dir_str)
+        log(f"[MISSING PR GEN] OUTPUT_DIR injected: {_output_dir_str}")
+
+        pre_params = ("SIL mode: Precondition functions take NO parameters (void return "
+                      "type for f_SECC_CMN_PR_InitConfiguration_001, verdicttype return for others).")
+        post_params = "SIL mode: Postcondition functions take NO parameters (void return type)."
+        system_prompt_text = system_prompt_text.replace("{pre_params}", pre_params)
+        system_prompt_text = system_prompt_text.replace("{post_params}", post_params)
+
+        _gen_patterns_path = Path(__file__).parent / "knowledge_base" / "generation_patterns.json"
+        gen_patterns_text = ""
+        if _gen_patterns_path.exists():
+            try:
+                with open(_gen_patterns_path, "r", encoding="utf-8") as _f:
+                    gen_patterns_text = json.dumps(json.load(_f), indent=2, ensure_ascii=False)
+            except Exception:
+                gen_patterns_text = ""
+
+        user_prompt = f"""{system_prompt_text}
+
+---
+
+## URGENT TASK: Generate the missing Precondition Function
+
+You MUST generate exactly ONE TTCN-3 module for the following missing precondition function.
+This function is required by the ISO 15118-2 state machine but does not yet exist.
+
+### Module to Generate
+
+Module Name: {mod_name}
+File Path: src/ttcn3/3_Behavior_Steps/PreConditions/{mod_name}.ttcn
+
+### Generation Plan
+```json
+{json.dumps(focused_plan, indent=2, ensure_ascii=False)}
+```
+
+### Critical: Mandatory Few-Shot Reference
+
+You MUST follow the structure of the following canonical SupportedAppProtocol function.
+This is a REAL, WORKING implementation from the demo project. Study it carefully
+and replicate its patterns exactly:
+
+```ttcn3
+{ref_code}
+```
+
+MANDATORY RULES derived from the reference above:
+
+### HARD INVARIANT: ATOMIC PRECONDITION (READ FIRST — OVERRIDES ALL OTHER RULES)
+Each `f_SECC_CMN_PR_<Message>_001` function MUST send and receive EXACTLY ONE V2G
+message pair (one Req, one Res). You MUST **NEVER** call any other
+`f_SECC_CMN_PR_*` function inside the body of a PR function. Each PR is ATOMIC.
+
+WHY THIS MATTERS (root cause of a real bug we hit on 2026-06-20):
+- ISO 15118-2 enforces a strict message sequence:
+    SupportedAppProtocol → SessionSetup → ServiceDiscovery → ...
+- Each state transition on the SECC is triggered by exactly ONE EVCC request.
+- The TEST CASE (`TC_*.ttcn`) is responsible for chaining preconditions; each
+  PR must execute its own single message exchange.
+- If you nest a PR inside another PR (e.g. SessionSetup PR calls
+  `f_SECC_CMN_PR_SupportedAppProtocol_001`), the SECC receives an out-of-sequence
+  request: it is already in `SessionSetup` state and tries to decode the
+  SupportedAppProtocol EXI bytes using the V2G-2 namespace, which raises
+  `EXIDecodingError("Premature EOS while reading data")` and closes the TCP/TLS
+  connection.
+- This bug surfaced as: C++ adapter always logged `Encoding: supported_app_protocol_req`
+  even when SessionSetup PR was supposed to fire — the C++ adapter was CORRECT,
+  the LLM-generated SessionSetup PR was illegally re-invoking the SAP sub-PR.
+
+RULE: NEVER write `f_SECC_CMN_PR_<X>_001();` inside another `f_SECC_CMN_PR_<Y>_001();`.
+The ONLY legitimate callers of a PR function are the test case (`TC_*.ttcn`)
+or another PR that has a `CmnPR_` (Common Pre-Conditions) prefix and is
+explicitly listed as a pre-condition in the test specification. For the
+generated code, assume NO sub-PR calls — be atomic.
+
+### REFERENCE-CODE SUBSTITUTION RULES
+- The provided `SupportedAppProtocol` reference code is ONLY for **structural
+  reference** (timers, alt steps, setverdict, port names, verdicttype return,
+  logging style).
+- You MUST **REPLACE** every send/receive template, union field name, message
+  template reference, and message-specific logic with values that correspond to
+  the **TARGET** missing function below — i.e. for `{mod_name}` you MUST use
+  `{message_type}Req` / `{message_type}Res`, the union field
+  `{message_type.lower()}Req` / `{message_type.lower()}Res`, and the template
+  `md_CMN_{message_type}Req_001` / matching wildcard for the response.
+- **DO NOT blindly copy** the SupportedAppProtocol payload, union field,
+  message decoder, or any literal byte sequence from the reference. Copying
+  the wrong payload type causes EXI decode failures on the SECC side
+  (`Premature EOS while reading data`).
+- Function signature: runs on SECCTester, return verdicttype
+- Send via: pt_V2G_TCP_TLS_ALM_SECC_Port.send({{ v2g := {{ {message_type.lower()}Req := md_CMN_{message_type}Req_001 }} }})
+- Receive in: alt {{ [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(...) }}
+- Timer: PX_SECC_CMN_Message_Timeout
+- Verdict: setverdict(pass/fail/inconc), return getverdict
+- Module name MUST equal the function name: {mod_name}
+- File name MUST be: {mod_name}.ttcn
+
+### Shared Project Files (read-only reference)
+
+### src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn:
+```ttcn3
+{core_agent_shared_refs.get('TimerAndConstants', '(file not available)')}
+```
+
+### src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn:
+```ttcn3
+{core_agent_shared_refs.get('CmnTemplates', '(file not available)')}
+```
+
+### Generation Patterns
+
+```json
+{gen_patterns_text}
+```
+
+### SOP Common Errors
+
+```json
+{json.dumps(sop.get("common_errors", []), indent=2, ensure_ascii=False)}
+```
+
+请严格按照上述参考代码的格式和规则，生成完整的 TTCN-3 代码。只输出 JSON，不要解释。
+"""
+
+        timeout = get_agent_timeout("core_agent", prompt_size=len(user_prompt))
+        log(f"[MISSING PR GEN] Calling Core Agent for {mod_name} (timeout={timeout}s)...")
+
+        try:
+            response = call_claude_agent(
+                user_prompt,
+                agent_name="Core Agent (missing-precondition)",
+                timeout=timeout,
+                extra_allowed_tools="Write,Read,Edit,Bash(bash *)",
+            )
+        except Exception as e:
+            log(f"[MISSING PR GEN] Core Agent call failed for {mod_name}: {e}", "WARN")
+            raise GenerationFailedError(
+                agent_name="Core Agent",
+                reason=f"API call raised exception: {e}",
+                module_name=mod_name,
+            )
+
+        if not response or not response.strip():
+            raise GenerationFailedError(
+                agent_name="Core Agent",
+                reason="Empty response from LLM",
+                module_name=mod_name,
+            )
+
+        # Parse the Core Agent response.
+        result = extract_core_agent_output(response)
+        if result.get("_parse_error"):
+            # Fall back to Tier-2 salvage: scan raw text for TTCN-3 module blocks.
+            log(f"[MISSING PR GEN] JSON parse failed for {mod_name}, attempting raw TTCN-3 extraction...", "WARN")
+            extracted_code = ""
+            import re as _re
+            for match in _re.finditer(r'module\s+\w+\s*\{.*?\n\}\s*//?\s*end\s+module',
+                                       response, _re.DOTALL):
+                block = match.group(0).strip()
+                if block.startswith("module ") and len(block) > 100:
+                    extracted_code = block
+                    break
+            if not extracted_code:
+                raise GenerationFailedError(
+                    agent_name="Core Agent",
+                    reason="JSON parse failed and no TTCN-3 module block found in response",
+                    module_name=mod_name,
+                )
+            result = {"testcase": extracted_code, "precondition_files": [], "postcondition_files": []}
+
+        # Case A guard: if no testcase/content, raise.
+        testcase_code = result.get("testcase", "") or ""
+
+        # If the response was structured as a list of file objects instead of a
+        # single testcase module, locate the one matching this mod_name. The
+        # Core Agent prompt says "Return JSON with path + content fields"; if
+        # the LLM obeyed that, the module will be in precondition_files[] or
+        # postcondition_files[]. Pick it out so the rest of the pipeline (which
+        # expects a single module string) keeps working.
+        if not testcase_code.strip():
+            for f_dict in (
+                list(result.get("precondition_files", []) or [])
+                + list(result.get("postcondition_files", []) or [])
+            ):
+                fname = Path(str(f_dict.get("path", ""))).name
+                if fname == f"{mod_name}.ttcn":
+                    testcase_code = str(f_dict.get("content", "") or "")
+                    if testcase_code.strip():
+                        log(f"[MISSING PR GEN] Recovered {mod_name} from "
+                            f"file-list field (path={f_dict.get('path')})")
+                        break
+
+        if not testcase_code.strip():
+            raise GenerationFailedError(
+                agent_name="Core Agent",
+                reason="No TTCN-3 code in response (empty testcase field and "
+                       "no matching entry in precondition_files/postcondition_files)",
+                module_name=mod_name,
+            )
+
+        # Write the generated module to disk.
+        out_path = pre_dir / f"{mod_name}.ttcn"
+        try:
+            out_path.write_text(_sanitize_extracted_text(testcase_code), encoding="utf-8")
+            log(f"[MISSING PR GEN] Wrote {out_path.name} ({len(testcase_code)} bytes)")
+        except Exception as e:
+            raise GenerationFailedError(
+                agent_name="Core Agent",
+                reason=f"Failed to write generated file to disk: {e}",
+                module_name=mod_name,
+            )
+
+        # Verify file exists on disk (Case A check).
+        if not out_path.exists():
+            raise GenerationFailedError(
+                agent_name="Core Agent",
+                reason=f"File {out_path} was written but does not exist on disk",
+                module_name=mod_name,
+            )
+
+        # Case B: File exists on disk. Now rebuild aggregator imports.
+        _inject_condition_function_imports(
+            tc_dir,
+            [{"path": str(out_path), "content": testcase_code}],
+            [],
+            generation_plan.get("tc_id", "UnknownTC"),
+        )
+
+        successfully_generated.append(mod_name)
+        log(f"[MISSING PR GEN] SUCCESS: {mod_name} generated and installed")
+
+        # Promote to global asset pool (Dimension 3).
+        source_run = generation_plan.get("tc_id", "unknown") + "_" + run_timestamp
+        _promote_to_global_pool(out_path, mod_name, source_run)
+
+    return successfully_generated
 
 
 def generate_code_for_test_case(
@@ -9028,6 +10371,13 @@ def generate_code_for_test_case(
     compile_loop_build_times: List[Tuple[int, float]] = []
     compile_loop_fc_times: List[Tuple[int, float]] = []
     build_result = {}
+    # Context for Dimension 1+2 self-generation of missing preconditions.
+    # Initialized here (None) so they are always in scope for the Step 5c call
+    # even if some steps are skipped. Assigned at Step 0 and Step 2.
+    _sop_ctx: Dict = {}
+    _references_ctx: Dict = {}
+    _few_shot_examples_ctx: Dict = {}
+    _run_timestamp_ctx: str = ""
 
     # === Normal Mode ===
     # 提取测试用例
@@ -9042,6 +10392,11 @@ def generate_code_for_test_case(
     log("加载基础数据...")
     sop = load_json(SOP_PATH)
     few_shot_examples = load_few_shot_examples()
+    # Populate context vars for use by Step 5c (missing precondition self-generation).
+    _sop_ctx = sop
+    _references_ctx = {}
+    _few_shot_examples_ctx = few_shot_examples
+    _run_timestamp_ctx = _run_ts.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # P3: Bootstrap the ProtocolRegistry so Orchestrator can inject the snapshot
     # into its LLM prompt. We only load the active protocol when we have a TC_Id.
@@ -9142,6 +10497,8 @@ def generate_code_for_test_case(
         references = {}
         summarizer_elapsed = 0.0
         local_ref_section = ""
+        # Populate context vars for Step 5c (missing precondition self-generation).
+        _references_ctx = {}
     else:
         # 正常模式：运行 Summarizer Agent
         log("\n--- Step 2: Summarizer (知识检索) ---")
@@ -9157,6 +10514,9 @@ def generate_code_for_test_case(
         if not references:
             log("Summarizer 失败，使用空引用继续", "WARN")
             references = {}
+
+        # Populate context for Step 5c (missing precondition self-generation).
+        _references_ctx = references
 
         # 构建 local_ref_section（绕过 Summarizer LLM 层）
         local_ref_parts = []
@@ -9440,12 +10800,12 @@ def generate_code_for_test_case(
     # 同时定义 tc_ttcn_dest（供 _runtime_self_repair 使用，避免 NameError）
     tc_ttcn_dest = tc_project_dir / "src/ttcn3/4_TestCases" / output_filename
     tc_ttcn_dest.parent.mkdir(parents=True, exist_ok=True)
-    tc_ttcn_dest.write_text(sanitize_ttcn3_hex_strings(ttcn3_code), encoding="utf-8")
+    tc_ttcn_dest.write_text(_sanitize_extracted_text(ttcn3_code), encoding="utf-8")
 
     for f_data in pre_condition_files + post_condition_files:
         f_path = tc_project_dir / f_data["path"]
         f_path.parent.mkdir(parents=True, exist_ok=True)
-        f_path.write_text(sanitize_ttcn3_hex_strings(f_data["content"]), encoding="utf-8")
+        f_path.write_text(_sanitize_extracted_text(f_data["content"]), encoding="utf-8")
     log(f"已写入 {len(pre_condition_files)} 个 pre + {len(post_condition_files)} 个 post 文件")
 
     # === Step 5a: Import injection (MUST run BEFORE Infrastructure Agent) ===
@@ -9456,20 +10816,39 @@ def generate_code_for_test_case(
     _inject_condition_function_imports(tc_project_dir, pre_condition_files, post_condition_files, plan_tc_id)
     _ensure_tc_direct_imports(tc_project_dir, output_filename, pre_condition_files, post_condition_files)
 
-    # === Step 5a.5: ASSET PROMOTION ===
-    # Before falling back to stubs or the Infra Agent, search previously-successful
-    # project directories for matching PreConditions .ttcn files. If found, copy
-    # them into the new project so the Infra Agent is NOT asked to regenerate code
-    # that a sibling case already produced. This is a cache of LLM-generated
-    # artifacts, NOT hardcoded content.
-    _promote_precondition_assets(tc_project_dir, generation_plan)
+    # === Step 5a.5: ASSET PROMOTION (upgraded: global pool first) ===
+    # Priority: 1) _global_asset_pool/  2) per-run directories
+    _upgrade_promote_precondition_assets(tc_project_dir, generation_plan,
+                                          current_run_dir=plan_tc_id + "_" + run_timestamp)
 
-    # === Step 5c: GENERATE MISSING PRECONDITION STUBS ===
-    # Core Agent sometimes writes `import from f_XYZ_001 all;` in the TC file
-    # without generating the corresponding stub file (Module Name Mismatch Bug).
-    # This function detects such missing stubs and creates minimal valid implementations
-    # so the TITAN compiler can at least link the module.
-    _ensure_missing_precondition_stubs(tc_project_dir, generation_plan)
+    # === Step 5a.6: PRE/PO PATH SELF-HEAL ===
+    # Core Agent frequently misplaces precondition (PR_) / postcondition (PO_)
+    # files in the TestBehavior/ directory because the testcase JSON path
+    # template is ambiguous to LLMs. This is a self-heal step that moves
+    # misplaced PR/PO files back to their proper directories.
+    # Symptom of the bug: makefilegen reports "Both files ... contain TTCN-3
+    # module `f_XYZ`" because the same module exists in both
+    # TestBehavior/ and PreConditions/ (or PostConditions/).
+    _heal_misplaced_condition_modules(tc_project_dir)
+
+    # === Step 5c: MISSING PRECONDITION SELF-GENERATION (Dimensions 1+2) ===
+    # If _upgrade_promote_precondition_assets() found no promotable assets, this step
+    # calls the Core Agent with Few-Shot injection to generate real TTCN-3 implementations.
+    # NO STUBS ARE GENERATED. Fail-Fast: raises GenerationFailedError on no output.
+    missing_preconditions = generation_plan.get("_precondition_completeness", {}).get("missing_preconditions", [])
+    if missing_preconditions:
+        log(f"[STEP 5c] {len(missing_preconditions)} missing preconditions: {missing_preconditions}")
+        log("[STEP 5c] Calling Core Agent to generate real implementations (no stubs)...")
+        _generate_missing_precondition_functions(
+            tc_dir=tc_project_dir,
+            generation_plan=generation_plan,
+            missing_modules=missing_preconditions,
+            references=_references_ctx,
+            few_shot_examples=_few_shot_examples_ctx,
+            sop=_sop_ctx,
+            run_timestamp=run_timestamp,
+        )
+        log("[STEP 5c] Missing precondition generation complete")
 
     # Re-validate after fixing imports -- catch missing modules before build
     validation_issues = pre_build_validate(tc_project_dir)
@@ -9487,17 +10866,23 @@ def generate_code_for_test_case(
 
     # ================================================================
     # SCAFFOLDING: Prepare the project directory BEFORE the agent runs.
-    # The agent will run `bash build.sh` in its compile loop. build.sh
-    # and all C++ adapters must already exist on disk -- the agent
-    # cannot generate them and will abort if they're missing.
     #
-    # build.sh uses rsync with --exclude='build/' for non-ASCII paths.
-    # This means files inside build/generated_cpp/ are NOT synced to the
-    # temp build directory. We must write V2G port files to BOTH:
-    #   1. build/generated_cpp/  -- makefilegen reads sources from here
-    #   2. src/cpp_adapters/SA/ports/ -- rsync-safe so build.sh can find it
+    # PRE-RUN CLEANUP: Remove any orphan non-timestamped directories that could
+    # confuse the Infrastructure Agent's sub-agent (which does find ... -iname
+    # searches and may pick the wrong directory when both <TC_ID>/ and
+    # <TC_ID>_<ts>/ exist). The batch runner cleanup only runs AFTER the pipeline,
+    # so it can't protect the current run. Clean here so the agent always sees
+    # exactly one directory: the correct timestamped one.
     # ================================================================
     tc_project_dir.mkdir(parents=True, exist_ok=True)
+    _orphan_dir = GENERATED_DIR / plan_tc_id
+    if _orphan_dir.exists() and _orphan_dir.is_dir() and _orphan_dir.resolve() != tc_project_dir.resolve():
+        import shutil as _orphan_shutil
+        try:
+            _orphan_shutil.rmtree(_orphan_dir)
+            log(f"[CLEAN] Removed orphan non-timestamped dir: {_orphan_dir.name}")
+        except OSError as _e:
+            log(f"[CLEAN] Could not remove orphan dir {_orphan_dir}: {_e}", "WARN")
 
     # 1. Copy build.sh from demo (agent will invoke it)
     build_installed = _install_build_script(tc_project_dir)
@@ -9549,6 +10934,13 @@ def generate_code_for_test_case(
     # Any LLM-generated version of these files will be overwritten.
     ttcn_installed = install_shared_ttcn_files(tc_project_dir, plan_tc_id)
     log(f"[SCAFFOLD] Nuclear TTCN copy: {ttcn_installed} files from demo")
+
+    # 3a. Purge unreferenced demo PR artifacts from PreConditions/
+    # install_shared_ttcn_files copies ALL demo baseline files including
+    # scaffolding that may not belong to the current precondition chain.
+    _purge_unreferenced_precondition_artifacts(
+        tc_project_dir, generation_plan.get("precondition_chain", [])
+    )
 
     # 3. Create directory structure first (V2G ports need these paths)
     generated_cpp_dir = tc_project_dir / "build" / "generated_cpp"
@@ -9725,18 +11117,21 @@ def generate_code_for_test_case(
             log(f"[FATAL] {e}", "ERROR")
             raise
         log(f"[MODE] Direct Write Mode confirmed -- {len(detected_files)} files written by agent", "INFO")
-        # === Post-detection TTCN hex sanitization ===
-        # Sanitize ALL .ttcn files written by the agent to fix LLM-generated odd-length hex literals
+        # === Post-detection TTCN full sanitization ===
+        # Sanitize ALL .ttcn files written by the agent to fix LLM-generated:
+        #   1. odd-length hex literals
+        #   2. illegal nested PR calls
+        #   3. bare v2g union wrappers in receive/send
         for f in detected_files:
             if f.suffix == ".ttcn":
                 try:
                     raw = f.read_text(encoding="utf-8", errors="replace")
-                    clean = sanitize_ttcn3_hex_strings(raw)
+                    clean = _sanitize_extracted_text(raw)
                     if clean != raw:
                         f.write_text(clean, encoding="utf-8")
-                        log(f"[HEX-SANITIZE] Sanitized agent-written file: {f.relative_to(tc_project_dir)}")
+                        log(f"[SANITIZE] Sanitized agent-written file: {f.relative_to(tc_project_dir)}")
                 except Exception as e:
-                    log(f"[HEX-SANITIZE] Could not sanitize {f}: {e}", "WARN")
+                    log(f"[SANITIZE] Could not sanitize {f}: {e}", "WARN")
         if detected_files:
             log(f"[Direct Write Mode] 验证成功，目录包含 {len(detected_files)} 个有效文件:")
             for f in sorted(detected_files):
@@ -9778,6 +11173,13 @@ def generate_code_for_test_case(
                     pass
         log(f"[Static Renderer] Re-injected {_reinject_count} file(s) before build "
             f"(overwrites any Infra Agent stomp)")
+
+    # === Re-apply canonical runtime config AFTER Infrastructure Agent runs ===
+    # The Infra Agent may have overwritten titan_runtime.cfg with a wrong [EXECUTE]
+    # directive (e.g. TC_SECC_CMN_VTB_ServiceDiscovery_001.control instead of
+    # TestCases_SECC.control). Re-install the canonical config to guarantee
+    # the correct value is always used.
+    _install_canonical_runtime_config(tc_project_dir)
 
     # Forward-Only compile lock flag
     compile_locked = False
@@ -10680,6 +12082,7 @@ def _build_metrics_dict(
             "pipeline_version": "sop_v2.0_pure_static",
             "git_commit": _get_git_commit(),
             "test_case_name": generation_plan.get("tc_id", plan_tc_id),
+            "model_name": _claude_model_name or "unknown",
         },
         "token_usage": {
             "planning": {"input_tokens": planning_in, "output_tokens": planning_out, "calls": planning_calls},
