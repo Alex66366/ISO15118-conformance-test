@@ -143,44 +143,64 @@ module {{ module_name }} {
 } // end module {{ module_name }}
 {% else %}
         // ================================================================
-        // GoodCase: send well-formed V2G message via structured union
+        // GoodCase: Sprint 3 Dumb Terminal architecture (FINAL).
         //
-        // The C++ port adapter intercepts { v2g := { ... } } and:
-        //   1. Looks up the wire_hex for "{{ send_template_name }}" in exi_payload_library.json
-        //   2. Calls ExiCodecAdapter::encode() with the message key
-        //   3. Patches the V2GTP PayloadLength field
-        //   4. Sends the wire bytes over TCP
+        // Send:  pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct(json_req))
+        //        - json_req is a hand-built PascalCase JSON string with
+        //          hexBinary fields pre-hex-encoded.  The C++ adapter
+        //          forwards the bytes to the EXI microservice, which
+        //          JAXB-marshals them; the adapter then patches the
+        //          V2GTP header and writes to TCP.
         //
-        // On receive, the adapter gets wire bytes, logs, and passes them back
-        // to TTCN-3 for template matching.
+        // Receive: alt-block against the V2G_PortMessage union:
+        //          - { error_indicator := ? }    -> fail-fast branch
+        //          - { raw := ? }               -> success branch
+        //          - timer.timeout              -> inconc
+        //
+        // NOTE: V2G_PortMessage (port `in` direction) only has `raw`
+        // and `error_indicator` variants.  Do NOT match business
+        // message names (sessionSetupRes, etc.) directly on the port —
+        // those live in V2G_MessageUnion and would cause a
+        // "Reference to non-existent field" compile error.
         // ================================================================
-        log("Sending {{ message_type }} message via structured union (template: {{ send_template_name }})...");
+        log("Sending {{ message_type }} via Dumb Terminal (char2oct of PascalCase JSON)...");
         {{ tc_timer_name }}.start(PX_SECC_CMN_Message_Timeout);
 
-        {{ port_name }}.send(
-            { v2g := { {{ send_key }} := {{ send_template_name }} } }
-        );
+        // Hand-built PascalCase JSON payload (hexBinary fields pre-hex-encoded).
+        // The renderer fills this in via plan["goodcase_json_payload"].
+        var charstring json_req := "{{ json_payload }}";
+
+        {{ port_name }}.send(char2oct(json_req));
+
+        // Pre-declare receive redirect variables (TITAN's `value` clause
+        // does not implicitly declare the variable).
+        var V2G_PortMessage v_err;
+        var V2G_PortMessage v_msg;
 
         alt {
-            // Port `in` is typed as V2G_MessageUnion (NOT V2G_PortMessage), so
-            // the receive template must match the union variant directly without
-            // a `{ v2g := ... }` outer wrapper. The C++ adapter unwraps the
-            // v2g field on the send side and re-enqueues the bare V2G_MessageUnion
-            // value on the receive side, so `{ v2g := { ... } }` here would never
-            // match an incoming message and the test would silently fall through
-            // to the wildcard arm after the 60s timer expires.
-            [] {{ port_name }}.receive(
-                { {{ receive_key }} := ? }
-            ) {
+            // FAIL-FAST branch: C++ adapter pushed an error_indicator.
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ error_indicator := ? })
+                -> value v_err {
                 {{ tc_timer_name }}.stop;
-                log("{{ receive_template_name }} received and matched");
+                log("FAIL: C++ adapter error_indicator: ",
+                    v_err.error_indicator.source, ": ",
+                    v_err.error_indicator.detail);
+                setverdict(fail,
+                    "{{ message_type }}: error_indicator received from adapter: "
+                    & v_err.error_indicator.detail);
+            }
+
+            // SUCCESS branch: SECC responded with raw JSON bytes.
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? })
+                -> value v_msg {
+                {{ tc_timer_name }}.stop;
+                var octetstring resp_payload := v_msg.raw;
+                log("SECC response (raw JSON): ", oct2char(resp_payload));
                 setverdict(pass,
-                    "{{ message_type }} exchange successful -- SECC accepted the valid message");
+                    "{{ message_type }} exchange completed successfully");
             }
-            [] {{ port_name }}.receive {
-                {{ tc_timer_name }}.stop;
-                setverdict(fail, "Unexpected message received during {{ message_type }} exchange");
-            }
+
+            // TIMEOUT branch.
             [] {{ tc_timer_name }}.timeout {
                 setverdict(inconc,
                     "{{ message_type }} timeout -- no response from SECC within timeout period");

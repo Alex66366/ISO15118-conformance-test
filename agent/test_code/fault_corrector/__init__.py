@@ -17,6 +17,8 @@ Architecture:
 Canonical error type taxonomy (single source of truth):
   timeout | port_mismatch | template_field_error | v2gtp_header_error |
   runs_on_mismatch | type_mismatch | import_missing |
+  codec_serialization_error | codec_deserialization_error |
+  verdict_not_set |
   precondition_not_met | pcap_only_error | ok
 
 Pipeline-specific aliases (resolved by _ERROR_TYPE_ALIAS in repair_engine.py):
@@ -24,6 +26,8 @@ Pipeline-specific aliases (resolved by _ERROR_TYPE_ALIAS in repair_engine.py):
   timer_error    -> timeout
   ttcn_syntax    -> template_field_error
   cpp_link       -> import_missing (manual_review)
+  template_error -> codec_serialization_error
+  verdict_none / none_verdict / missing_setverdict -> verdict_not_set
 """
 
 # Canonical error type taxonomy — single source of truth.
@@ -32,13 +36,15 @@ Pipeline-specific aliases (resolved by _ERROR_TYPE_ALIAS in repair_engine.py):
 CANONICAL_ERROR_TYPES = frozenset({
     "timeout", "port_mismatch", "template_field_error", "v2gtp_header_error",
     "runs_on_mismatch", "type_mismatch", "import_missing",
+    "codec_serialization_error", "codec_deserialization_error",
+    "verdict_not_set",
     "precondition_not_met", "pcap_only_error", "ok",
 })
 
 # Re-export path constants from repair_engine
-from .repair_engine import KB_DIR, TROUBLESHOOTING_DB_PATH
+from .repair_engine import KB_DIR, TROUBLESHOOTING_DB_PATH  # noqa: E402
 # Re-export alias map (also available as _ERROR_TYPE_ALIAS in repair_engine)
-from .repair_engine import PIPELINE_ALIAS_MAP
+from .repair_engine import PIPELINE_ALIAS_MAP  # noqa: E402
 
 __version__ = "1.0.0"
 

@@ -574,7 +574,7 @@ def run_batch_experiments(
             warnings=sum(1 for r in comparison_results if not r.get("success", False) and not any(d.get("level") == "critical" for d in r.get("diffs", []))),
             failed=sum(1 for r in comparison_results if any(d.get("level") == "critical" for d in r.get("diffs", []))),
             overall_score=sum(r.get("score", 0) for r in comparison_results) / len(comparison_results) / 100.0 if comparison_results else 0,
-            test_cases=[],
+            case_reports=[],
             aggregate_metrics={},
         )
         md_generator = MarkdownReportGenerator()

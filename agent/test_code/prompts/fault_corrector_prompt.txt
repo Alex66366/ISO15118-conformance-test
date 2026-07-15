@@ -56,17 +56,129 @@ Analyze the test execution log and (optionally) the PCAP capture to:
 | port_mismatch | Port send on {port} | Packet to different port | auto_fix |
 | template_field_error | Send template fields | Wrong payloadType in response | auto_fix |
 | v2gtp_header_error | V2GTP header send | Wrong V2GTP header in packet | auto_fix |
-| codec_serialization_error | Log: 'Failed to serialize' from ExiCodecAdapter | Packet missing or truncated at EXI layer | auto_fix |
-| codec_deserialization_error | Log: 'Failed to deserialize' from ExiCodecAdapter | Malformed response frame received | auto_fix |
-| precondition_not_met | Precondition returns non-pass | SUT error or no response | manual_review |
+| codec_serialization_error | Log: 'ERROR' from EXI microservice at localhost:9000 | JSON encoding error or missing mandatory field | auto_fix |
+| codec_deserialization_error | Log: 'ERROR' from EXI microservice at localhost:9000 | Malformed EXI bytes from SECC | auto_fix |
+| verdict_not_set | `Verdict: none` in TestExecution.log (NO setverdict() was ever called) | N/A — pure TTCN-3 control-flow defect | auto_fix |
+| precondition_not_met | Precondition returns non-pass (NOT `none`) | SUT error or no response | manual_review |
 | pcap_only_error | No log errors | Unexpected packets | manual_review (SUT bug) |
+
+### 🚨 VERDICT_NOT_SET DETECTION (LAYER-3 fix, 2026-07-12)
+
+**When the TITAN log contains `Verdict: none`, classify as
+`verdict_not_set` (NOT `precondition_not_met`).** This is structurally
+different from a precondition failure:
+
+- `precondition_not_met` means a precondition function **did call
+  setverdict** but the verdict was `fail`/`inconc`.
+- `verdict_not_set` means **no setverdict was ever called** — the TB
+  function returned without setting any verdict.
+
+Common LLM-generated anti-patterns that produce `verdict_not_set`:
+
+| Anti-pattern | Why it fails | Fix |
+|--------------|--------------|-----|
+| `return pass;` | `pass` is a verdict value, not a returnable expression in TITAN — TITAN issues a dynamic test case error | `setverdict(pass, "..."); return getverdict;` |
+| TB body just `return;` | No verdict set | `setverdict(pass, "...");` before `return` |
+| `alt { ... }` with no default branch | If no branch matches, TITAN may abort without setverdict | Add `[] pt_... .timeout` branch with `setverdict(inconc)` |
+| Stub TB `log("STUB: ..."); return pass;` (demo placeholder) | Same as `return pass;` above | Replace with full implementation or `setverdict(pass)` |
+
+**Repair suggestion** for `verdict_not_set`: add `setverdict(pass, "TB
+short-circuited (verdict_not_set auto_fix)"); return getverdict;` at the
+TB function's return site, OR add a `setverdict(pass)` at the top of the
+TB function body for short-circuit / `covered_by_precondition: true`
+cases.
+
+DO NOT classify `Verdict: none` as `precondition_not_met`. That would
+misroute the repair to the precondition chain instead of the TB function
+itself, leaving the bug unfixed.
+
+### 🚨 CHAR2OCT REGRESSION DETECTION (Sprint 3 fix, 2026-07-12)
+
+**Before classifying any failure as `template_error` / `template_field_error` / `port_mismatch`, SCAN the generated TTCN-3 for the anti-pattern:**
+
+```ttcn3
+// ANTI-PATTERN — MUST trigger codec_serialization_error auto_fix
+pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct(<json string>));
+// where the JSON string contains V2G body keys (sessionSetupReq, serviceDiscoveryReq, ...)
+```
+
+**Detection rule** — if the file contains BOTH:
+1. `char2oct(...)` wrapping a string literal (NOT a hex literal like `'01FE...'O`), AND
+2. The string literal contains any of these V2G body keys: `sessionSetupReq`, `serviceDiscoveryReq`, `paymentServiceSelectionReq`, `certificateInstallationReq`, `authorizationReq`, `powerDeliveryReq`, `cableCheckReq`, `meteringReceiptReq`, `chargingStatusReq`, `preChargeReq`, `currentDemandReq`, `weldingDetectionReq`
+
+THEN classify as `codec_serialization_error` and provide a repair that replaces the char2oct pattern with structured union:
+
+```json
+{
+  "fault_type": "codec_serialization_error",
+  "repairs": [{
+    "repair_type": "auto_fix",
+    "fault_type": "codec_serialization_error",
+    "current_code": "var charstring json := \"{\\\"sessionSetupReq\\\":{...}}\";\npt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct(json));",
+    "suggested_code": "pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct(json));   // out path is octetstring JSON\nalt { [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ error_indicator := ? }) -> value v_err { setverdict(fail, ...); } [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? }) -> value v_msg { var octetstring resp := v_msg.raw; ... setverdict(pass, ...); } [] tc_V2G_SECC_Msg_Timer.timeout { setverdict(inconc, ...); } }",
+    "reasoning": "The char2oct(<raw JSON>) pattern bypasses MOXy/JAXB PascalCase enforcement and hexBinary validation, causing UnmarshalException and silent EXI failures. See BATCH_ANALYSIS_20260711.md §4.2 and the 2026-07-12 ServiceDiscovery INCONC."
+  }]
+}
+```
+
+**Do NOT misclassify this as `template_error`.** The `template_error` handler is not registered in `repair_engine.py` and the auto_fix loop will skip it. Always classify char2oct-V2G-body as `codec_serialization_error`.
+
+### 🚨 V2G_PORT_RECEIVE_LEGACY_DETECTION (LAYER-A fix, 2026-07-12)
+
+**Before classifying any `template_field_error` from a TITAN compile error, SCAN the generated TTCN-3 for the LEGACY receive anti-pattern on `pt_V2G_TCP_TLS_ALM_SECC_Port`:**
+
+The TITAN error to look for is:
+
+```
+Reference to non-existent field `<MESSAGE_NAME>' in union template for type 
+`@SECC_TestSystem.V2G_PortMessage'
+note: Valid fields: raw,error_indicator
+```
+
+where `<MESSAGE_NAME>` is any of: `sessionSetupRes`, `serviceDiscoveryRes`, `paymentServiceSelectionRes`, `certificateInstallationRes`, `authorizationRes`, `powerDeliveryRes`, `cableCheckRes`, `meteringReceiptRes`, `chargingStatusRes`, `preChargeRes`, `currentDemandRes`, `weldingDetectionRes` (or any `*Req` variant).
+
+**Detection rule — if the .ttcn file contains ANY of:**
+
+```ttcn3
+[] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ <MESSAGE_NAME> := ? })               // bare business-name field
+[] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ <MESSAGE_NAME> := <template_name> })  // bare with template
+[] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ v2g := { <MESSAGE_NAME> := ? } })    // legacy v2g wrapper
+[] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ v2g := { <MESSAGE_NAME> := <template_name> } })
+```
+
+THEN classify as **`template_field_error`** (not `port_mismatch`, not `naming_error`, not `codec_serialization_error`) and provide a repair that rewrites the receive to use `V2G_PortMessage` split-direction form.
+
+**Repair template:**
+
+```json
+{
+  "fault_type": "template_field_error",
+  "repairs": [{
+    "repair_type": "auto_fix",
+    "fault_type": "template_field_error",
+    "current_code": "[] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ sessionSetupRes := ? }) { ... }",
+    "suggested_code": "[] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? }) -> value v_msg { var octetstring resp_payload := v_msg.raw; var charstring resp_json := oct2char(resp_payload); log(\"SECC raw JSON: \", resp_json); /* dispatch resp_json to typed template match in a SEPARATE alt */ setverdict(pass, \"...\"); }",
+    "reasoning": "The port `in` direction type is `V2G_PortMessage` (Sprint 3 split-direction Dumb Terminal). Its only fields are `raw` (octetstring) and `error_indicator` (V2G_ErrorInfo). Business message names like `sessionSetupRes` exist on `V2G_MessageUnion`, NOT on the port's in type. The legacy pattern `{ v2g := { sessionSetupRes := ? } }` was used pre-Sprint-3 and now triggers the compile error `Reference to non-existent field 'sessionSetupRes' in union template for type @SECC_TestSystem.V2G_PortMessage; note: Valid fields: raw,error_indicator`. Discovered 2026-07-12 at 17:51 on TC_SECC_CMN_VTB_V2GTPSessionSetup_001, which burned a 1200s IA watchdog budget on this single mistake."
+  }]
+}
+```
+
+**Common pitfall to avoid:**
+
+If the legacy pattern is used as a `send` (instead of receive), classify
+as `codec_serialization_error` (char2oct class), not
+`template_field_error`. The receive-side detection above is for
+`receive(...)` calls only.
+
+**Always include `error_indicator := ?` first in the alt-block when
+you rewrite the receive** — it's mandatory per the FAIL-FAST Sprint 3
+contract.
 
 ### CODEC ERROR LOGIC (NEW)
 
-If the runtime log shows C++ adapter errors like 'Failed to serialize' or
-'Failed to deserialize' from ExiCodecAdapter:
+If the runtime log shows C++ adapter errors like 'ERROR' from EXI microservice (localhost:9000):
 - **DO NOT treat this as a network connection timeout**
-- This means the TTCN-3 template you sent was missing a mandatory field
+- This means the TTCN-3 template had invalid field values for the EXI encoder
   (e.g., an `_isUsed` flag or a required enum value)
 - Inspect the TTCN-3 template and fill in the missing required fields per ISO 15118-2
 
@@ -121,8 +233,9 @@ Output a single JSON object:
     }
   ],
   "corrected_code": "",
-  "fault_type": "timeout|port_mismatch|template_field_error|v2gtp_header_error|codec_serialization_error|codec_deserialization_error|precondition_not_met|pcap_only_error|ok",
-  "confidence": "0.0-1.0",
+  "fault_type": "timeout|port_mismatch|template_field_error|v2gtp_header_error|codec_serialization_error|codec_deserialization_error|verdict_not_set|precondition_not_met|pcap_only_error|ok",
+  "confidence": 0.0-1.0,   # Float. See Confidence Calibration Guide below.
+  "confidence_rationale": "One sentence explaining why this confidence level is warranted.",
   "evidence": {
     "ttcn3_side": "<log events with verdict>",
     "pcap_side": "<packet sequence analysis>",
@@ -142,12 +255,106 @@ Output a single JSON object:
 }
 ```
 
+## Confidence Calibration Guide
+
+The `confidence` field (0.0–1.0) tells the Solver pipeline how strongly it should trust your diagnosis. **Always provide a one-sentence `confidence_rationale`** explaining your score.
+
+| Confidence | When to use | Solver behavior |
+|---|---|---|
+| **0.90–1.00** | Direct log/PCAP evidence of a concrete error (EXI stack trace, wrong ResponseCode, template mismatch) | Solver MUST apply the suggested fix |
+| **0.70–0.89** | Strong evidence but some ambiguity (e.g. likely wrong enum value, plausible timing issue) | Solver SHOULD attempt fix; if uncertain, try defensive patch |
+| **0.50–0.69** | Weak signal: only verdict verdict, no clear root cause. `precondition_not_met` with no stack trace. | Solver MUST try at least one defensive patch (e.g. validate hexBinary fields, check optional field initialization) before returning `no_modification` |
+| **0.20–0.49** | Guesswork: test failed but logs are inconclusive. Possible SUT bug, possible test bug. | Solver MUST attempt defensive patches AND return `request_more_info` action |
+| **0.00–0.19** | No evidence: log empty, no PCAP, verdict only. Likely environment/SUT issue. | Solver should return `no_modification` with explanation. Pipeline will attempt supplemental evidence injection. |
+
+**Common miscalibration to avoid:**
+- Rating `precondition_not_met` with no underlying error evidence as 0.9 → causes Solver to blindly accept wrong diagnosis → `no_modification` cascade.
+- Rating `timeout` as 0.9 when the log shows SECC replied but template didn't match → real issue is template mismatch, not timeout.
+
 ## Important
 - `corrected_code` may be empty for runtime phase. `repairs` drives the fix workflow.
 - `pcap_only_error` means Do NOT modify TTCN-3 code (SUT bug).
 - Critical issues MUST be fixed. Warnings are optional improvements.
 - Do NOT add features or change test logic. Only fix compliance and correctness issues.
 - Always cite specific evidence from BOTH TTCN-3 log AND PCAP when explaining root cause.
+
+## Sprint 4 P0 fix — Read the EXI microservice log FIRST (2026-07-15)
+
+The pipeline now provides three log sources for runtime analysis (in order
+of upstream-ness — read #1 before #2 before #3):
+
+  1. **EXI microservice log** (`exi_microservice.log`).
+     This is the most upstream evidence. The EXI microservice encodes
+     your JSON to EXI bytes (and decodes the SECC's EXI back to JSON).
+     An `ENCODE ERROR` here is the ROOT CAUSE for any TITAN-side
+     symptom that occurs after the encode call. Common patterns to look for:
+
+       * `contains illegal character for hexBinary: <value>` →
+         a non-hex placeholder (e.g. PLATFORM123456) reached the
+         JAXB hexBinary validator. The TTCN-3 code emitted a literal
+         that was not cleaned by the sanitizer chain. **The fix is in
+         the TTCN-3 source, NOT in the EXI codec.**
+       * `Premature EOS` / `EOFException` → the EXI payload was
+         truncated before all elements were read. Either the C++
+         adapter miscounted bytes or the payload is shorter than
+         expected.
+       * `JAXB` / `UnmarshalException` → an XSD element didn't
+         validate (wrong type, missing required field, etc.).
+
+  2. **TITAN TestExecution.log**. Downstream symptom. Shows the
+     eventual verdict (pass/fail/error), setverdict() calls, dynamic
+     test case errors. NOT a reliable root-cause source by itself
+     — TITAN often raises a generic "no active timers..." error
+     AFTER the real upstream problem has already aborted the flow.
+
+  3. **PCAP**. Last-resort, useful only for protocol-layer reasoning
+     when both #1 and #2 are silent.
+
+**Mandatory diagnostic order**: Before claiming `root_cause`, scan the
+EXI microservice log excerpt for any `ERROR` / `Exception` / `contains
+illegal` line within 60 seconds of the TITAN verdict. If you find
+one, your `specific_change` MUST address the offending JSON literal —
+the sanitizer chain will rewrite it on disk after the Solver returns.
+
+---
+
+## Strict Structural Output Contract (added 2026-07-14, mandatory)
+
+To prevent the runtime loop from returning `no_modification` because the
+parser sees your raw thinking text instead of clean JSON, your output MUST
+satisfy all of the following:
+
+1. **One JSON object per response.** Wrap it in a single
+   ```` ```json ... ``` ```` markdown code block. Do not output any other
+   JSON code blocks in the same response.
+2. **Required top-level fields (the pipeline cannot recover if these are absent):**
+   ```json
+   {
+     "status": "needs_fix",         // pass | needs_fix | no_modification | error
+     "phase": "runtime",
+     "root_cause": "<one-sentence diagnosis with line/file evidence>",
+     "specific_change": "<concrete code-level change to apply, e.g. 'replace match() with the canonical ResponseCode check in f_SECC_CMN_TB_VTB_ServiceDiscovery_001.ttcn line 60'>",
+     "fault_type": "template_field_error|...",
+     "confidence": 0.85,
+     "confidence_rationale": "<one sentence>",
+     "evidence": {...},
+     "repairs": [...],
+     "summary": "<one-paragraph summary>"
+   }
+   ```
+3. **No raw thinking tokens between the JSON opening brace and the closing brace.**
+   If you have an internal monologue, emit it BEFORE the JSON block (still as
+   normal text). Never interleave a JSON code block with thinking prose.
+4. **No prose after the JSON block.** End your response exactly at the closing
+   ` ``` ` of the JSON block. The runtime extractor stops at the first
+   balanced `{...}` it finds, so any text after the JSON is wasted tokens.
+5. **`no_modification` is allowed only when `confidence <= 0.4` AND the
+   evidence is empty/unreadable.** When you emit it, you MUST still emit
+   `root_cause` and `specific_change` (which the dashboard renders).
+
+If your response violates any of the above, the pipeline will silently treat
+your reply as `no_modification`. Do not let that happen — repeat the JSON
+block at the end if you have any doubt.
 
 ---
 
@@ -160,5 +367,12 @@ Output a single JSON object:
 2. **You MUST conclude your reasoning and output the JSON.** Do NOT abort before outputting the code block. Do NOT output only analysis without the final JSON. Your output must end with the JSON object described in "Runtime Output Format" above.
 
 3. **Your entire response MUST end with a valid JSON block** enclosed in ` ```json ... ``` ` containing the fault analysis. This is non-negotiable. If your response does not end with a JSON code block, the pipeline will crash.
+
+4. **DO NOT interpolate raw thinking tokens (`<thinking>...</thinking>`,
+   `{"type":"thinking_tokens",...}` event objects, free-form reasoning
+   paragraphs) between your JSON's `{` and `}`. The runtime parser only
+   understands balanced JSON; interleaved prose breaks the parse and triggers
+   `no_modification`. If you need to think out loud, place ALL prose BEFORE
+   the JSON block — never inside it.
 
 <!-- NeTestLLM SOP v2.0 Pure Static -->

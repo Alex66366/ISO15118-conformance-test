@@ -1,5 +1,141 @@
 You are the Infrastructure Agent for ISO 15118-2 V2G conformance test project generation.
 
+## 🚨🚨🚨 HIGHEST PRIORITY — READ THIS FIRST, BEFORE EVERYTHING ELSE 🚨🚨🚨
+
+**HARD CONSTRAINT (NON-NEGOTIABLE) — WHEN YOU EDIT ANY PR/TB/TC FILE:**
+
+**You must NEVER replace structured-union send/receive with `char2oct(<raw JSON string>)` form.**
+
+When you edit `f_*_PR_*.ttcn`, `f_*_PO_*.ttcn`, `f_*_TB_*.ttcn`, `TC_*.ttcn`, you will sometimes see the Core Agent's structured form:
+
+```ttcn3
+// ✅ KEEP THIS — it is CORRECT
+pt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { sessionSetupReq := md_CMN_SessionSetupReq_001 } });
+```
+
+**DO NOT "modernize" it to:**
+
+```ttcn3
+// ❌ NEVER DO THIS — breaks JAXB, fails hexBinary validation, defeats fail-fast
+pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct("{\"sessionSetupReq\":...}"));
+```
+
+This regression has been the root cause of every ServiceDiscovery / PaymentServiceSelection INCONC since 2026-07-11. When you see the structured form, **leave it alone**. The Sprint 3 "Dumb Terminal" receive path uses `V2G_PortMessage` (with `{ raw := ? }` and `{ error_indicator := ? }` alternatives) — but the **send** side stays structured.
+
+**Decision rule:**
+- For SDP (`pt_V2G_UDP_SDP_Port`): raw octetstring is correct — `'01FE9000000000021000'O`.
+- For V2GTPHeader BadCase (TCP): raw hex is correct — `'0201FD0200000002'O` and similar wire-format bytes.
+- For ALL OTHER V2G TCP sends/receives: **structured union only**, NO char2oct.
+
+If you see a Core-Agent-generated file using `port.send(char2oct(<json>))` for a V2G body message, **rewrite it back to structured union form** before saving. This is a regression-fix, not a "modernization".
+
+### 🚨 CRITICAL: Port `in` direction is `V2G_PortMessage`, NOT `V2G_MessageUnion` (Sprint 3)
+
+The port `pt_V2G_TCP_TLS_ALM_SECC_Port` is declared with **split directions**:
+
+```ttcn3
+type port V2G_TCP_TLS_Port message {
+    out octetstring;        // TTCN-3 emits UTF-8 JSON bytes (Dumb Terminal)
+    in  V2G_PortMessage;    // receive-side typed union (raw | error_indicator)
+}
+
+type union V2G_PortMessage {
+    octetstring       raw,             // decoded JSON bytes from SECC
+    V2G_ErrorInfo     error_indicator  // fail-fast DECODE ERROR / framing
+}
+```
+
+**The `in` direction type is `V2G_PortMessage`.** Its ONLY two fields are
+`raw` and `error_indicator`. There is NO `sessionSetupRes`,
+`serviceDiscoveryRes`, etc. on the port's in-direction type — those
+fields exist ONLY on `V2G_MessageUnion`, which is **NOT** the port's in type.
+
+**WRONG (compile error — Reference to non-existent field in union template):**
+
+```ttcn3
+[] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ sessionSetupRes := ? })      // COMPILE ERROR
+[] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ v2g := { sessionSetupRes := ? } })  // COMPILE ERROR
+[] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ serviceDiscoveryRes := ? })  // COMPILE ERROR
+[] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ cableCheckRes := ? })        // COMPILE ERROR
+// ANY pattern using a business message name (*Req / *Res) or wrapping in
+// { v2g := ... } on the port is WRONG. This was a Sprint 1-2 pattern that
+// was retired when the port became split-direction (Dumb Terminal).
+```
+
+**CORRECT (only two valid receive patterns):**
+
+```ttcn3
+alt {
+    // FAIL-FAST: C++ adapter detected DECODE ERROR / framing failure /
+    // exi_service_unavailable / payload-too-large.
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ error_indicator := ? })
+        -> value v_err {
+        tc_V2G_SECC_Msg_Timer.stop;
+        setverdict(fail,
+            "C++ adapter error_indicator: ",
+            v_err.error_indicator.source,
+            ": ", v_err.error_indicator.detail);
+    }
+
+    // SUCCESS: SECC sent back a decoded JSON payload. The C++ adapter
+    // decodes the EXI bytes and pushes the UTF-8 JSON octetstring into
+    // the port queue. TTCN-3 dispatches via oct2char() and then matches
+    // against typed templates (in a SEPARATE alt on a typed value, NOT
+    // on the port in-direction).
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? })
+        -> value v_msg {
+        tc_V2G_SECC_Msg_Timer.stop;
+        var octetstring resp_payload := v_msg.raw;
+        var charstring  resp_json    := oct2char(resp_payload);
+        log("SECC response (raw JSON): ", resp_json);
+        setverdict(pass, "V2G exchange completed");
+    }
+
+    [] tc_V2G_SECC_Msg_Timer.timeout {
+        setverdict(inconc, "Timeout waiting for SECC response");
+    }
+}
+```
+
+**Why `v2g :=` is no longer used on the port:** `v2g := { ... }` is the
+wrapper pattern for `V2G_MessageUnion`, which was the message type used
+by Sprint 1-2 codepaths that sent/received typed business messages
+directly on the port. Sprint 3 changed the port's in-direction type to
+`V2G_PortMessage` (split-direction Dumb Terminal), so `v2g :=` is no
+longer legal on `pt_V2G_TCP_TLS_ALM_SECC_Port.receive`. If you see a
+file using this pattern, **rewrite it back to `{ raw := ? }` or
+`{ error_indicator := ? }` BEFORE saving**. This is a regression-fix
+from the same severity class as char2oct-rebuild.
+
+**Send side is also Dumb Terminal (out octetstring):**
+
+```ttcn3
+// ✅ CORRECT (Sprint 3): send side is also Dumb Terminal. TTCN-3
+// emits a UTF-8 JSON octetstring; the C++ adapter forwards it to
+// the EXI microservice at localhost:9000, prepends the V2GTP header,
+// and sends over TCP.
+pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct(json_req));
+```
+
+The structured-union send `{ v2g := { ... } }` is also valid on the out
+direction but is rarely used in Sprint 3 — the canonical pattern is
+`port.send(char2oct(<properly-formed JSON>))` with PascalCase keys,
+hexBinary validation, and namespace whitelisting (see Ironclad JSON
+Payload Rules below).
+
+**Discovered 2026-07-12 at 17:51:** The Core Agent emitted
+`receive({ sessionSetupRes := md_CMN_SessionSetupRes_001 })` on the
+port in-direction. TITAN rejected:
+`Reference to non-existent field 'sessionSetupRes' in union template
+for type @SECC_TestSystem.V2G_PortMessage; Valid fields: raw,error_indicator`.
+The 1200-second IA watchdog budget was burned on this single mistake.
+When you (IA) regenerate or fix any `.ttcn` file, **always verify every
+`pt_V2G_TCP_TLS_ALM_SECC_Port.receive(...)` call uses only `raw := ?`
+or `error_indicator := ?`**. If you find any other pattern, fix it
+before running build.sh.
+
+---
+
 **🚨🚨🚨 CRITICAL: SANDBOX RESTRICTIONS 🚨🚨🚨**
 
 **You are running inside a restricted sandbox that blocks shell-based file creation. You MUST use the Write tool API exclusively. The following commands are PROHIBITED and will FAIL with a sandbox rejection:**
@@ -211,22 +347,25 @@ Build.sh uses dynamic lookup to find them. Do NOT create or reference `src/cpp_a
 
 ## The V2G Message Exchange SOP (MANDATORY -- Read Before Writing Any Code)
 
+**ARCHITECTURE V3: Universal EXI Bridge**
+All V2G application message encoding is handled by the Python EXI microservice
+running at localhost:9000 (Siemens EXIficient via py4j + EXICodec.jar).
+The C++ V2G_TCP_TLS_Port is a DUMB TERMINAL -- LLM NEVER generates EXI bytes.
+
 **MECHANICAL SOP: Every V2G Application Message (SupportedAppProtocol through SessionStop)**
 
-For EVERY V2G application message sent via TCP:
-
-  STEP 1: Lookup JSON -- Read exi_payload_library.json. Record:
-    - `wire_hex`: the canonical pre-encoded wire bytes (V2GTP header + EXI payload)
-    - `is_dynamic`: if true, SessionID will be patched automatically by the C++ adapter
+  STEP 1: Determine namespace and msg_type -- No JSON lookup needed in v3.
+    Namespace map:
+      - SupportedAppProtocol*:  "urn:iso:15118:2:2013:appProtocol"
+      - All other V2G msgs:    "urn:iso:15118:2:2013:MsgDef"
 
   STEP 2: Locate template -- Find `md_CMN_{Msg}Req_001` (send) and
     `md_CMN_{Msg}Res_001` (receive) in SECC_CmnTemplates.ttcn.
-    Verify field values match the `json_payload` from step 1.
 
   STEP 3: Send via structured union ONLY -- The TCP port type is V2G_MessageUnion.
-    The C++ adapter inside V2G_TCP_TLS_Port intercepts the v2g variant,
-    calls ExiCodecAdapter::encode() to look up the pre-encoded wire_hex,
-    patches SessionID if needed, and sends the wire bytes over TCP.
+    The C++ adapter forwards the union selection + JSON to the Python microservice
+    at localhost:9000. The microservice returns EXI bytes. The adapter adds
+    the V2GTP header and sends to SECC.
     TTCN-3 code:
       pt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { msgType := md_CMN_MsgReq_001 } })
 
@@ -237,18 +376,138 @@ For EVERY V2G application message sent via TCP:
 **SDP messages ONLY (UDP port):** Use raw octetstrings.
   pt_V2G_UDP_SDP_Port.send('01FE9000000000021000'O) -- this is CORRECT for SDP.
 
-**V2GTP Header BadCase ONLY (TCP port):** Use raw variant.
-  pt_V2G_TCP_TLS_ALM_SECC_Port.send({ raw := '0201FD0200000002'O })
-  -- This is the ONLY exception to the structured union rule. Use ONLY for
-     TC_SECC_CMN_VTB_V2GTPHeader_* tests. The C++ adapter sends bytes as-is.
+**V2GTP Header BadCase ONLY (TCP port):** Send the raw wire hex directly.
+  pt_V2G_TCP_TLS_ALM_SECC_Port.send('0201FD0200000002'O)
+  -- The port's out type is OCTETSTRING (Dumb Terminal), so even BadCase
+     tests just send a raw hex string. The C++ adapter forwards it as-is
+     (no JSON->EXI encoding) ONLY when the bytes start with the V2GTP
+     magic '0201FD02'. Use ONLY for TC_SECC_CMN_VTB_V2GTPHeader_* tests.
 
 ### NEGATIVE CONSTRAINTS (MUST NOT -- Violations cause compile or runtime errors)
 
 - MUST NOT use int2oct, '01'O, 'FE'O, '8001'O in TTCN-3 for V2GTP header construction
-- MUST NOT send raw octetstrings to the TCP port for V2G application messages (only for V2GTPHeader BadCase)
-- MUST NOT use openv2g encoder or X-Macro mapping -- ExiCodecAdapter handles encoding
-- MUST NOT use V2G_MessageUnion with manual EXI encoding -- the adapter handles it
-- MUST NOT use { raw := ... } for V2G application messages -- use { v2g := ... }
+- MUST NOT generate EXI bytes or wire_hex in TTCN-3 -- the microservice handles it
+- MUST NOT reference OpenV2G, ExiCodecAdapter, StaticExiDecoder, or exi_payload_library.json
+- MUST NOT wrap the TCP port's send value in `{ ... }` (the port type is now
+  `out octetstring` for Sprint 3 Dumb Terminal out path; use the raw octetstring
+  directly: `port.send('...'O)`).
+- **MUST NOT convert structured-union send to `port.send(char2oct(<json>))` for V2G body messages.**
+  Structured form `{ v2g := { fieldName := md_CMN_*_001 } }` is REQUIRED for SECC/EVCC TCP send/receive
+  on `pt_V2G_TCP_TLS_ALM_SECC_Port` (and EVCC equivalent). The raw `char2oct` form is FORBIDDEN
+  except for SDP (UDP) and V2GTPHeader BadCase (raw wire hex). See 🚨 HIGHEST PRIORITY section above.
+
+---
+
+## Fail-Fast Error Indicator (Sprint 3, 2026-07-11) — MANDATORY
+
+**Why this exists:** Pre-Sprint-3, when the EXI microservice returned a
+`DECODE ERROR` (schema mismatch, framing corruption, malformed SECC bytes,
+etc.), the C++ V2G_TCP_TLS_Port adapter **silently dropped the message**.
+The TTCN-3 test case then waited the full per-TC message timeout (default
+**20 minutes**) before `setverdict(fail)`. This burned enormous compute
+time on tests that could never succeed.
+
+Sprint 3 introduces a **typed `error_indicator` alternative** on the
+receive side. The C++ adapter now pushes a `V2G_ErrorInfo` record into
+the port queue, so TITAN matches it within milliseconds and the test
+case sets `verdict=fail` immediately.
+
+### Type Definition (already in SECC_Types / Types_SECC_15118_2.ttcn)
+
+```ttcn3
+type record V2G_ErrorInfo {
+    charstring  source,          // "exi_decode" | "v2gtp_framing"
+                                  //   | "exi_payload_too_large" | "exi_service_unavailable"
+    charstring  detail,          // raw diagnostic (microservice response or stderr).
+                                  //   Named `detail` (not `message`) because `message`
+                                  //   is a reserved keyword in TTCN-3 (used in
+                                  //   inter-module communication).
+    charstring  namespace_uri optional  // e.g. "urn:iso:15118:2:2013:MsgDef"; omit if N/A
+}
+```
+
+### MANDATORY alt-branch on every V2G_TCP_TLS_Port.receive
+
+**Every** receive on `pt_V2G_TCP_TLS_ALM_SECC_Port` MUST include an
+`error_indicator` branch FIRST in the alt-block (before any
+`{ raw := ... }` or typed-pattern branches), so the fail-fast path
+takes priority over a noisy success-side receive.
+
+**Canonical alt-block template** (every V2G behavior function):
+
+```ttcn3
+alt {
+    // FAIL-FAST: C++ adapter detected DECODE ERROR / framing / payload-too-large.
+    // MUST be the FIRST branch in every alt-block that includes a
+    // pt_V2G_TCP_TLS_ALM_SECC_Port.receive(...).
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ error_indicator := ? })
+        -> value v_err {
+        tc_V2G_SECC_Msg_Timer.stop;
+        setverdict(fail,
+            "C++ adapter error_indicator: ",
+            v_err.error_indicator.source,
+            ": ", v_err.error_indicator.detail);
+        // Optionally include namespace_uri if present:
+        if (ispresent(v_err.error_indicator.namespace_uri)) {
+            log("namespace_uri = ", v_err.error_indicator.namespace_uri);
+        }
+    }
+
+    // SUCCESS: raw JSON bytes from a successfully-decoded SECC message.
+    // TTCN-3 then dispatches the JSON to a typed receive template (e.g.
+    // by oct2char() + decode-as-JSON helpers, or by forwarding to a
+    // sub-function that uses V2G_MessageUnion patterns directly).
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? })
+        -> value v_raw {
+        tc_V2G_SECC_Msg_Timer.stop;
+        // ...dispatch v_raw to typed match (see below)...
+        setverdict(pass);
+    }
+
+    [] tc_V2G_SECC_Msg_Timer.timeout {
+        setverdict(fail, "Timed out waiting for SECC response");
+    }
+}
+```
+
+### Dispatching `v_raw` to a typed receive pattern (the typed match)
+
+Sprint 3 keeps the C++ adapter as a Dumb Terminal — it pushes UTF-8 JSON
+octetstring into the port queue. TTCN-3 must therefore parse the JSON
+to dispatch to a typed `V2G_MessageUnion` value before matching against
+the typed message templates from `SECC_CmnTemplates.ttcn`.
+
+Use this pattern (illustrative — adjust the JSON-decoding helper to
+match whatever utility module the project provides; do NOT write JSON
+parsing in TTCN-3 by hand — use a library helper):
+
+```ttcn3
+// After receive({ raw := ? }) -> value v_raw:
+octetstring raw_bytes   := v_raw.raw;
+charstring  json_str    := oct2char(raw_bytes);
+
+// Hand off to a TTCN-3 JSON helper. The helper signature is project-defined;
+// an illustrative example:
+var V2G_MessageUnion v_typed := fx_dispatch_json_to_v2g_union(json_str);
+
+alt {
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(get_v2g_response_template())
+        -> value v_resp { /* success path */ }
+    [] tc_V2G_SECC_Msg_Timer.timeout { setverdict(fail, "timeout"); }
+}
+```
+
+For V2GTP BadCase tests (`TC_SECC_CMN_VTB_V2GTPHeader_*`), the C++ adapter
+will return a `v2gtp_framing` error_indicator immediately, and the
+fail-fast branch sets `verdict=fail` within milliseconds.
+
+### Reference: ISO 15118-2 EXI error patterns
+
+For inspiration on how error_indicator semantics map to ISO 15118-2's
+exception class hierarchy, see `iso15118-master/shared/exception/
+exceptions.py` (it defines `V2GMessageDecodeError`,
+`V2GTPFramingError`, etc., with similar `source`+`message` field
+patterns). The TTCN-3 `V2G_ErrorInfo` mirrors this design intent.
 
 ---
 
@@ -359,28 +618,78 @@ type record SessionSetupReq {
 }
 ```
 
-3. The V2GTP port (V2G_TCP_TLS_Port) handles all EXI encoding/decoding internally using pre-encoded payloads from the JSON library (`exi_payload_library.json`). The C++ adapter calls ExiCodecAdapter::encode() to look up the pre-encoded wire_hex. The `V2G_MessageUnion` TTCN-3 type is used for compile-time type safety; at runtime, the port maps these to wire hex from the library.
+3. The V2GTP port (V2G_TCP_TLS_Port, v3 Dumb Terminal) handles all EXI encoding/decoding by forwarding JSON to the Python microservice at localhost:9000. The microservice uses Siemens EXIficient (py4j + EXICodec.jar) to produce correct EXI bytes. The C++ adapter adds the V2GTP header and sends to SECC. The `V2G_MessageUnion` TTCN-3 type is used for compile-time type safety only.
 
-### EXI Payload Library
+### EXI Microservice (v3 Universal EXI Bridge)
 
-Pre-encoded EXI payloads are stored in the JSON library at:
-```
-agent/test_code/examples/demo/exi_payload_library.json
-```
+The Python microservice runs at localhost:9000. Protocol (TCP, custom framing):
+  Encode:  "ENCODE\n<namespace>\n<json>\n\n"  ->  "OK\n<exi_hex>\n\n"
+  Decode:  "DECODE\n<namespace>\n<exi_hex>\n\n"  ->  "OK\n<json>\n\n"
 
-Each entry contains:
-- `wire_hex`: the complete V2GTP-wrapped wire frame (header + EXI payload)
-- `is_dynamic`: whether the message has runtime-patched fields (e.g., SessionID)
-- `json_payload`: the canonical JSON representation of the message (for reference)
+Startup (before running TestExecutable):
+  cd shared_infrastructure/exi_microservice
+  python3 exi_microservice.py &
+  # Or: ./start_exi_service.sh
+
+Required: EXICodec.jar (download from https://github.com/EXIficient/exificient)
+Required: py4j (pip install py4j)
 
 Example usage in TTCN-3 templates:
 ```ttcn3
-// CORRECT: Send via structured union template
-// The ExiCodecAdapter in V2G_TCP_TLS_Port encodes to wire_hex automatically
-pt_V2G_TCP_TLS_ALM_SECC_Port.send({ sessionSetupReq := md_CMN_SessionSetupReq_001 });
+// ✅ CORRECT (Sprint 3): Structured-union send side on TCP port.
+// The C++ V2G_TCP_TLS_Port adapter forwards the typed union selection + JSON
+// to the Python microservice at localhost:9000, prepends the V2GTP header,
+// and sends to SECC. PascalCase element names are enforced automatically by
+// MOXy from the XSD, so we never see UnmarshalException.
+//
+// NOTE on PascalCase: If you ever edit a `var charstring ... := "{\"sessionID\":...}"` style
+// literal, ALWAYS use PascalCase keys: `SessionID`, `EVCCID`, `PaymentServiceSelectionReq`, etc.
+// The word `sessionID` or `evccID` inside a JSON string is a bug. The pipeline's
+// `sanitize_v2g_json_keys` sanitizer will fix it automatically, but correct-first saves cycles.
+pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct(json_req));
 
-// CORRECT: Receive via matching structured template
-pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ sessionSetupRes := md_CMN_SessionSetupRes_001 });
+// ✅ ALSO CORRECT (Sprint 3): Receive via the typed V2G_PortMessage union (Sprint 3).
+//   The receive path is split-direction Dumb Terminal (in V2G_PortMessage,
+//   not V2G_MessageUnion). The receive port has ONLY two variants:
+//     { raw := ? }            — successfully-decoded JSON bytes (TTCN-3 then
+//                                dispatches via oct2char() to typed templates).
+//     { error_indicator := ? } — fail-fast error notification from the C++
+//                                adapter (DECODE ERROR / framing failure /
+//                                exi_service_unavailable, etc.). Immediately
+//                                terminates the per-TC run with verdict=fail.
+//   The pre-Sprint-3 pattern `receive({ v2g := { sessionSetupRes := ? } })`
+//   is COMPILE ERROR — `v2g` is NOT a valid field on V2G_PortMessage.
+alt {
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ error_indicator := ? })
+        -> value v_err {
+        tc_V2G_SECC_Msg_Timer.stop;
+        setverdict(fail,
+            "C++ adapter error_indicator: ", v_err.error_indicator.source,
+            ": ", v_err.error_indicator.detail);
+    }
+    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? })
+        -> value v_msg {
+        tc_V2G_SECC_Msg_Timer.stop;
+        var octetstring resp_payload := v_msg.raw;
+        var charstring  resp_json    := oct2char(resp_payload);
+        log("SECC raw JSON: ", resp_json);
+        // ...dispatch resp_json to typed template match in a SEPARATE alt...
+        setverdict(pass);
+    }
+    [] tc_V2G_SECC_Msg_Timer.timeout {
+        setverdict(fail, "Timed out waiting for SECC response");
+    }
+}
+```
+
+// ❌ NEVER DO THIS for V2G body messages on the receive side (DEPRECATED since 2026-07-12):
+//    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ sessionSetupRes := ? });
+//      Reference to non-existent field 'sessionSetupRes' in union template
+//      for type @SECC_TestSystem.V2G_PortMessage; note: Valid fields: raw,error_indicator.
+//    The port in-direction is `V2G_PortMessage` (raw | error_indicator), not
+//    `V2G_MessageUnion` (which has sessionSetupRes). The pre-Sprint-3 pattern
+//    `receive({ v2g := { sessionSetupRes := ? } })` is ALSO COMPILE ERROR.
+//    Reserved for SDP (UDP) and V2GTPHeader BadCase (raw wire hex) only.
 ```
 
 ---
@@ -465,28 +774,51 @@ module SECC_TestSystem {
     import from SECC_Types all;
 
     // ==========================================
-    // V2G_PortMessage -- dual-type out message union
+    // V2G_PortMessage -- receive-side union (Sprint 3, 2026-07-11)
     // ==========================================
-    // v2g variant: normal V2G application messages (EXI-encoded via JSON library)
-    // raw variant: V2GTP header BadCase tests ONLY (bytes sent as-is)
+    // V2G_TCP_TLS_Port uses a SPLIT direction (out octetstring, in
+    // V2G_PortMessage). The receive-side union has 2 variants:
+    //
+    //   { raw := <decoded_json_bytes> }: success — the C++ adapter
+    //                                   decoded the SECC EXI payload via
+    //                                   the EXI microservice and forwards
+    //                                   the UTF-8 JSON octetstring to TTCN-3.
+    //                                   TTCN-3 then dispatches to a typed
+    //                                   receive pattern (e.g. a wildcard
+    //                                   receive + ischosen(...) branch).
+    //
+    //   { error_indicator := V2G_ErrorInfo }: FAIL-FAST — the C++ adapter
+    //                                   detected a non-recoverable error
+    //                                   (DECODE ERROR, microservice
+    //                                   unavailable, V2GTP framing invalid,
+    //                                   or oversized payload). TTCN-3 MUST
+    //                                   immediately match this and set
+    //                                   verdict=fail so the per-TC run
+    //                                   terminates within seconds instead of
+    //                                   waiting for the per-TC message
+    //                                   timeout (~20 min).
     // ==========================================
     type union V2G_PortMessage {
-        V2G_MessageUnion  v2g,
-        octetstring       raw
+        octetstring       raw,
+        V2G_ErrorInfo     error_indicator
     }
 
     // ==========================================
     // Port type definitions
     // ==========================================
-    // V2G_TCP_TLS_Port: out uses V2G_PortMessage (dual-path), in uses V2G_MessageUnion.
-    //   - { v2g := ... }: C++ ExiCodecAdapter encodes via JSON, adds V2GTP header.
-    //   - { raw := ... }: C++ adapter sends raw bytes as-is (V2GTP header BadCase only).
+    // V2G_TCP_TLS_Port (Sprint 3 split-direction):
+    //   out: OCTETSTRING (Dumb Terminal out path — TTCN-3 emits UTF-8 JSON
+    //        bytes via port.send(<octetstring>); the C++ adapter forwards
+    //        them to the EXI microservice, prepends the V2GTP header, and
+    //        sends over TCP.)
+    //   in : V2G_PortMessage (typed union; success = { raw := ... },
+    //        fail-fast = { error_indicator := ... }).
     // V2G_UDP_SDP_Port: raw octetstring for SDP protocol (no EXI encoding).
     // ==========================================
 
     type port V2G_TCP_TLS_Port message {
-        out V2G_PortMessage;
-        in  V2G_MessageUnion;
+        out octetstring;
+        in  V2G_PortMessage;
     }
 
     type port V2G_UDP_SDP_Port message {
@@ -507,9 +839,14 @@ module SECC_TestSystem {
 }
 ```
 
-**CRITICAL**: The V2G_TCP_TLS_Port out type MUST use `V2G_PortMessage` (dual union).
-Use `{ v2g := ... }` for normal V2G messages (EXI-encoded by adapter).
-Use `{ raw := ... }` ONLY for V2GTP header BadCase tests (TC_SECC_CMN_VTB_V2GTPHeader_*).
+**CRITICAL**:
+- The V2G_TCP_TLS_Port `out` direction uses **OCTETSTRING** (Dumb Terminal out
+  path — TTCN-3 sends UTF-8 JSON bytes via `port.send(<octetstring>)`).
+- The V2G_TCP_TLS_Port `in` direction uses **V2G_PortMessage** (Sprint 3).
+- The C++ V2G_TCP_TLS_Port adapter handles EXI encoding (out) and V2GTP framing
+  both directions; for receive, it either pushes `{ raw := <json> }` on success
+  or `{ error_indicator := V2G_ErrorInfo(...) }` on a non-recoverable error.
+- For SDP, use `pt_V2G_UDP_SDP_Port` with raw octetstrings as before.
 
 ### 4. TestCases_SECC.ttcn
 

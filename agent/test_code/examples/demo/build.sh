@@ -2,76 +2,79 @@
 # ==========================================
 # TITAN TTCN-3 Build Script for Linux
 # ISO 15118-2 SECC Conformance Test System
+#
+# CANONICAL BUILD SCRIPT — V3 (Universal EXI Bridge)
+# --------------------------------------------------------
+#  - All paths resolved via ABSOLUTE paths derived from the
+#    script's own location (SCRIPT_DIR) and a Python helper
+#    that handles non-ASCII characters safely.
+#  - OpenV2G C 库和 libexi_bridge.a 已完全移除！
+#    EXI 编码/解码现在通过 Python microservice (localhost:9000) 实现，
+#    使用 Siemens EXIficient (py4j + EXICodec.jar)。
+#  - C++ V2G_TCP_TLS_Port.cc 现在是"哑终端"：只做 JSON 转发和 socket 通信。
+#
+# Source of truth:
+#   shared_infrastructure/exi_microservice/exi_microservice.py
+#
+# This script is the V3 replacement for canonical_build.sh.v2.
+# It is byte-copied into every generated TC project by the
+# pipeline's _install_build_script.
 # ==========================================
 
 set -e
 
-echo "[BUILD] Starting TITAN build process..."
+echo "[BUILD] Starting TITAN build process (canonical_build.sh.v3 — Universal EXI Bridge)..."
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# ==========================================
+# Bulletproof temp directory management
+# ==========================================
 BUILD_WORK_DIR=""
 ORIGINAL_DIR=""
-KEEP_TEMP="${KEEP_TEMP:-0}"
+KEEP_TEMP=""
+
+_cleanup_and_restore() {
+    local exit_code=$?
+    local work_dir="$BUILD_WORK_DIR"
+    if [ -z "$work_dir" ] || [ ! -d "$work_dir" ]; then return; fi
+    if [ "$exit_code" -ne 0 ] && [ -n "$KEEP_TEMP" ]; then
+        echo ""
+        echo "[BUILD] Build failed (exit code: $exit_code). Temp directory kept: $work_dir"
+        return
+    fi
+    if [ "$exit_code" -eq 0 ]; then
+        echo "[BUILD] Syncing build artifacts back to original location..."
+        local src_dir="$work_dir"
+        if [ -n "$ORIGINAL_DIR" ] && [ -d "$work_dir/tc_build_$$" ]; then
+            src_dir="$work_dir/tc_build_$$"
+        fi
+        [ -d "$src_dir/build"  ] && rsync -a --delete "$src_dir/build/"  "$SCRIPT_DIR/build/"
+        [ -d "$src_dir/config" ] && rsync -a --delete "$src_dir/config/" "$SCRIPT_DIR/config/"
+        [ -d "$src_dir/logs"   ] && rsync -a "$src_dir/logs/"          "$SCRIPT_DIR/logs/"
+        if [ -d "$SCRIPT_DIR/config" ]; then
+            mkdir -p "$SCRIPT_DIR/build/config"
+            rsync -a --delete "$SCRIPT_DIR/config/" "$SCRIPT_DIR/build/config/"
+            echo "[BUILD] Mirrored config/ to build/config/ for runtime resolution"
+        fi
+    fi
+    rm -rf "$work_dir"
+    echo "[BUILD] Temp directory cleaned up."
+}
+
+trap '_cleanup_and_restore' EXIT
+trap 'echo "[BUILD] Build interrupted."; exit 130' INT TERM
+
+work_dir=$(mktemp -d /tmp/titan_build_XXXXXX)
+if [ -z "$work_dir" ] || [ ! -d "$work_dir" ]; then
+    echo "[ERROR] Failed to create temporary build directory."
+    exit 1
+fi
+BUILD_WORK_DIR="$work_dir"
 
 _is_path_ascii() {
     ! printf '%s' "$1" | LC_ALL=C grep -q '[^\x00-\x7F]'
-}
-
-_handle_non_ascii_path() {
-    local original_dir="$1"
-    local work_dir
-    work_dir=$(mktemp -d /tmp/titan_build_XXXXXX)
-    if [ -z "$work_dir" ] || [ ! -d "$work_dir" ]; then
-        echo "[ERROR] Failed to create temporary build directory."
-        exit 1
-    fi
-    BUILD_WORK_DIR="$work_dir"
-    local project_name="demo_build_$$"
-
-    echo "[BUILD] Project path contains non-ASCII characters."
-    echo "[BUILD] Copying project to ASCII temp directory: $work_dir/$project_name"
-    mkdir -p "$work_dir/$project_name"
-    rsync -a --delete --exclude='build/' --exclude='logs/' \
-        "$original_dir/" "$work_dir/$project_name/"
-    echo "[BUILD] Project copied. Switching to temp directory for build."
-    cd "$work_dir/$project_name"
-}
-
-_cleanup_and_restore() {
-    local exit_code=$1
-    local original_dir="$ORIGINAL_DIR"
-    local work_dir="$BUILD_WORK_DIR"
-
-    if [ -z "$work_dir" ] || [ ! -d "$work_dir" ]; then
-        return
-    fi
-
-    if [ "$exit_code" -ne 0 ] && [ "$KEEP_TEMP" != "0" ]; then
-        echo ""
-        echo "[BUILD] Build failed (exit code: $exit_code). Temp directory kept:"
-        echo "[BUILD]   $work_dir"
-        echo "[BUILD]   (Set KEEP_TEMP=0 to auto-clean on failure)"
-        return
-    fi
-
-    if [ "$exit_code" -eq 0 ]; then
-        echo "[BUILD] Syncing build artifacts back to original location..."
-        for subdir in build config logs; do
-            if [ -d "$work_dir/demo_build_$$/$subdir" ]; then
-                mkdir -p "$original_dir/$subdir"
-                rsync -a --delete "$work_dir/demo_build_$$/$subdir/" "$original_dir/$subdir/"
-            fi
-        done
-    fi
-
-    if [ "$KEEP_TEMP" = "0" ]; then
-        rm -rf "$work_dir"
-        echo "[BUILD] Temp directory cleaned up."
-    else
-        echo "[BUILD] Temp directory kept at: $work_dir"
-    fi
 }
 
 if ! _is_path_ascii "$SCRIPT_DIR"; then
@@ -80,24 +83,90 @@ if ! _is_path_ascii "$SCRIPT_DIR"; then
         exit 1
     fi
     ORIGINAL_DIR="$SCRIPT_DIR"
-    trap '_cleanup_and_restore $?' EXIT
-    trap 'echo "[BUILD] Build interrupted."; _cleanup_and_restore 130; exit 130' INT TERM
-    _handle_non_ascii_path "$SCRIPT_DIR"
-else
-    trap 'echo "[BUILD] Build interrupted."; exit 130' INT TERM
+    project_name="tc_build_$$"
+    echo "[BUILD] Project path contains non-ASCII characters."
+    echo "[BUILD] Copying project to ASCII temp directory: $work_dir/$project_name"
+    mkdir -p "$work_dir/$project_name"
+    rsync -a --delete --exclude='build/' --exclude='logs/' "$SCRIPT_DIR/" "$work_dir/$project_name/"
+    echo "[BUILD] Project copied. Switching to temp directory for build."
+    cd "$work_dir/$project_name"
 fi
+
+# ==========================================
+# Step 0 (V3): Resolve shared_infrastructure and
+# verify the EXI microservice directory.
+#
+# NOTE: OpenV2G/libexi_bridge.a is NO LONGER built or linked.
+# EXI encoding is handled by Python microservice at localhost:9000.
+# ==========================================
+echo "[BUILD] Step 0 (V3): Resolving shared_infrastructure paths..."
+
+TC_ID="${TC_ID:-tc}"
+
+SHARED_INFRA_INFO="$(SCRIPT_DIR_ABS="$SCRIPT_DIR" python3 - <<'PYEOF'
+import os, sys
+script_dir = os.environ['SCRIPT_DIR_ABS']
+script_dir = os.path.realpath(script_dir)
+
+infra = None
+cur = script_dir
+while True:
+    candidate = os.path.join(cur, 'shared_infrastructure')
+    # V3: look for exi_microservice/ instead of exi_engine/
+    if os.path.isdir(os.path.join(candidate, 'exi_microservice')):
+        infra = os.path.realpath(candidate)
+        break
+    parent = os.path.dirname(cur)
+    if parent == cur:
+        break
+    cur = parent
+
+if infra is None:
+    print('ERROR=shared_infrastructure not found above ' + script_dir, file=sys.stderr)
+    sys.exit(1)
+
+exi_dir = os.path.join(infra, 'exi_microservice')
+microservice_py = os.path.join(exi_dir, 'exi_microservice.py')
+
+print('INFRA_ABSPATH=' + infra)
+print('INFRA_EXI_ABSPATH=' + exi_dir)
+print('MICROSERVICE_PY=' + microservice_py)
+PYEOF
+)" || {
+    echo "[ERROR] Failed to locate shared_infrastructure above $SCRIPT_DIR"
+    exit 1
+}
+
+eval "$SHARED_INFRA_INFO"
+
+echo "[BUILD]   INFRA_ABSPATH     = $INFRA_ABSPATH"
+echo "[BUILD]   INFRA_EXI_ABSPATH = $INFRA_EXI_ABSPATH"
+
+if [ ! -f "$MICROSERVICE_PY" ]; then
+    echo "[ERROR] exi_microservice.py not found at $MICROSERVICE_PY"
+    echo "[ERROR] Expected: shared_infrastructure/exi_microservice/exi_microservice.py"
+    exit 1
+fi
+
+# Check for EXICodec.jar
+EXI_JAR="$INFRA_EXI_ABSPATH/EXICodec.jar"
+if [ ! -f "$EXI_JAR" ]; then
+    echo "[WARN] EXICodec.jar not found at $EXI_JAR"
+    echo "[WARN] The EXI microservice will fail until EXICodec.jar is downloaded."
+    echo "[WARN] Download from: https://github.com/EXIficient/exificient/releases"
+    echo "[WARN] Quick download:"
+    echo "[WARN]   wget https://github.com/EXIficient/exificient/releases/download/v1.1.6/EXICodec-1.1.6.jar \\"
+    echo "[WARN]        -O $EXI_JAR"
+fi
+
+echo "[BUILD] Step 0 (V3) complete: EXI microservice at $MICROSERVICE_PY"
 
 # ==========================================
 # Step 1: Clean and prepare build directory
 # ==========================================
 echo "[BUILD] Step 1: Cleaning and preparing build directory..."
-rm -rf build
-mkdir -p build/generated_cpp
-mkdir -p build/obj
-mkdir -p build/bin
-mkdir -p logs/titan_traces
-mkdir -p logs/system_logs
-mkdir -p config
+rm -rf build && mkdir -p build/generated_cpp build/obj build/bin
+mkdir -p logs/titan_traces logs/system_logs config
 echo "[BUILD] Directory structure ready."
 
 # ==========================================
@@ -114,188 +183,218 @@ if ! command -v g++ &> /dev/null; then
 fi
 echo "[BUILD] TITAN tools and compiler found."
 
-export TTCN3_DIR="${TTCN3_DIR:-/usr}"
-export TTCN3_SUBDIR="${TTCN3_SUBDIR:-/titan}"
+if [ -z "$TTCN3_DIR" ]; then
+    if [ -d "/usr/include/titan" ]; then
+        export TTCN3_DIR="/usr"
+    elif [ -d "/opt/titan/include/titan" ]; then
+        export TTCN3_DIR="/opt/titan"
+    elif command -v makefilegen &> /dev/null; then
+        TTCN3_BIN=$(command -v makefilegen)
+        TTCN3_BIN=$(readlink -f "$TTCN3_BIN" 2>/dev/null || echo "$TTCN3_BIN")
+        [ -n "$TTCN3_BIN" ] && export TTCN3_DIR=$(dirname "$(dirname "$TTCN3_BIN")")
+    fi
+fi
+if [ -z "$TTCN3_SUBDIR" ]; then
+    if [ -d "${TTCN3_DIR}/include/titan" ]; then
+        export TTCN3_SUBDIR="/titan"
+    elif [ -d "${TTCN3_DIR}/include" ]; then
+        export TTCN3_SUBDIR=""
+    fi
+fi
 export TTCN3_INC="${TTCN3_DIR}/include${TTCN3_SUBDIR}"
 export TTCN3_LIB_DIR="${TTCN3_DIR}/lib${TTCN3_SUBDIR}"
-export LD_LIBRARY_PATH="${TTCN3_LIB_DIR}:${LD_LIBRARY_PATH:-}"
-
-echo "[BUILD] TITAN environment:"
-echo "       TTCN3_DIR    = $TTCN3_DIR"
-echo "       TTCN3_SUBDIR = $TTCN3_SUBDIR"
-echo "       TTCN3_INC    = $TTCN3_INC"
-echo "       TTCN3_LIB_DIR= $TTCN3_LIB_DIR"
+if [ -z "$LD_LIBRARY_PATH" ]; then
+    export LD_LIBRARY_PATH="${TTCN3_LIB_DIR}"
+elif [[ ":$LD_LIBRARY_PATH:" != *":${TTCN3_LIB_DIR}:"* ]]; then
+    export LD_LIBRARY_PATH="${TTCN3_LIB_DIR}:${LD_LIBRARY_PATH}"
+fi
+echo "[BUILD] TITAN: TTCN3_DIR=$TTCN3_DIR  TTCN3_INC=$TTCN3_INC  TTCN3_LIB_DIR=$TTCN3_LIB_DIR"
 
 # ==========================================
 # Step 3: Copy port adapter files to generated_cpp/
+# V3: Only TCP/UDP port adapters are copied.
+# OpenV2G_Wrapper, ExiCodecAdapter, StaticExiDecoder are NOT needed.
 # ==========================================
-echo "[BUILD] Step 3: Copying port adapter files to generated_cpp/..."
+echo "[BUILD] Step 3: Copying port adapter files..."
 cd build/generated_cpp
 
-cp_port_file() {
+find_port_file() {
     local filename="$1"
-    local src=""
-    if [ -f "../../src/cpp_adapters/SA/ports/$filename" ]; then
-        src="../../src/cpp_adapters/SA/ports/$filename"
-    elif [ -f "$filename" ]; then
-        src="$filename"
+    if [ -f "$filename" ] && [ "$(stat -c%s "$filename" 2>/dev/null || echo 0)" -gt 200 ]; then
+        echo "$filename"; return 0
     fi
-    if [ -n "$src" ]; then
-        cp -f "$src" . 2>/dev/null && echo "[BUILD] Copied $filename"
+    if [ -f "../../$filename" ] && [ "$(stat -c%s "../../$filename" 2>/dev/null || echo 0)" -gt 200 ]; then
+        cp "../../$filename" .; echo "[BUILD] Copied $filename from project root"; echo "$filename"; return 0
     fi
+    local found=$(find ../../src/cpp_adapters -name "$filename" 2>/dev/null | head -1)
+    if [ -n "$found" ] && [ "$(stat -c%s "$found" 2>/dev/null || echo 0)" -gt 200 ]; then
+        cp "$found" .; echo "[BUILD] Copied $filename from $found"; echo "$filename"; return 0
+    fi
+    echo ""; return 1
 }
 
-for f in V2G_TCP_TLS_Port.cc V2G_TCP_TLS_Port.hh \
-         V2G_UDP_SDP_Port.cc V2G_UDP_SDP_Port.hh; do
-    cp_port_file "$f"
+PORT_FILES=("V2G_TCP_TLS_Port.cc" "V2G_TCP_TLS_Port.hh" "V2G_UDP_SDP_Port.cc" "V2G_UDP_SDP_Port.hh")
+for port_file in "${PORT_FILES[@]}"; do
+    find_port_file "$port_file" || { echo "[ERROR] Port adapter file not found: $port_file"; cd ../..; exit 1; }
 done
+echo "[BUILD] Port adapter files ready."
 
 # ==========================================
-# Step 4: Generate Makefile
+# Step 4: Generate Makefile (dynamic discovery)
+# V3: DO NOT include OpenV2G_Wrapper.cc / ExiCodecAdapter.cc / StaticExiDecoder.cc
+# The V2G_TCP_TLS_Port.cc (v3 Dumb Terminal) does NOT need them.
 # ==========================================
-echo "[BUILD] Step 4: Generating Makefile..."
+echo "[BUILD] Step 4: Generating Makefile (dynamic file discovery)..."
+
+TTCN_ARCH=$(find ../../src/ttcn3/2_Architecture -name "*.ttcn" 2>/dev/null | sort)
+TTCN_TYPES=$(find ../../src/ttcn3/1_Data_Definitions/Types -name "*.ttcn" 2>/dev/null | sort)
+TTCN_TEMPLATES=$(find ../../src/ttcn3/1_Data_Definitions/Templates -name "*.ttcn" 2>/dev/null | sort)
+TTCN_PICS=$(find ../../src/ttcn3/1_Data_Definitions/PICS -name "*.ttcn" 2>/dev/null | sort)
+TTCN_PIXIT=$(find ../../src/ttcn3/1_Data_Definitions/PIXIT -name "*.ttcn" 2>/dev/null | sort)
+TTCN_SERVICES=$(find ../../src/ttcn3/3_Behavior_Steps/Services -name "*.ttcn" 2>/dev/null | sort)
+
+TTCN_PRECOND=$(find ../../src/ttcn3/3_Behavior_Steps/PreConditions -name "*.ttcn" 2>/dev/null | sort)
+TTCN_POSTCOND=$(find ../../src/ttcn3/3_Behavior_Steps/PostConditions -name "*.ttcn" 2>/dev/null | sort)
+
+TTCN_BEHAVIOR=$(find ../../src/ttcn3/3_Behavior_Steps/TestBehavior -name "*.ttcn" 2>/dev/null | sort)
+TTCN_TESTS=$(find ../../src/ttcn3/4_TestCases -name "*.ttcn" 2>/dev/null | sort)
+
+# V3: Only V2G_TCP_TLS_Port.cc and V2G_UDP_SDP_Port.cc are compiled.
+# OpenV2G_Wrapper.cc, ExiCodecAdapter.cc, StaticExiDecoder.cc are EXCLUDED.
+CPP_ADAPTERS=$(find ../../src/cpp_adapters -name "*.cc" 2>/dev/null | grep -v -E "(OpenV2G_Wrapper|ExiCodecAdapter|StaticExiDecoder)" | sort)
+
+echo "[BUILD] TTCN files discovered:"
+echo "       Architecture : $(echo $TTCN_ARCH   | wc -w) files"
+echo "       Types       : $(echo $TTCN_TYPES  | wc -w) files"
+echo "       Templates   : $(echo $TTCN_TEMPLATES | wc -w) files"
+echo "       PICS/PIXIT  : $(echo $TTCN_PICS $TTCN_PIXIT | wc -w) files"
+echo "       Services    : $(echo $TTCN_SERVICES | wc -w) files"
+echo "       PreCond     : $(echo $TTCN_PRECOND | wc -w) files"
+echo "       PostCond    : $(echo $TTCN_POSTCOND | wc -w) files"
+echo "       TestBehavior: $(echo $TTCN_BEHAVIOR | wc -w) files"
+echo "       TestCases   : $(echo $TTCN_TESTS   | wc -w) files"
+echo "       C++ Adapters: $(echo $CPP_ADAPTERS | wc -w) files (OpenV2G/ExiCodecAdapter/StaticExiDecoder EXCLUDED)"
+
 makefilegen -f -a -o . -e TestExecutable \
-    ../../src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn \
-    ../../src/ttcn3/1_Data_Definitions/Types/Types_SECC_15118_2.ttcn \
-    ../../src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn \
-    ../../src/ttcn3/1_Data_Definitions/Templates/CmnTemplates.ttcn \
-    ../../src/ttcn3/3_Behavior_Steps/Services/CommonFunctions.ttcn \
-    ../../src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn \
-    ../../src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn \
-    ../../src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn \
-    ../../src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn \
-    ../../src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn \
-    ../../src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.ttcn \
-    ../../src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_SDP_001.ttcn \
-    ../../src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_SupportedAppProtocol_001.ttcn \
-    ../../src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn \
-    ../../src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn \
-    V2G_TCP_TLS_Port.cc \
-    V2G_UDP_SDP_Port.cc \
-    ../../src/cpp_adapters/common/Common.cc \
-    ../../src/cpp_adapters/common/StaticExiDecoder.cc \
-    ../../src/cpp_adapters/SA/hardware/TCPTLSPortAdapter.cc \
-    ../../src/cpp_adapters/SA/hardware/HAL61851Adapter.cc \
-    ../../src/cpp_adapters/SA/titan_tri/TitanTri.cc \
-    ../../src/cpp_adapters/CD/titan_tci/TitanTci.cc \
-    ../../src/cpp_adapters/CD/exi_engine/ExiCodecAdapter.cc
+    $TTCN_ARCH \
+    $TTCN_TYPES \
+    $TTCN_TEMPLATES \
+    $TTCN_PICS \
+    $TTCN_PIXIT \
+    $TTCN_SERVICES \
+    $TTCN_PRECOND \
+    $TTCN_POSTCOND \
+    $TTCN_BEHAVIOR \
+    $TTCN_TESTS \
+    $CPP_ADAPTERS
 
-if [ $? -ne 0 ]; then
+MAKEFILEGEN_EXIT=$?
+
+if [ $MAKEFILEGEN_EXIT -ne 0 ]; then
     echo "[ERROR] makefilegen failed!"
+    echo "[ERROR] Check that all TTCN module files exist and are readable."
     cd ../..
     exit 1
 fi
+
 echo "[BUILD] Makefile generated successfully."
 
-# ==========================================
-# Step 5: Compile TTCN-3 to C++
-# ==========================================
-echo "[BUILD] Step 5: Translating TTCN-3 modules to C++..."
-make compile 2>&1 | tail -5
-if [ ${PIPESTATUS[0]} -ne 0 ]; then
-    echo "[ERROR] TTCN-3 compilation failed!"
-    cd ../..
-    exit 1
+TTCN_CC_COUNT=$(find . -maxdepth 1 -name "*.ttcn.cc" 2>/dev/null | wc -l)
+echo "[BUILD] Generated $TTCN_CC_COUNT TTCN-3 .cc files."
+if [ "$TTCN_CC_COUNT" -eq 0 ]; then
+    echo "[WARN] No TTCN .cc files generated. Possible missing source files."
 fi
-echo "[BUILD] TTCN-3 compilation done."
+
+if [ -f Makefile ]; then
+    ABS_LEAKS=$(grep -nE "^[[:space:]]*/[^/*]" Makefile 2>/dev/null || true)
+    if [ -n "$ABS_LEAKS" ]; then
+        echo "[BUILD] ERROR: Absolute path leak detected in Makefile:"
+        echo "$ABS_LEAKS"
+        exit 1
+    fi
+fi
+echo "[BUILD] Absolute-path leak check: PASS"
 
 # ==========================================
-# Step 6: Fix Makefile
+# Step 5: Fix SECC_TestSystem.hh to include port headers
 # ==========================================
-echo "[BUILD] Step 6: Fixing Makefile..."
+echo "[BUILD] Step 5: Fixing SECC_TestSystem.hh..."
+if [ -f "SECC_TestSystem.hh" ]; then
+    sed -i '/#include "V2G_TCP_TLS_Port.hh"/d' SECC_TestSystem.hh
+    sed -i '/#include "V2G_UDP_SDP_Port.hh"/d' SECC_TestSystem.hh
+    SECOND_NS_LINE=$(grep -n "^namespace SECC__TestSystem {" SECC_TestSystem.hh | head -2 | tail -1 | cut -d: -f1)
+    if [ -n "$SECOND_NS_LINE" ]; then
+        head -n "$SECOND_NS_LINE" SECC_TestSystem.hh > SECC_TestSystem.hh.tmp
+        printf '#include "V2G_TCP_TLS_Port.hh"\n#include "V2G_UDP_SDP_Port.hh"\n' >> SECC_TestSystem.hh.tmp
+        tail -n +$((SECOND_NS_LINE + 1)) SECC_TestSystem.hh >> SECC_TestSystem.hh.tmp
+        mv SECC_TestSystem.hh.tmp SECC_TestSystem.hh
+    fi
+fi
+if [ -f "SECC_TestSystem.cc" ]; then
+    sed -i '/#include "V2G_TCP_TLS_Port.hh"/d' SECC_TestSystem.cc
+    sed -i '/#include "V2G_UDP_SDP_Port.hh"/d' SECC_TestSystem.cc
+fi
 
-sed -i 's|^\(OBJDIR\s*=\s*\).*$|\1../obj|' Makefile
-sed -i "s|^EXECUTABLE = TestExecutable|EXECUTABLE = ../bin/TestExecutable|" Makefile
+# ==========================================
+# Step 6: Fix Makefile (V3 — NO OpenV2G!)
+#
+# V2 had: python3 patcher.py --openv2g-inc ... --exi-bridge-a ...
+# V3 has: NO patcher call (no OpenV2G, no libexi_bridge.a to link)
+# ==========================================
+echo "[BUILD] Step 6: Fixing Makefile (V3 — no OpenV2G)..."
+cp Makefile Makefile.orig
+sed -i 's|^OBJDIR\s*=\s*.*|OBJDIR = ../obj|' Makefile
+sed -i 's|^EXECUTABLE = TestExecutable|EXECUTABLE = ../bin/TestExecutable|' Makefile
 sed -i 's/^TTCN3_LIB = ttcn3-parallel-dynamic$/TTCN3_LIB = ttcn3-dynamic/' Makefile
 sed -i 's/^TTCN3_LIB = ttcn3-parallel$/TTCN3_LIB = ttcn3-dynamic/' Makefile
 sed -i 's/^LINUX_LIBS = -lxml2$/LINUX_LIBS = -lxml2 -lpthread/' Makefile
-# (No JNI flags needed - using pure static data-driven decoder)
-sed -i 's|^CXXFLAGS = -Wall  $|CXXFLAGS = -Wall -I. -I../../src/cpp_adapters/CD/exi_codec/fmt/include -I../../src/cpp_adapters/CD/exi_codec/fmt/fmt -I../../src/cpp_adapters/CD/exi_codec -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++17 |' Makefile
-# (No JNI flags needed - using pure static data-driven decoder)
-sed -i "s|^LDFLAGS =  $|LDFLAGS =  -D_GLIBCXX_USE_CXX11_ABI=0 |" Makefile
-# Fix LINUX_LIBS: add -ldl for dlopen
-sed -i 's/^LINUX_LIBS = -lxml2 -lpthread$/LINUX_LIBS = -lxml2 -lpthread -ldl/' Makefile
 
-echo "[BUILD] Makefile patched."
-
-# ==========================================
-# Step 7: Patch SECC_TestSystem.hh to include port headers
-# ==========================================
-echo "[BUILD] Step 7: Patching SECC_TestSystem.hh..."
-
-if [ -f "SECC_TestSystem.hh" ]; then
-    python3 -c "
-import sys
-with open('SECC_TestSystem.hh', 'r') as f:
-    content = f.read()
-
-if '#include \"V2G_TCP_TLS_Port.hh\"' in content:
-    print('[BUILD] Port includes already present, skipping patch.')
-    sys.exit(0)
-
-# Find the line: '#include \"V2G_UDP_SDP_Port.hh\"' followed by '#endif'
-# These are at the END of the file, before the final #endif
-lines = content.split('\n')
-insert_before = None
-for i in range(len(lines)-1, -1, -1):
-    line = lines[i].strip()
-    if line == '#include \"V2G_UDP_SDP_Port.hh\"':
-        insert_before = i
-        break
-
-if insert_before is not None:
-    inject = '\n#include \"V2G_TCP_TLS_Port.hh\"\n'
-    lines.insert(insert_before, inject)
-    with open('SECC_TestSystem.hh', 'w') as f:
-        f.write('\n'.join(lines))
-    print('[BUILD] Patched: injected V2G_TCP_TLS_Port.hh include')
-else:
-    print('[BUILD] WARNING: Could not find insertion point for port include')
-"
-fi
-
-echo "[BUILD] Step 7 done."
-
-# ==========================================
-# Step 8: Build executable
-# ==========================================
-echo "[BUILD] Step 8: Compiling executable..."
-make -j$(nproc) 2>&1
-
-if [ $? -ne 0 ]; then
-    echo "[ERROR] C++ compilation failed!"
-    cd ../..
-    exit 1
-fi
-
-echo ""
-echo "[BUILD] Compilation successful!"
-
-# ==========================================
-# Step 9: Verify output
-# ==========================================
-echo ""
-echo "[BUILD] Verifying build output..."
-OBJ_COUNT=$(find . -maxdepth 1 -name "*.o" | wc -l)
-echo "[BUILD] Found $OBJ_COUNT object files."
-
-if [ -f "../bin/TestExecutable" ]; then
-    EXE_SIZE=$(stat -c%s "../bin/TestExecutable" 2>/dev/null || echo "unknown")
-    echo "[BUILD] Executable: ../bin/TestExecutable (${EXE_SIZE} bytes)"
+FMT_INC_DIR=$(find "$SCRIPT_DIR/src/cpp_adapters" -name "format-inl.h" 2>/dev/null | head -1 | xargs -I{} dirname {} | xargs -I{} dirname {} 2>/dev/null | head -1)
+if [ -n "$FMT_INC_DIR" ]; then
+    sed -i "s|^CXXFLAGS = |CXXFLAGS = -I${FMT_INC_DIR} -I. |" Makefile
+    echo "[BUILD] Added fmt include path: ${FMT_INC_DIR}"
 else
-    echo "[ERROR] Executable not found at ../bin/TestExecutable"
+    sed -i "s|^CXXFLAGS = |CXXFLAGS = -I. |" Makefile
+    echo "[BUILD] Added current dir to include path"
+fi
+
+# V3: No OpenV2G include paths, no libexi_bridge.a link
+echo "[BUILD] Makefile patched (V3: no OpenV2G, no libexi_bridge.a)"
+
+# ==========================================
+# Step 7: Compile
+# ==========================================
+echo "[BUILD] Step 7: Compiling..."
+export TTCN3_DIR="${TTCN3_DIR:-/usr}"
+export TTCN3_INC="${TTCN3_INC:-${TTCN3_DIR}/include/titan}"
+export TTCN3_LIB_DIR="${TTCN3_LIB_DIR:-${TTCN3_DIR}/lib/titan}"
+export LD_LIBRARY_PATH="${TTCN3_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+
+make
+if [ $? -ne 0 ]; then
+    echo "[ERROR] Compilation failed!"
     cd ../..
     exit 1
 fi
+
+echo "[BUILD] Compilation successful."
+OBJ_COUNT=$(find . -maxdepth 1 -name "*.o" 2>/dev/null | wc -l)
+echo "[BUILD] Generated $OBJ_COUNT object files."
 
 cd ..
 
 echo ""
-echo "=========================================="
 echo "[BUILD] Build completed successfully!"
-echo "=========================================="
+echo ""
+echo "IMPORTANT: Before running tests, start the EXI microservice:"
+echo ""
+echo "  cd $SCRIPT_DIR"
+echo "  python3 $INFRA_EXI_ABSPATH/exi_microservice.py &"
+echo ""
+echo "  # Or use the helper scripts:"
+echo "  $INFRA_EXI_ABSPATH/start_exi_service.sh"
 echo ""
 echo "To run the tests:"
-echo "  cd $([ -n "$ORIGINAL_DIR" ] && echo "$ORIGINAL_DIR" || echo "$SCRIPT_DIR")/build/bin"
+echo "  cd $SCRIPT_DIR/build/bin"
 echo "  ./TestExecutable ../config/titan_runtime.cfg"
 echo ""

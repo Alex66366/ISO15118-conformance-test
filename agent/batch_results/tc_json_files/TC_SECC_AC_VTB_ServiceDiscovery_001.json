@@ -1,0 +1,50 @@
+{
+  "Test_Case": {
+    "TC_Id": "TC_SECC_AC_VTB_ServiceDiscovery_001",
+    "TC_Name": "SECC AC VTB ServiceDiscovery 001",
+    "Purpose": "Test System executes GoodCase procedure and initiates a paused V2G communication session by sending a SessionStopReq message with the current SessionID, ChargingSession 'Pause' and all additional mandatory parameters. After receipt of a valid SessionStopRes message, Test",
+    "Document_Reference": {
+      "Requirements": [
+        "[V2G2-179]",
+        "[V2G2-180]",
+        "[V2G2-181]",
+        "[V2G2-183]",
+        "[V2G2-195]",
+        "[V2G2-196]",
+        "[V2G2-265]",
+        "[V2G2-266]",
+        "[V2G2-267]",
+        "[V2G2-268]",
+        "[V2G2-271]",
+        "[V2G2-272]",
+        "[V2G2-282]",
+        "[V2G2-283]",
+        "[V2G2-418]",
+        "[V2G2-545]",
+        "[V2G2-752]",
+        "[V2G2-377]",
+        "[V2G2-381]",
+        "[V2G2-457]",
+        "[V2G2-632]",
+        "[V2G2-634]",
+        "[V2G2-664]",
+        "[V2G2-665]",
+        "[V2G2-666]",
+        "[V2G2-667]",
+        "[V2G2-741]",
+        "[V2G2-745]",
+        "[V2G2-757]",
+        "[V2G2-758]",
+        "[V2G2-759]",
+        "[V2G2-665]",
+        "[V2G2-725]"
+      ]
+    }
+  },
+  "metadata": {
+    "sut_type": "SECC",
+    "message_type": "ServiceDiscovery_001TC_SECC",
+    "test_type": "GoodCase",
+    "source_kb": "iso15118_4_ttcn_knowledge_base.json"
+  }
+}

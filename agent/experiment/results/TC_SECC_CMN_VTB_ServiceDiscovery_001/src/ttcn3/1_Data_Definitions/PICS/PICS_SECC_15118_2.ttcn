@@ -1,0 +1,21 @@
+module SECC_PICS {
+    import from SECC_TestSystem all;
+
+    // Basic Communication
+    const boolean PICS_SECC_CMN_TCP_Supported := true;
+    const boolean PICS_SECC_CMN_UDP_Supported := true;
+    const boolean PICS_SECC_CMN_IPv6_Supported := true;
+
+    // TLS
+    const boolean PICS_SECC_CMN_TLS_Required := true;
+    const boolean PICS_SECC_CMN_TLS12_Supported := true;
+
+    // Supported V2G Messages
+    const boolean PICS_SECC_CMN_SupportedAppProtocol := true;
+    const boolean PICS_SECC_CMN_SessionSetup := true;
+    const boolean PICS_SECC_CMN_ServiceDiscovery := true;
+    const boolean PICS_SECC_CMN_ServicePaymentSelection := true;
+    const boolean PICS_SECC_CMN_Authorization := true;
+    const boolean PICS_SECC_CMN_ChargeParameterDiscovery := true;
+    const boolean PICS_SECC_CMN_SessionStop := true;
+} // end module

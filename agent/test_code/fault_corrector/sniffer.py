@@ -19,10 +19,15 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+# `from scapy.all import ...` triggers scapy.arch init which calls
+# `socket.socket()` and crashes with PermissionError in sandboxed envs.
+# Catch any Exception (ImportError OR PermissionError) so the pipeline
+# can still start. Live sniffing won't work in sandbox mode, but offline
+# analysis of pre-captured PCAPs still does.
 try:
     from scapy.all import sniff, TCP, UDP, IPv6, wrpcap
     SCAPY_AVAILABLE = True
-except ImportError:
+except Exception:
     SCAPY_AVAILABLE = False
 
 

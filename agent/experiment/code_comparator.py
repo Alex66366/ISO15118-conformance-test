@@ -725,20 +725,29 @@ class ComparisonAnalyzer:
         critical_syntax = sum(1 for i in syntax_issues if i.get("severity") == "critical")
         metrics["syntax_correctness"] = max(0.0, 1.0 - (critical_syntax * 0.25))
         
-        # 语义覆盖度 (权重 0.25)
+        # Semantic coverage: all 10 semantic checks, weighted.
+        # Required items (critical) count 1.5x; recommended items count 1.0x.
         gen_semantic = result.differences.get("semantic", {}).get("generated", {})
         ref_semantic = result.differences.get("semantic", {}).get("reference", {})
-        
-        # 计算语义覆盖率
-        required_in_gen = 0
-        required_total = 0
-        for key in ["has_testcase", "has_runs_on", "has_system", "has_setverdict"]:
-            if key in gen_semantic:
-                required_total += 1
-                if gen_semantic[key]:
-                    required_in_gen += 1
-        
-        metrics["semantic_coverage"] = required_in_gen / required_total if required_total > 0 else 0.0
+
+        SEMANTIC_ITEMS = {
+            "has_testcase":         1.5,  # required
+            "has_runs_on":          1.5,  # required
+            "has_system":           1.5,  # required
+            "has_setverdict":       1.5,  # required
+            "has_imports":          1.0,  # recommended
+            "has_var_verdicttype":  1.0,  # recommended
+            "has_precondition":     1.0,  # recommended
+            "has_postcondition":    1.0,  # recommended
+            "has_timeout":          1.0,  # recommended
+            "has_alt":              1.0,  # recommended
+        }
+        total_weight = sum(SEMANTIC_ITEMS.values())  # 10.5
+        covered_weight = 0.0
+        for key, weight in SEMANTIC_ITEMS.items():
+            if gen_semantic.get(key, False):
+                covered_weight += weight
+        metrics["semantic_coverage"] = covered_weight / total_weight if total_weight > 0 else 0.0
         
         # 命名规范度 (权重 0.1)
         naming_issues = result.differences.get("naming", {}).get("generated_issues", [])

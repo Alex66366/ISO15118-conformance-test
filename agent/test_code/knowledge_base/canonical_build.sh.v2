@@ -1,0 +1,429 @@
+#!/bin/bash
+# ==========================================
+# TITAN TTCN-3 Build Script for Linux
+# ISO 15118-2 SECC Conformance Test System
+#
+# CANONICAL BUILD SCRIPT — V2 (OpenV2G-aware)
+# --------------------------------------------------------
+#  - All paths resolved via ABSOLUTE paths derived from the
+#    script's own location (SCRIPT_DIR) and a Python helper
+#    that handles non-ASCII characters safely.
+#  - libexi_bridge.a (OpenV2G dynamic encoder bridge) is built
+#    in a deterministic, repeatable way and linked into the
+#    final TestExecutable.
+#  - Patcher is invoked with explicit absolute paths — no
+#    reliance on /tmp file names or demo-relative locations.
+#  - /tmp file name is PID-suffixed + TC_ID-suffixed to prevent
+#    collisions between concurrent builds.
+#
+# Source of truth:
+#   shared_infrastructure/build_helpers/patch_makefile.py
+#   shared_infrastructure/exi_engine/build_exi_bridge.sh
+#
+# This script is the V2 replacement for canonical_build.sh.
+# It is byte-copied into every generated TC project by the
+# pipeline's _install_build_script.
+# ==========================================
+
+set -e
+
+echo "[BUILD] Starting TITAN build process (canonical_build.sh.v2)..."
+
+# Resolve the directory holding this script. Works even when the
+# script is sourced, copied, or executed via a non-ASCII path.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# ==========================================
+# Bulletproof temp directory management
+# ==========================================
+BUILD_WORK_DIR=""
+ORIGINAL_DIR=""
+KEEP_TEMP=""
+
+_cleanup_and_restore() {
+    local exit_code=$?
+    local work_dir="$BUILD_WORK_DIR"
+    if [ -z "$work_dir" ] || [ ! -d "$work_dir" ]; then return; fi
+    if [ "$exit_code" -ne 0 ] && [ -n "$KEEP_TEMP" ]; then
+        echo ""
+        echo "[BUILD] Build failed (exit code: $exit_code). Temp directory kept: $work_dir"
+        return
+    fi
+    if [ "$exit_code" -eq 0 ]; then
+        echo "[BUILD] Syncing build artifacts back to original location..."
+        local src_dir="$work_dir"
+        if [ -n "$ORIGINAL_DIR" ] && [ -d "$work_dir/tc_build_$$" ]; then
+            src_dir="$work_dir/tc_build_$$"
+        fi
+        [ -d "$src_dir/build"  ] && rsync -a --delete "$src_dir/build/"  "$SCRIPT_DIR/build/"
+        [ -d "$src_dir/config" ] && rsync -a --delete "$src_dir/config/" "$SCRIPT_DIR/config/"
+        [ -d "$src_dir/logs"   ] && rsync -a "$src_dir/logs/"          "$SCRIPT_DIR/logs/"
+        if [ -d "$SCRIPT_DIR/config" ]; then
+            mkdir -p "$SCRIPT_DIR/build/config"
+            rsync -a --delete "$SCRIPT_DIR/config/" "$SCRIPT_DIR/build/config/"
+            echo "[BUILD] Mirrored config/ to build/config/ for runtime resolution"
+        fi
+    fi
+    rm -rf "$work_dir"
+    echo "[BUILD] Temp directory cleaned up."
+}
+
+trap '_cleanup_and_restore' EXIT
+trap 'echo "[BUILD] Build interrupted."; exit 130' INT TERM
+
+work_dir=$(mktemp -d /tmp/titan_build_XXXXXX)
+if [ -z "$work_dir" ] || [ ! -d "$work_dir" ]; then
+    echo "[ERROR] Failed to create temporary build directory."
+    exit 1
+fi
+BUILD_WORK_DIR="$work_dir"
+
+_is_path_ascii() {
+    ! printf '%s' "$1" | LC_ALL=C grep -q '[^\x00-\x7F]'
+}
+
+if ! _is_path_ascii "$SCRIPT_DIR"; then
+    if ! command -v rsync &> /dev/null; then
+        echo "[ERROR] rsync is required for non-ASCII path builds but is not installed."
+        exit 1
+    fi
+    ORIGINAL_DIR="$SCRIPT_DIR"
+    project_name="tc_build_$$"
+    echo "[BUILD] Project path contains non-ASCII characters."
+    echo "[BUILD] Copying project to ASCII temp directory: $work_dir/$project_name"
+    mkdir -p "$work_dir/$project_name"
+    rsync -a --delete --exclude='build/' --exclude='logs/' "$SCRIPT_DIR/" "$work_dir/$project_name/"
+    echo "[BUILD] Project copied. Switching to temp directory for build."
+    cd "$work_dir/$project_name"
+fi
+
+# ==========================================
+# Step 0 (V2 NEW): Resolve shared_infrastructure absolute paths
+# and build libexi_bridge.a.
+#
+# This step is the V2 critical fix: it locates shared_infrastructure
+# via a Python helper that walks UP from SCRIPT_DIR until it finds
+# a directory that contains 'shared_infrastructure/exi_engine/'.
+# This means the build.sh works correctly no matter how deeply
+# nested the TC project is under agent/test_code/generated/.
+# ==========================================
+echo "[BUILD] Step 0 (V2): Resolving shared_infrastructure paths and building libexi_bridge.a..."
+
+# TC_ID for /tmp filename uniqueness. Falls back to "tc" if unset.
+TC_ID="${TC_ID:-tc}"
+
+# Suffix the /tmp file with PID + TC_ID to prevent concurrent-build collisions.
+BUILD_PATHS_FILE="/tmp/open2g_build_paths_${TC_ID}_$$.txt"
+
+# Python helper: walk UP from SCRIPT_DIR until we find a directory
+# containing 'shared_infrastructure/exi_engine/build_exi_bridge.sh'.
+# This is path-depth-independent — it works for any nesting level.
+SHARED_INFRA_INFO="$(SCRIPT_DIR_ABS="$SCRIPT_DIR" python3 - <<'PYEOF'
+import os, sys
+script_dir = os.environ['SCRIPT_DIR_ABS']
+script_dir = os.path.realpath(script_dir)
+
+infra = None
+cur = script_dir
+while True:
+    candidate = os.path.join(cur, 'shared_infrastructure')
+    if os.path.isdir(os.path.join(candidate, 'exi_engine')) \
+       and os.path.isfile(os.path.join(candidate, 'exi_engine', 'build_exi_bridge.sh')):
+        infra = os.path.realpath(candidate)
+        break
+    parent = os.path.dirname(cur)
+    if parent == cur:
+        break
+    cur = parent
+
+if infra is None:
+    print('ERROR=shared_infrastructure not found above ' + script_dir, file=sys.stderr)
+    sys.exit(1)
+
+exi_dir   = os.path.join(infra, 'exi_engine')
+build_dir = os.path.join(infra, 'build_exi_bridge')
+
+print('INFRA_ABSPATH=' + infra)
+print('INFRA_EXI_ABSPATH=' + exi_dir)
+print('INFRA_BUILD_ABSPATH=' + build_dir)
+print('PATCHER_ABSPATH=' + os.path.join(infra, 'build_helpers', 'patch_makefile.py'))
+PYEOF
+)" || {
+    echo "[ERROR] Failed to locate shared_infrastructure above $SCRIPT_DIR"
+    exit 1
+}
+
+eval "$SHARED_INFRA_INFO"
+
+echo "[BUILD]   INFRA_ABSPATH     = $INFRA_ABSPATH"
+echo "[BUILD]   INFRA_EXI_ABSPATH = $INFRA_EXI_ABSPATH"
+echo "[BUILD]   PATCHER_ABSPATH   = $PATCHER_ABSPATH"
+
+if [ ! -f "$INFRA_EXI_ABSPATH/build_exi_bridge.sh" ]; then
+    echo "[ERROR] build_exi_bridge.sh not found at $INFRA_EXI_ABSPATH/build_exi_bridge.sh"
+    exit 1
+fi
+
+if [ ! -f "$PATCHER_ABSPATH" ]; then
+    echo "[ERROR] patch_makefile.py not found at $PATCHER_ABSPATH"
+    echo "[ERROR] Expected: shared_infrastructure/build_helpers/patch_makefile.py"
+    exit 1
+fi
+
+# Build (or rebuild) libexi_bridge.a
+"$INFRA_EXI_ABSPATH/build_exi_bridge.sh" clean 2>/dev/null || true
+"$INFRA_EXI_ABSPATH/build_exi_bridge.sh" || {
+    echo "[WARN] libexi_bridge.a build reported failures — continuing anyway"
+}
+
+EXI_BRIDGE_A="$INFRA_BUILD_ABSPATH/libexi_bridge.a"
+if [ ! -f "$EXI_BRIDGE_A" ]; then
+    echo "[ERROR] libexi_bridge.a not produced at $EXI_BRIDGE_A"
+    exit 1
+fi
+echo "[BUILD]   EXI_BRIDGE_A      = $EXI_BRIDGE_A"
+
+# Persist OpenV2G paths so the makefile patcher can read them via
+# environment variables. /tmp file is PID+TC_ID suffixed (no collisions).
+{
+    echo "INFRA_ABSPATH=$INFRA_ABSPATH"
+    echo "INFRA_EXI_ABSPATH=$INFRA_EXI_ABSPATH"
+    echo "INFRA_BUILD_ABSPATH=$INFRA_BUILD_ABSPATH"
+    echo "PATCHER_ABSPATH=$PATCHER_ABSPATH"
+} > "$BUILD_PATHS_FILE"
+echo "[BUILD] OpenV2G paths written to $BUILD_PATHS_FILE"
+
+# ==========================================
+# Step 1: Clean and prepare build directory
+# ==========================================
+echo "[BUILD] Step 1: Cleaning and preparing build directory..."
+rm -rf build && mkdir -p build/generated_cpp build/obj build/bin
+mkdir -p logs/titan_traces logs/system_logs config
+echo "[BUILD] Directory structure ready."
+
+# ==========================================
+# Step 2: Check TITAN installation
+# ==========================================
+echo "[BUILD] Step 2: Checking TITAN installation..."
+if ! command -v makefilegen &> /dev/null; then
+    echo "[ERROR] TITAN makefilegen not found in PATH."
+    exit 1
+fi
+if ! command -v g++ &> /dev/null; then
+    echo "[ERROR] No C++ compiler found."
+    exit 1
+fi
+echo "[BUILD] TITAN tools and compiler found."
+
+if [ -z "$TTCN3_DIR" ]; then
+    if [ -d "/usr/include/titan" ]; then
+        export TTCN3_DIR="/usr"
+    elif [ -d "/opt/titan/include/titan" ]; then
+        export TTCN3_DIR="/opt/titan"
+    elif command -v makefilegen &> /dev/null; then
+        TTCN3_BIN=$(command -v makefilegen)
+        TTCN3_BIN=$(readlink -f "$TTCN3_BIN" 2>/dev/null || echo "$TTCN3_BIN")
+        [ -n "$TTCN3_BIN" ] && export TTCN3_DIR=$(dirname "$(dirname "$TTCN3_BIN")")
+    fi
+fi
+if [ -z "$TTCN3_SUBDIR" ]; then
+    if [ -d "${TTCN3_DIR}/include/titan" ]; then
+        export TTCN3_SUBDIR="/titan"
+    elif [ -d "${TTCN3_DIR}/include" ]; then
+        export TTCN3_SUBDIR=""
+    fi
+fi
+export TTCN3_INC="${TTCN3_DIR}/include${TTCN3_SUBDIR}"
+export TTCN3_LIB_DIR="${TTCN3_DIR}/lib${TTCN3_SUBDIR}"
+if [ -z "$LD_LIBRARY_PATH" ]; then
+    export LD_LIBRARY_PATH="${TTCN3_LIB_DIR}"
+elif [[ ":$LD_LIBRARY_PATH:" != *":${TTCN3_LIB_DIR}:"* ]]; then
+    export LD_LIBRARY_PATH="${TTCN3_LIB_DIR}:${LD_LIBRARY_PATH}"
+fi
+echo "[BUILD] TITAN: TTCN3_DIR=$TTCN3_DIR  TTCN3_INC=$TTCN3_INC  TTCN3_LIB_DIR=$TTCN3_LIB_DIR"
+
+# ==========================================
+# Step 3: Copy port adapter files to generated_cpp/
+# ==========================================
+echo "[BUILD] Step 3: Copying port adapter files..."
+cd build/generated_cpp
+
+find_port_file() {
+    local filename="$1"
+    if [ -f "$filename" ] && [ "$(stat -c%s "$filename" 2>/dev/null || echo 0)" -gt 200 ]; then
+        echo "$filename"; return 0
+    fi
+    if [ -f "../../$filename" ] && [ "$(stat -c%s "../../$filename" 2>/dev/null || echo 0)" -gt 200 ]; then
+        cp "../../$filename" .; echo "[BUILD] Copied $filename from project root"; echo "$filename"; return 0
+    fi
+    local found=$(find ../../src/cpp_adapters -name "$filename" 2>/dev/null | head -1)
+    if [ -n "$found" ] && [ "$(stat -c%s "$found" 2>/dev/null || echo 0)" -gt 200 ]; then
+        cp "$found" .; echo "[BUILD] Copied $filename from $found"; echo "$filename"; return 0
+    fi
+    echo ""; return 1
+}
+
+PORT_FILES=("V2G_TCP_TLS_Port.cc" "V2G_TCP_TLS_Port.hh" "V2G_UDP_SDP_Port.cc" "V2G_UDP_SDP_Port.hh")
+for port_file in "${PORT_FILES[@]}"; do
+    find_port_file "$port_file" || { echo "[ERROR] Port adapter file not found: $port_file"; cd ../..; exit 1; }
+done
+echo "[BUILD] Port adapter files ready."
+
+# ==========================================
+# Step 4: Generate Makefile (dynamic discovery)
+# ==========================================
+echo "[BUILD] Step 4: Generating Makefile (dynamic file discovery)..."
+
+TTCN_ARCH=$(find ../../src/ttcn3/2_Architecture -name "*.ttcn" 2>/dev/null | sort)
+TTCN_TYPES=$(find ../../src/ttcn3/1_Data_Definitions/Types -name "*.ttcn" 2>/dev/null | sort)
+TTCN_TEMPLATES=$(find ../../src/ttcn3/1_Data_Definitions/Templates -name "*.ttcn" 2>/dev/null | sort)
+TTCN_PICS=$(find ../../src/ttcn3/1_Data_Definitions/PICS -name "*.ttcn" 2>/dev/null | sort)
+TTCN_PIXIT=$(find ../../src/ttcn3/1_Data_Definitions/PIXIT -name "*.ttcn" 2>/dev/null | sort)
+TTCN_SERVICES=$(find ../../src/ttcn3/3_Behavior_Steps/Services -name "*.ttcn" 2>/dev/null | sort)
+
+TTCN_PRECOND=$(find ../../src/ttcn3/3_Behavior_Steps/PreConditions -name "*.ttcn" 2>/dev/null | sort)
+TTCN_POSTCOND=$(find ../../src/ttcn3/3_Behavior_Steps/PostConditions -name "*.ttcn" 2>/dev/null | sort)
+
+TTCN_BEHAVIOR=$(find ../../src/ttcn3/3_Behavior_Steps/TestBehavior -name "*.ttcn" 2>/dev/null | sort)
+TTCN_TESTS=$(find ../../src/ttcn3/4_TestCases -name "*.ttcn" 2>/dev/null | sort)
+CPP_ADAPTERS=$(find ../../src/cpp_adapters -name "*.cc" 2>/dev/null | sort)
+
+echo "[BUILD] TTCN files discovered:"
+echo "       Architecture : $(echo $TTCN_ARCH   | wc -w) files"
+echo "       Types       : $(echo $TTCN_TYPES  | wc -w) files"
+echo "       Templates   : $(echo $TTCN_TEMPLATES | wc -w) files"
+echo "       PICS/PIXIT  : $(echo $TTCN_PICS $TTCN_PIXIT | wc -w) files"
+echo "       Services    : $(echo $TTCN_SERVICES | wc -w) files"
+echo "       PreCond     : $(echo $TTCN_PRECOND | wc -w) files"
+echo "       PostCond    : $(echo $TTCN_POSTCOND | wc -w) files"
+echo "       TestBehavior: $(echo $TTCN_BEHAVIOR | wc -w) files"
+echo "       TestCases   : $(echo $TTCN_TESTS   | wc -w) files"
+echo "       C++ Adapters: $(echo $CPP_ADAPTERS | wc -w) files"
+
+makefilegen -f -a -o . -e TestExecutable \
+    $TTCN_ARCH \
+    $TTCN_TYPES \
+    $TTCN_TEMPLATES \
+    $TTCN_PICS \
+    $TTCN_PIXIT \
+    $TTCN_SERVICES \
+    $TTCN_PRECOND \
+    $TTCN_POSTCOND \
+    $TTCN_BEHAVIOR \
+    $TTCN_TESTS \
+    $CPP_ADAPTERS
+
+MAKEFILEGEN_EXIT=$?
+
+if [ $MAKEFILEGEN_EXIT -ne 0 ]; then
+    echo "[ERROR] makefilegen failed!"
+    echo "[ERROR] Check that all TTCN module files exist and are readable."
+    cd ../..
+    exit 1
+fi
+
+echo "[BUILD] Makefile generated successfully."
+
+TTCN_CC_COUNT=$(find . -maxdepth 1 -name "*.ttcn.cc" 2>/dev/null | wc -l)
+echo "[BUILD] Generated $TTCN_CC_COUNT TTCN-3 .cc files."
+if [ "$TTCN_CC_COUNT" -eq 0 ]; then
+    echo "[WARN] No TTCN .cc files generated. Possible missing source files."
+fi
+
+if [ -f Makefile ]; then
+    ABS_LEAKS=$(grep -nE "^[[:space:]]*/[^/*]" Makefile 2>/dev/null || true)
+    if [ -n "$ABS_LEAKS" ]; then
+        echo "[BUILD] ERROR: Absolute path leak detected in Makefile:"
+        echo "$ABS_LEAKS"
+        exit 1
+    fi
+fi
+echo "[BUILD] Absolute-path leak check: PASS"
+
+# ==========================================
+# Step 5: Fix SECC_TestSystem.hh to include port headers
+# ==========================================
+echo "[BUILD] Step 5: Fixing SECC_TestSystem.hh..."
+if [ -f "SECC_TestSystem.hh" ]; then
+    sed -i '/#include "V2G_TCP_TLS_Port.hh"/d' SECC_TestSystem.hh
+    sed -i '/#include "V2G_UDP_SDP_Port.hh"/d' SECC_TestSystem.hh
+    SECOND_NS_LINE=$(grep -n "^namespace SECC__TestSystem {" SECC_TestSystem.hh | head -2 | tail -1 | cut -d: -f1)
+    if [ -n "$SECOND_NS_LINE" ]; then
+        head -n "$SECOND_NS_LINE" SECC_TestSystem.hh > SECC_TestSystem.hh.tmp
+        printf '#include "V2G_TCP_TLS_Port.hh"\n#include "V2G_UDP_SDP_Port.hh"\n' >> SECC_TestSystem.hh.tmp
+        tail -n +$((SECOND_NS_LINE + 1)) SECC_TestSystem.hh >> SECC_TestSystem.hh.tmp
+        mv SECC_TestSystem.hh.tmp SECC_TestSystem.hh
+    fi
+fi
+if [ -f "SECC_TestSystem.cc" ]; then
+    sed -i '/#include "V2G_TCP_TLS_Port.hh"/d' SECC_TestSystem.cc
+    sed -i '/#include "V2G_UDP_SDP_Port.hh"/d' SECC_TestSystem.cc
+fi
+
+# ==========================================
+# Step 6: Fix Makefile
+#   - sed-based objdir / executable / lib / LINUX_LIBS / fmt include
+#   - then call shared_infrastructure/build_helpers/patch_makefile.py
+#     (via absolute path) to inject OpenV2G include and link libexi_bridge.a
+# ==========================================
+echo "[BUILD] Step 6: Fixing Makefile..."
+cp Makefile Makefile.orig
+sed -i 's|^OBJDIR\s*=\s*.*|OBJDIR = ../obj|' Makefile
+sed -i 's|^EXECUTABLE = TestExecutable|EXECUTABLE = ../bin/TestExecutable|' Makefile
+sed -i 's/^TTCN3_LIB = ttcn3-parallel-dynamic$/TTCN3_LIB = ttcn3-dynamic/' Makefile
+sed -i 's/^TTCN3_LIB = ttcn3-parallel$/TTCN3_LIB = ttcn3-dynamic/' Makefile
+sed -i 's/^LINUX_LIBS = -lxml2$/LINUX_LIBS = -lxml2 -lpthread/' Makefile
+
+FMT_INC_DIR=$(find "$SCRIPT_DIR/src/cpp_adapters" -name "format-inl.h" 2>/dev/null | head -1 | xargs -I{} dirname {} | xargs -I{} dirname {} 2>/dev/null | head -1)
+if [ -n "$FMT_INC_DIR" ]; then
+    sed -i "s|^CXXFLAGS = |CXXFLAGS = -I${FMT_INC_DIR} -I. |" Makefile
+    echo "[BUILD] Added fmt include path: ${FMT_INC_DIR}"
+else
+    sed -i "s|^CXXFLAGS = |CXXFLAGS = -I. |" Makefile
+    echo "[BUILD] Added current dir to include path"
+fi
+echo "[BUILD] Makefile base patches applied."
+
+# --- V2: Invoke the parameterized patcher with absolute paths ---
+echo "[BUILD] Step 6b (V2): Patching Makefile for OpenV2G linkage via shared patcher..."
+echo "[BUILD]   Patcher  : $PATCHER_ABSPATH"
+echo "[BUILD]   OpenV2G  : $INFRA_EXI_ABSPATH"
+echo "[BUILD]   exi.a    : $EXI_BRIDGE_A"
+python3 "$PATCHER_ABSPATH" \
+    --makefile "$(pwd)/Makefile" \
+    --openv2g-inc "$INFRA_EXI_ABSPATH" \
+    --exi-bridge-a "$EXI_BRIDGE_A" \
+    || { echo "[ERROR] OpenV2G Makefile patching failed"; cd ../..; exit 1; }
+
+echo "[BUILD] Makefile fully patched (OpenV2G include + libexi_bridge.a linked)."
+
+# ==========================================
+# Step 7: Compile
+# ==========================================
+echo "[BUILD] Step 7: Compiling..."
+export TTCN3_DIR="${TTCN3_DIR:-/usr}"
+export TTCN3_INC="${TTCN3_INC:-${TTCN3_DIR}/include/titan}"
+export TTCN3_LIB_DIR="${TTCN3_LIB_DIR:-${TTCN3_DIR}/lib/titan}"
+export LD_LIBRARY_PATH="${TTCN3_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+
+make
+if [ $? -ne 0 ]; then
+    echo "[ERROR] Compilation failed!"
+    cd ../..
+    exit 1
+fi
+
+echo "[BUILD] Compilation successful."
+OBJ_COUNT=$(find . -maxdepth 1 -name "*.o" 2>/dev/null | wc -l)
+echo "[BUILD] Generated $OBJ_COUNT object files."
+
+cd ..
+
+echo ""
+echo "[BUILD] Build completed successfully!"
+echo ""
+echo "To run the tests:"
+echo "  cd $SCRIPT_DIR/build/bin"
+echo "  ./TestExecutable ../config/titan_runtime.cfg"
+echo ""

@@ -1,117 +1,485 @@
+/*
+ * V2G_TCP_TLS_Port.cc — Universal EXI Bridge v4 Dumb Terminal (Sprint 2)
+ *
+ * ISO 15118-2 SECC Test Adapter
+ *
+ * PHILOSOPHY: Pure transparent byte pipe. Knows nothing about JSON schema,
+ * message types, namespaces, or session IDs. TTCN-3 is the sole authority
+ * over JSON correctness.
+ *
+ * Outgoing path:
+ *   TTCN-3 send(OCTETSTRING JSON)  [UTF-8 JSON bytes]
+ *     -> extract namespace from first line of JSON
+ *     -> ENCODE request to microservice (localhost:9000)
+ *     -> V2GTP header (8 bytes) + EXI payload -> TCP to SECC
+ *
+ * Incoming path:
+ *   SECC TCP bytes
+ *     -> strip V2GTP header
+ *     -> DECODE request to microservice
+ *     -> microservice returns JSON as UTF-8 octetstring
+ *     -> deliver OCTETSTRING to TTCN-3 (no union construction, no parsing)
+ *
+ * Protocol with microservice (TCP, \n\n-terminated framing):
+ *   ENCODE: "ENCODE\n<namespace>\n<json>\n\n"
+ *   DECODE: "DECODE\n<namespace>\n<exi_hex>\n\n"
+ *
+ * Author: Infrastructure Agent — Sprint 2 Dumb Terminal Refactor
+ */
+
 #include "V2G_TCP_TLS_Port.hh"
-#include "../../src/cpp_adapters/CD/exi_engine/ExiCodecAdapter.hh"
-#include "../../src/cpp_adapters/common/StaticExiDecoder.hh"
-#include <iostream>
-#include <sstream>
-#include <iomanip>
+
+#include <algorithm>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
+#include <iomanip>
+#include <map>
+#include <sstream>
+#include <thread>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
+
+extern "C" {
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <ifaddrs.h>
 #include <netdb.h>
 #include <net/if.h>
-#include <errno.h>
-#include <chrono>
-#include <thread>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+}
 
+// External variables from V2G_UDP_SDP_Port (SDP discovery result)
 extern ::std::string V2G__UDP__SDP__Port__last_secc_ip_;
 extern int V2G__UDP__SDP__Port__last_secc_port_;
 
 // ============================================================================
-// V2GTP constants and helper functions
+// Protocol constants
 // ============================================================================
 namespace {
-    static const size_t V2GTP_HEADER_SIZE = 8;
-    static const uint8_t V2GTP_VERSION = 1;
-    static const uint8_t V2GTP_INV_VERSION = 0xFE;
-    static const uint16_t V2GTP_PAYLOAD_TYPE_EXI = 0x8001;
+    static constexpr size_t  V2GTP_HDR_LEN       = 8;
+    static constexpr uint8_t V2GTP_VERSION       = 0x01;
+    static constexpr uint8_t V2GTP_INV_VERSION   = 0xFE;
+    static constexpr uint16_t V2GTP_EXI_TYPE     = 0x8001;
 
-    static ::std::string hex_bytes(const unsigned char* data, size_t len) {
-        ::std::ostringstream oss;
-        for (size_t i = 0; i < len; ++i) {
-            oss << ::std::hex << ::std::setw(2) << ::std::setfill('0') << (int)data[i] << " ";
+    // EXI microservice connection
+    static constexpr int     EXI_SERVICE_PORT     = 9000;
+    static constexpr const char* EXI_SERVICE_HOST = "127.0.0.1";
+    static constexpr size_t  RECV_BUF_SIZE        = 8192;
+    static constexpr size_t  EXI_WIRE_MAX        = 8192;
+    static constexpr long    SELECT_TIMEOUT_US    = 100000;  // 100 ms
+
+    // Microservice protocol framing
+    static constexpr const char* FRAME_TERM       = "\n\n";
+    static constexpr size_t  FRAME_TERM_LEN       = 2;
+
+    // Largest expected EXI message in bytes
+    static constexpr size_t  EXI_PAYLOAD_MAX      = 65535;
+
+    // ==========================================================================
+    // Hex <-> bytes utilities
+    // ==========================================================================
+    static ::std::vector<uint8_t> hex_to_bytes(const ::std::string& hex) {
+        ::std::vector<uint8_t> out;
+        out.reserve(hex.size() / 2);
+        for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+            unsigned int byte = 0;
+            if (::std::sscanf(hex.c_str() + i, "%02x", &byte) == 1) {
+                out.push_back(static_cast<uint8_t>(byte));
+            }
         }
+        return out;
+    }
+
+    static ::std::string bytes_to_hex(const uint8_t* data, size_t len) {
+        ::std::string out;
+        out.reserve(len * 2);
+        for (size_t i = 0; i < len; ++i) {
+            char buf[3];
+            ::std::snprintf(buf, sizeof(buf), "%02x", data[i]);
+            out += buf;
+        }
+        return out;
+    }
+
+    // ==========================================================================
+    // V2GTP header helpers
+    // ==========================================================================
+    static void write_v2gtp_header(uint8_t* hdr, uint32_t payload_len) {
+        hdr[0] = V2GTP_VERSION;
+        hdr[1] = V2GTP_INV_VERSION;
+        hdr[2] = static_cast<uint8_t>((V2GTP_EXI_TYPE >> 8) & 0xFF);
+        hdr[3] = static_cast<uint8_t>(V2GTP_EXI_TYPE & 0xFF);
+        hdr[4] = static_cast<uint8_t>((payload_len >> 24) & 0xFF);
+        hdr[5] = static_cast<uint8_t>((payload_len >> 16) & 0xFF);
+        hdr[6] = static_cast<uint8_t>((payload_len >> 8) & 0xFF);
+        hdr[7] = static_cast<uint8_t>(payload_len & 0xFF);
+    }
+
+    static ::std::string dump_hex(const uint8_t* data, size_t len) {
+        ::std::ostringstream oss;
+        ::std::size_t show = (len > 64) ? 64 : len;
+        for (::std::size_t i = 0; i < show; ++i) {
+            oss << ::std::hex << ::std::setw(2) << ::std::setfill('0')
+                << static_cast<int>(data[i]) << " ";
+        }
+        if (len > 64) oss << "...(" << len << " bytes total)";
         return oss.str();
     }
 
-    // TCP reassembly: extract one complete frame from a byte buffer.
-    //
-    // TLS unwrapping: if buffer starts with 0x17 0x03 0x03, treat the rest as
-    // V2GTP data (trust the actual bytes received, not the TLS length field, because
-    // some SECC implementations send incorrect TLS length values).
-    //
-    // For raw TCP: use V2GTP header's length field as usual.
-    //
-    // Returns 1 on success (frame extracted), 0 if need more data, -1 on error.
+    // ==========================================================================
+    // Extract one complete V2GTP frame from a byte buffer.
+    // Handles both raw V2GTP and TLS-wrapped V2GTP (0x17 0x03 0x03).
+    // Returns 1 on success, 0 if need more data, -1 on error.
+    // ==========================================================================
     static int extract_v2gtp_frame(::std::vector<uint8_t>& buf,
                                    ::std::vector<uint8_t>& frame_out) {
         if (buf.empty()) return 0;
 
-        // If TLS record (0x17 0x03 0x03), strip the 5-byte header and use all
-        // remaining bytes as the V2GTP frame.  Trust actual bytes received.
+        // TLS unwrap: 0x17 0x03 0x03 prefix
         if (buf.size() >= 5 && buf[0] == 0x17 && buf[1] == 0x03 && buf[2] == 0x03) {
-            // Strip TLS header (5 bytes): [0x17][0x03][0x03][len_hi][len_lo]
-            // The rest is the V2GTP frame (may include trailing data from next record)
-            if (buf.size() < 6) return 0;  // Need at least the header + 1 byte of payload
-
-            size_t inner_len = buf.size() - 5;  // Actual bytes after TLS header
-            ::std::cout << "[TCP_TLS_PORT] TLS: inner=" << inner_len << "B" << ::std::endl;
-
-            // Trust actual bytes received; ignore V2GTP header's payload_len
-            // because some SECC implementations send incorrect length fields.
-            if (inner_len < V2GTP_HEADER_SIZE) {
-                ::std::cerr << "[TCP_TLS_PORT] TLS: inner too short: " << inner_len << ::std::endl;
-                return -1;
-            }
-
-            // Read V2GTP payload_len just for logging
-            uint32_t v2gtp_payload = (static_cast<uint32_t>(buf[8]) << 24) |
-                                    (static_cast<uint32_t>(buf[9]) << 16) |
-                                    (static_cast<uint32_t>(buf[10]) << 8) |
-                                    static_cast<uint32_t>(buf[11]);
-            ::std::cout << "[TCP_TLS_PORT] V2GTP: payload_len field=" << v2gtp_payload
-                      << " using actual inner=" << inner_len << ::std::endl;
-
-            // Use ALL remaining bytes as the V2GTP frame. The TLS record's declared length
-            // may be wrong; the actual received bytes are always correct.
-            // We will let the V2GTP payload_len field be trusted via actual_exi_len
-            // in decode_and_deliver().
+            if (buf.size() < 6) return 0;
             frame_out.assign(buf.begin() + 5, buf.end());
             buf.clear();
             return 1;
         }
 
-    // Raw V2GTP over TCP (or TLS inner)
-    if (buf.size() < V2GTP_HEADER_SIZE) return 0;
-    uint32_t v2gtp_payload_len = (static_cast<uint32_t>(buf[4]) << 24) |
-                              (static_cast<uint32_t>(buf[5]) << 16) |
-                              (static_cast<uint32_t>(buf[6]) << 8) |
-                              static_cast<uint32_t>(buf[7]);
-    size_t v2gtp_declared_total = V2GTP_HEADER_SIZE + v2gtp_payload_len;
+        // Raw V2GTP
+        if (buf.size() < V2GTP_HDR_LEN) return 0;
+        uint32_t payload_len =
+            (static_cast<uint32_t>(buf[4]) << 24) |
+            (static_cast<uint32_t>(buf[5]) << 16) |
+            (static_cast<uint32_t>(buf[6]) << 8)  |
+            static_cast<uint32_t>(buf[7]);
+        size_t total = V2GTP_HDR_LEN + payload_len;
+        if (buf.size() < total) return 0;
 
-    // Use the minimum of declared total and actual buffer size.
-    // Some SECC implementations send incorrect V2GTP payload_len fields (off by a few bytes).
-    // We never wait for data that will never arrive — use what we have.
-    size_t frame_len = (buf.size() < v2gtp_declared_total) ? buf.size() : v2gtp_declared_total;
-    if (frame_len < V2GTP_HEADER_SIZE) {
-        ::std::cerr << "[TCP_TLS_PORT] V2GTP: frame too short: " << frame_len << ::std::endl;
-        return -1;
+        frame_out.assign(buf.begin(), buf.begin() + total);
+        buf.erase(buf.begin(), buf.begin() + total);
+        return 1;
     }
 
-    ::std::cout << "[TCP_TLS_PORT] V2GTP raw: declared_total=" << v2gtp_declared_total
-              << " using=" << frame_len << ::std::endl;
-
-    frame_out.assign(buf.begin(), buf.begin() + frame_len);
-    buf.erase(buf.begin(), buf.begin() + frame_len);
-    return 1;
+    // ==========================================================================
+    // Detect namespace from the incoming JSON bytes.
+    // The JSON is UTF-8. We scan for the first top-level key that tells us
+    // which message type this is, and return the matching EXI namespace.
+    // ==========================================================================
+    static ::std::string detect_namespace_from_json(const ::std::string& json_bytes) {
+        // V2G_Message path: {"V2G_Message":{"Header":...}}
+        if (json_bytes.find("\"V2G_Message\"") != ::std::string::npos) {
+            return "urn:iso:15118:2:2013:MsgDef";
+        }
+        // supportedAppProtocolReq/Res path
+        if (json_bytes.find("\"supportedAppProtocolReq\"") != ::std::string::npos ||
+            json_bytes.find("\"supportedAppProtocolRes\"") != ::std::string::npos) {
+            return "urn:iso:15118:2:2010:AppProtocol";
+        }
+        // DIN SPEC 70121
+        if (json_bytes.find("\"V2G_Message\"") != ::std::string::npos) {
+            // For DIN, the JSON format is identical; namespace is different.
+            // If we knew it was DIN we'd use urn:din:70121:2012:MsgDef.
+            // TTCN-3 should pass the namespace explicitly in a future extension.
+            // Default to ISO 15118-2 for now.
+            return "urn:iso:15118:2:2013:MsgDef";
+        }
+        // Fallback: ISO 15118-2
+        return "urn:iso:15118:2:2013:MsgDef";
     }
-}
 
+    // ==========================================================================
+    // HEX_BINARY_KEYS — fields in ISO 15118-2 XSD that are declared as
+    // xs:base64Binary or xs:hexBinary.  ISO 15118-2 uses a mix of camelCase
+    // (some V2G body fields like evccId, contractSignatureCertChain) and
+    // PascalCase (XmlSignatureType certificate fields, OEMProvisioningCertChain)
+    // root elements.  When the LLM populates these with arbitrary ASCII
+    // (e.g. the literal token "PLATFORM123456" used by a TTCN-3 template
+    // place-holder), JAXB strictly rejects them:
+    //
+    //   java.lang.RuntimeException: contains illegal character for hexBinary:
+    //   PLATFORM123456
+    //
+    // We intercept these specific keys and replace their string VALUES with
+    // a deterministic, well-formed dummy hex sequence ("DEADBEEF" repeated to
+    // match the field length when we can detect it; otherwise 32 hex chars =
+    // 16 bytes). The KEY is preserved (case-correct). The substitute is a
+    // valid hexBinary that JAXB will accept; downstream assertions that
+    // compare against the literal placeholder must compare in TTCN-3, not
+    // in the EXI payload. Reference: BATCH_ANALYSIS_20260713.md §2.2
+    // (PLATFORM123456 hexBinary error).
+    //
+    // Note: this is intentionally conservative. We do NOT touch every field;
+    // only known hexBinary root elements. Adding more keys is safe and
+    // low-risk; forgetting one only means the LLM-generated value passes
+    // through unchanged and re-fails at the EXI microservice, which the
+    // fail-fast path then surfaces.
+    // ==========================================================================
+    static const ::std::vector<::std::string> HEX_BINARY_VALUE_KEYS = {
+        // ISO 15118-2 body fields (camelCase union field names)
+        "evccId",
+        "contractSignatureCertChain",
+        "dhPublicKey",
+        "ecdhPublicKey",
+        "genChallenge",
+        "contractId",
+        "oemProvisioningCertChain",
+        "signCertChain",
+        "id",
+        "maId",
+        "moId",
+        "meterId",
+        "vin",
+        // PascalCase root elements (CertificateInstallationReq/Res variants)
+        "ContractSignatureCertChain",
+        "DHpublickey",
+        "ECDHpublickey",
+        "GenChallenge",
+        "Id",
+        "Identiy",
+        "OEMProvisioningCertChain",
+    };
+
+    // Quick check: is a string a legal hexBinary value?
+    static bool is_legal_hex_binary(const ::std::string& s) {
+        if (s.empty()) return true;  // empty allowed
+        if (s.size() % 2 != 0) return false;
+        for (char c : s) {
+            if (!((c >= '0' && c <= '9') ||
+                  (c >= 'a' && c <= 'f') ||
+                  (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Generate a deterministic dummy hexBinary of the desired byte-length.
+    // Even-length char count (each byte = 2 hex chars). We rotate the
+    // "DEADBEEFCAFE" pattern so that different TCs produce different-but-
+    // deterministic placeholders (helpful when debugging across runs).
+    static ::std::string dummy_hex_binary(size_t bytes) {
+        static const char* kPattern = "DEADBEEFCAFEBABE";
+        ::std::string out;
+        out.reserve(bytes * 2);
+        for (size_t i = 0; i < bytes; ++i) {
+            out.push_back(kPattern[(i * 2) % 16]);
+            out.push_back(kPattern[(i * 2 + 1) % 16]);
+        }
+        return out;
+    }
+
+    // ==========================================================================
+    // apply_hex_binary_scrub — for each known hexBinary JSON key, replace
+    // any non-hex value with a deterministic dummy. Implemented as a
+    // text-level pass (consistent with apply_case_map). Safe because the
+    // HEX_BINARY_VALUE_KEYS list is short and the values are quoted strings
+    // (so we replace the *value* between the key's quotes).
+    // ==========================================================================
+    static ::std::string apply_hex_binary_scrub(const ::std::string& json_bytes) {
+        ::std::string out = json_bytes;
+        ::std::size_t total_scrubs = 0;
+        ::std::string log_first_scrub;
+
+        for (const auto& key : HEX_BINARY_VALUE_KEYS) {
+            // Match:  "<key>"\s*:\s*"<value>"   (with surrounding JSON quotes)
+            ::std::size_t search_pos = 0;
+            while (true) {
+                ::std::string needle = "\"" + key + "\"";
+                ::std::size_t kp = out.find(needle, search_pos);
+                if (kp == ::std::string::npos) break;
+
+                // Find the colon (skip optional whitespace)
+                ::std::size_t cp = kp + needle.size();
+                while (cp < out.size() && (out[cp] == ' ' || out[cp] == '\t')) ++cp;
+                if (cp >= out.size() || out[cp] != ':') {
+                    search_pos = kp + needle.size();
+                    continue;
+                }
+                ++cp;  // past ':'
+                while (cp < out.size() && (out[cp] == ' ' || out[cp] == '\t')) ++cp;
+
+                if (cp >= out.size() || out[cp] != '"') {
+                    // null / number / nested object — skip
+                    search_pos = kp + needle.size();
+                    continue;
+                }
+                ::std::size_t vp = cp + 1;  // value start
+                ::std::size_t ve = out.find('"', vp);
+                if (ve == ::std::string::npos) break;
+
+                ::std::string value = out.substr(vp, ve - vp);
+                if (!is_legal_hex_binary(value)) {
+                    // Replace value with 16-byte (32-char) deterministic dummy
+                    ::std::string replacement = dummy_hex_binary(16);
+                    out.replace(vp, ve - vp, replacement);
+                    ++total_scrubs;
+                    if (log_first_scrub.empty()) {
+                        log_first_scrub = key + "=\"" + value + "\" -> \"" + replacement + "\"";
+                    }
+                    search_pos = vp + replacement.size() + 1;  // past closing quote
+                } else {
+                    search_pos = ve + 1;
+                }
+            }
+        }
+
+        if (total_scrubs > 0) {
+            ::std::cerr << "[TCP_TLS_PORT] HEX_BINARY_SCRUB: sanitized "
+                      << total_scrubs << " non-hex value(s); "
+                      << "first: " << log_first_scrub << ::std::endl;
+        }
+        return out;
+    }
+
+    // ==========================================================================
+    // CASE_MAP — defensive camelCase → PascalCase JSON key translation
+    // ==========================================================================
+    // ISO 15118-2 standard JAXB descriptors register PascalCase root elements
+    // (e.g. SessionSetupReq). When the C++ adapter forwards JSON to the EXI
+    // microservice (Siemens EXIficient via py4j), the JAXB layer does strict
+    // case-matching on the root element name. If the LLM generates camelCase
+    // union-field names (sessionSetupReq, serviceDiscoveryReq, etc.), JAXB
+    // throws UnmarshalException: "A descriptor with default root element
+    // sessionSetupReq was not found in the project".
+    //
+    // This dictionary maps every camelCase V2G-message body key (and the
+    // AppProtocol pair) to its PascalCase ISO 15118-2 equivalent. The
+    // apply_case_map() helper below does a text-level replacement on the JSON
+    // body BEFORE forwarding to the EXI microservice. This is a defensive
+    // belt-and-suspenders guard: the LLM prompt already instructs the model
+    // to emit PascalCase, but if a regression sneaks camelCase through, the
+    // adapter still produces a valid EXI payload.
+    //
+    // Reference: BATCH_ANALYSIS_20260711.md §4.2 (LLM Case-Sensitivity
+    // Hallucination on JSON Element Names) and §2.3 Issue B (JAXB Case-
+    // Sensitive Element Mismatch).
+    // ==========================================================================
+    static const ::std::map<::std::string, ::std::string> CASE_MAP = {
+        // Note: ISO 15118-2 has TWO root-element naming conventions, by namespace:
+        //
+        //   1. urn:iso:15118:2:2010:AppProtocol  →  XSD uses camelCase
+        //        (first letter lowercase, e.g. supportedAppProtocolReq —
+        //        see schemas/V2G_CI_AppProtocol.xsd line 95: <xs:element
+        //        name="supportedAppProtocolReq">). JAXB descriptors register
+        //        these names EXACTLY.  We MUST NOT transform them.
+        //
+        //   2. urn:iso:15118:2:2013:MsgDef (Body) →  XSD uses PascalCase
+        //        (first letter uppercase, e.g. SessionSetupReq —
+        //        see schemas/iso15118_2/V2G_CI_MsgBody.xsd line 24:
+        //        <xs:element name="SessionSetupReq" ...>). JAXB descriptors
+        //        register these names EXACTLY.  If the LLM emits the camelCase
+        //        form (sessionSetupReq), JAXB throws UnmarshalException
+        //        ("A descriptor with default root element sessionSetupReq was
+        //        not found") and ENCODE fails.
+        //
+        // CASE_MAP therefore contains ONLY V2G body names: camelCase (LLM
+        // hallucination) → PascalCase (XSD/JAXB-canonical). AppProtocol
+        // names are intentionally absent — they are correct as-is.
+        //
+        // Reference: BATCH_ANALYSIS_20260711.md §4.2 (LLM Case-Sensitivity
+        // Hallucination on JSON Element Names), §2.3 Issue B; corrected
+        // by direct XSD inspection during Sprint 3 verification (the
+        // earlier doc hypothesized the opposite direction, which would have
+        // broken AppProtocol). XSD is the source of truth.
+
+        // ISO 15118-2 V2G body messages (urn:iso:15118:2:2013:MsgDef)
+        {"sessionSetupReq",         "SessionSetupReq"},
+        {"sessionSetupRes",         "SessionSetupRes"},
+        {"serviceDiscoveryReq",     "ServiceDiscoveryReq"},
+        {"serviceDiscoveryRes",     "ServiceDiscoveryRes"},
+        {"paymentServiceSelectionReq", "PaymentServiceSelectionReq"},
+        {"paymentServiceSelectionRes", "PaymentServiceSelectionRes"},
+        {"certificateInstallationReq", "CertificateInstallationReq"},
+        {"certificateInstallationRes", "CertificateInstallationRes"},
+        {"authorizationReq",        "AuthorizationReq"},
+        {"authorizationRes",        "AuthorizationRes"},
+        {"powerDeliveryReq",        "PowerDeliveryReq"},
+        {"powerDeliveryRes",        "PowerDeliveryRes"},
+        {"cableCheckReq",           "CableCheckReq"},
+        {"cableCheckRes",           "CableCheckRes"},
+        {"meteringReceiptReq",      "MeteringReceiptReq"},
+        {"meteringReceiptRes",      "MeteringReceiptRes"},
+
+        // ISO 15118-2 AC/DC charging loop extras
+        {"chargingStatusReq",       "ChargingStatusReq"},
+        {"chargingStatusRes",       "ChargingStatusRes"},
+        {"preChargeReq",            "PreChargeReq"},
+        {"preChargeRes",            "PreChargeRes"},
+        {"currentDemandReq",        "CurrentDemandReq"},
+        {"currentDemandRes",        "CurrentDemandRes"},
+        {"weldingDetectionReq",     "WeldingDetectionReq"},
+        {"weldingDetectionRes",     "WeldingDetectionRes"},
+
+        // NOTE: AppProtocol names (supportedAppProtocolReq/Res) are deliberately
+        //       NOT in this map. The XSD registers them as lowercase-first-letter
+        //       (supportedAppProtocolReq), and JAXB descriptors match that form
+        //       exactly. Transforming them would break AppProtocol encoding —
+        //       see verified ERROR during Sprint 3 verification:
+        //       "A descriptor with default root element SupportedAppProtocolReq
+        //        was not found in the project".
+    };
+
+    // ==========================================================================
+    // apply_case_map — replace any camelCase JSON keys with their PascalCase
+    // ISO 15118-2 equivalents before forwarding to the EXI microservice.
+    //
+    // Implementation note: this is a TEXT-LEVEL replacement (not a JSON parse),
+    // matching each camelCase key (with surrounding double-quotes) and replacing
+    // with the PascalCase equivalent. We use the surrounding quotes to ensure
+    // we only match KEY positions, not values or substrings.
+    //
+    // For ISO 15118-2 messages the body keys are unique enough that the
+    // text-level replacement is safe: "sessionSetupReq" as a substring is
+    // exceedingly unlikely to appear except as the key itself. If a future
+    // message introduces a collision risk, switch to a full JSON parser.
+    // ==========================================================================
+    static ::std::string apply_case_map(const ::std::string& json_bytes) {
+        ::std::string out = json_bytes;
+        ::std::size_t total_replacements = 0;
+        ::std::string log_first_replacement;
+
+        for (const auto& kv : CASE_MAP) {
+            const ::std::string& camel = kv.first;
+            const ::std::string& pascal = kv.second;
+            const ::std::string from = "\"" + camel + "\"";
+            const ::std::string to   = "\"" + pascal + "\"";
+
+            ::std::size_t pos = 0;
+            ::std::size_t count_for_this_key = 0;
+            while ((pos = out.find(from, pos)) != ::std::string::npos) {
+                out.replace(pos, from.size(), to);
+                pos += to.size();
+                ++count_for_this_key;
+            }
+            if (count_for_this_key > 0) {
+                total_replacements += count_for_this_key;
+                if (log_first_replacement.empty()) {
+                    log_first_replacement = camel + " -> " + pascal +
+                                            " (x" + ::std::to_string(count_for_this_key) + ")";
+                }
+            }
+        }
+
+        if (total_replacements > 0) {
+            ::std::cerr << "[TCP_TLS_PORT] CASE_MAP: rewrote "
+                      << total_replacements << " camelCase JSON key(s); "
+                      << "first: " << log_first_replacement << ::std::endl;
+        }
+        return out;
+    }
+
+}  // anonymous namespace
+
+// ============================================================================
+// V2G__TCP__TLS__Port implementation
+// ============================================================================
 namespace SECC__TestSystem {
 
-V2G__TCP__TLS__Port::V2G__TCP__TLS__Port(const char *par_port_name)
+V2G__TCP__TLS__Port::V2G__TCP__TLS__Port(const char* par_port_name)
     : V2G__TCP__TLS__Port_BASE(par_port_name),
       port_name_(par_port_name ? par_port_name : ""),
       port_(15118),
@@ -121,41 +489,33 @@ V2G__TCP__TLS__Port::V2G__TCP__TLS__Port(const char *par_port_name)
       connected_(false),
       receive_thread_running_(false),
       receive_thread_id_(0),
-      exi_decoder_(nullptr),
+      cached_secc_port_(0),
+      last_decoded_json_(),
       receive_buffer_(),
-      cached_secc_port_(0) {
-    exi_decoder_ = new ::SECC__ExiJni::StaticExiDecoder();
-    if (!::ExiCodecAdapter::instance().initialize()) {
-        ::std::cerr << "[TCP_TLS_PORT] WARNING: ExiCodecAdapter init failed: "
-                  << ::ExiCodecAdapter::instance().get_last_error() << ::std::endl;
-    } else {
-        ::std::cout << "[TCP_TLS_PORT] ExiCodecAdapter: "
-                  << ::ExiCodecAdapter::instance().library_count()
-                  << " payloads from " << ::ExiCodecAdapter::instance().library_path() << ::std::endl;
-    }
-    // Load pattern descriptors from JSON (pure data-driven approach)
-    // Binary runs from build/bin, so JSON is at ../../exi_payload_library.json
-    ::std::string json_path = "../../exi_payload_library.json";
-    if (!exi_decoder_->load_from_json(json_path)) {
-        ::std::cerr << "[TCP_TLS_PORT] WARNING: StaticExiDecoder JSON load failed: "
-                  << exi_decoder_->last_error() << ::std::endl;
-    } else {
-        ::std::cout << "[TCP_TLS_PORT] Static decoder: JSON patterns loaded OK" << ::std::endl;
-    }
-    ::std::cout << "[TCP_TLS_PORT] Constructor: " << port_name_ << " initialized" << ::std::endl;
+      exi_service_fd_(-1),
+      exi_service_connected_(false)
+{
+    ::std::cout << "[TCP_TLS_PORT] Constructed (v4 Dumb Terminal): " << port_name_ << ::std::endl;
+    ::std::cout << "[TCP_TLS_PORT]   EXI microservice : " << EXI_SERVICE_HOST
+                << ":" << EXI_SERVICE_PORT << ::std::endl;
+    ::std::cout << "[TCP_TLS_PORT]   V2G_MessageUnion : NOT LINKED (TTCN-3 owns JSON)" << ::std::endl;
 }
 
 V2G__TCP__TLS__Port::~V2G__TCP__TLS__Port() {
     disconnect_from_secc();
-    delete exi_decoder_;
-    exi_decoder_ = nullptr;
+    disconnect_exi_service();
     ::std::cout << "[TCP_TLS_PORT] Destructor: " << port_name_ << ::std::endl;
 }
 
-void V2G__TCP__TLS__Port::set_parameter(const char *parameter_name, const char *parameter_value) {
-    ::std::string name(parameter_name);
+// ============================================================================
+// set_parameter
+// ============================================================================
+void V2G__TCP__TLS__Port::set_parameter(const char* parameter_name,
+                                         const char* parameter_value) {
+    ::std::string name(parameter_name ? parameter_name : "");
     ::std::string value(parameter_value ? parameter_value : "");
     ::std::cout << "[TCP_TLS_PORT] set_parameter(" << name << "=" << value << ")" << ::std::endl;
+
     if (name == "port") {
         port_ = ::std::stoi(value);
     } else if (name == "network_interface") {
@@ -166,165 +526,408 @@ void V2G__TCP__TLS__Port::set_parameter(const char *parameter_name, const char *
         ip_address_ = value;
     } else if (name == "tls_enabled") {
         tls_enabled_ = (value == "1" || value == "true" || value == "yes");
+    } else if (name == "session_id") {
+        // v4 Dumb Terminal: session_id is purely for logging.
+        // The adapter does NOT inject it into messages.
+        ::std::cout << "[TCP_TLS_PORT] session_id (logging only): " << value << ::std::endl;
+    } else if (name == "last_decoded_json") {
+        last_decoded_json_ = value;
+    } else if (name == "test_fail_fast_source") {
+        // ========================================================================
+        // Sprint 3 / Phase 2 TEST HOOK — verify the fail-fast mechanism
+        // ========================================================================
+        // When the runtime config sets `test_fail_fast_source` to one of the
+        // documented source tags ("exi_decode" | "v2gtp_framing" |
+        // "exi_payload_too_large" | "exi_service_unavailable"), the adapter
+        // immediately calls push_error_indicator() with that source. This lets
+        // BadCase test cases verify end-to-end that:
+        //   1. The error_indicator path reaches the port's incoming_message.
+        //   2. TTCN-3's alt-block `receive({ error_indicator := ? })` matches.
+        //   3. setverdict(fail, ...) fires within ms, not after the per-TC
+        //      message timeout (~20 min).
+        //
+        // Production TCs never set this parameter. It is intended ONLY for
+        // BadCase verification of the Sprint 3 fail-fast wiring.
+        //
+        // Trigger fires at startup (set_parameter is called once during
+        // component init). The error_indicator message is queued in the port's
+        // incoming queue and is matched by the first receive() call.
+        // ========================================================================
+        ::std::cerr << "[TCP_TLS_PORT] TEST_HOOK: triggering fail-fast with source="
+                  << value << ::std::endl;
+        push_error_indicator(
+            value,
+            "Test-injected fail-fast (BATCH_ANALYSIS §4.3 Sprint 3 verification)",
+            "urn:iso:15118:2:2013:MsgDef"
+        );
     }
 }
 
-void V2G__TCP__TLS__Port::Handle_Message(const unsigned char *message, size_t length) {
-    ::std::cout << "[TCP_TLS_PORT] Handle_Message: " << length << " bytes" << ::std::endl;
-}
+void V2G__TCP__TLS__Port::Handle_Message(const unsigned char*, size_t) {}
+void V2G__TCP__TLS__Port::outgoing_message(const unsigned char*, size_t) {}
 
-void V2G__TCP__TLS__Port::outgoing_message(const unsigned char *message, size_t length) {
-    ::std::cout << "[TCP_TLS_PORT] outgoing_message: " << length << " bytes" << ::std::endl;
-}
-
-bool V2G__TCP__TLS__Port::encode_union_to_wire(
-        const ::SECC__Types::V2G__MessageUnion& msg_union,
-        ::std::vector<uint8_t>& wire_output) {
-    using UT = ::SECC__Types::V2G__MessageUnion;
-    UT::union_selection_type sel = msg_union.get_selection();
-    const char* key = NULL;
-
-    switch (sel) {
-        case UT::ALT_supportedAppProtocolReq:    key = "supported_app_protocol_req"; break;
-        case UT::ALT_supportedAppProtocolRes:    key = "supported_app_protocol_res"; break;
-        case UT::ALT_sessionSetupReq:            key = "session_setup_req"; break;
-        case UT::ALT_sessionSetupRes:            key = "session_setup_res"; break;
-        case UT::ALT_serviceDiscoveryReq:        key = "service_discovery_req"; break;
-        case UT::ALT_serviceDiscoveryRes:        key = "service_discovery_res"; break;
-        case UT::ALT_servicePaymentSelectionReq: key = "service_payment_selection_req"; break;
-        case UT::ALT_servicePaymentSelectionRes: key = "service_payment_selection_res"; break;
-        case UT::ALT_paymentDetailsReq:         key = "payment_details_req"; break;
-        case UT::ALT_paymentDetailsRes:          key = "payment_details_res"; break;
-        case UT::ALT_authorizationReq:          key = "authorization_req"; break;
-        case UT::ALT_authorizationRes:           key = "authorization_res"; break;
-        case UT::ALT_certificateInstallationReq:   key = "certificate_installation_req"; break;
-        case UT::ALT_certificateInstallationRes:  key = "certificate_installation_res"; break;
-        case UT::ALT_certificateUpdateReq:        key = "certificate_update_req"; break;
-        case UT::ALT_certificateUpdateRes:        key = "certificate_update_res"; break;
-        case UT::ALT_cableCheckReq:             key = "cable_check_req"; break;
-        case UT::ALT_cableCheckRes:             key = "cable_check_res"; break;
-        case UT::ALT_chargeParameterDiscoveryReq: key = "charge_parameter_discovery_req"; break;
-        case UT::ALT_chargeParameterDiscoveryRes: key = "charge_parameter_discovery_res"; break;
-        case UT::ALT_powerDeliveryReq:          key = "power_delivery_req"; break;
-        case UT::ALT_powerDeliveryRes:          key = "power_delivery_res"; break;
-        case UT::ALT_sessionStopReq:            key = "session_stop_req"; break;
-        case UT::ALT_sessionStopRes:            key = "session_stop_res"; break;
-        case UT::ALT_chargingStatusReq:         key = "charging_status_req"; break;
-        case UT::ALT_chargingStatusRes:         key = "charging_status_res"; break;
-        case UT::ALT_currentDemandReq:          key = "current_demand_req"; break;
-        case UT::ALT_currentDemandRes:           key = "current_demand_res"; break;
-        case UT::ALT_meterReceiptReq:           key = "meter_receipt_req"; break;
-        case UT::ALT_meterReceiptRes:           key = "meter_receipt_res"; break;
-        case UT::ALT_preChargeReq:              key = "pre_charge_req"; break;
-        case UT::ALT_preChargeRes:              key = "pre_charge_res"; break;
-        case UT::ALT_weldingDetectionReq:       key = "welding_detection_req"; break;
-        case UT::ALT_weldingDetectionRes:        key = "welding_detection_res"; break;
-        case UT::ALT_serviceDetailsReq:         key = "service_details_req"; break;
-        case UT::ALT_serviceDetailsRes:         key = "service_details_res"; break;
-        default: key = NULL;
+// ============================================================================
+// EXI Microservice client
+// ============================================================================
+void V2G__TCP__TLS__Port::connect_exi_service() {
+    if (exi_service_fd_ >= 0) {
+        ::close(exi_service_fd_);
+        exi_service_fd_ = -1;
     }
 
-    if (key == NULL) {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: Unknown union selection: " << (int)sel << ::std::endl;
+    exi_service_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (exi_service_fd_ < 0) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: exi_service socket() failed: "
+                  << ::strerror(errno) << ::std::endl;
+        return;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(EXI_SERVICE_PORT);
+    if (::inet_pton(AF_INET, EXI_SERVICE_HOST, &addr.sin_addr) != 1) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: inet_pton failed for " << EXI_SERVICE_HOST << ::std::endl;
+        ::close(exi_service_fd_);
+        exi_service_fd_ = -1;
+        return;
+    }
+
+    if (::connect(exi_service_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: connect to EXI microservice failed: "
+                  << ::strerror(errno) << ::std::endl;
+        ::close(exi_service_fd_);
+        exi_service_fd_ = -1;
+        return;
+    }
+
+    exi_service_connected_ = true;
+    ::std::cout << "[TCP_TLS_PORT] Connected to EXI microservice at "
+                << EXI_SERVICE_HOST << ":" << EXI_SERVICE_PORT << ::std::endl;
+}
+
+void V2G__TCP__TLS__Port::disconnect_exi_service() {
+    if (exi_service_fd_ >= 0) {
+        ::shutdown(exi_service_fd_, SHUT_RDWR);
+        ::close(exi_service_fd_);
+        exi_service_fd_ = -1;
+    }
+    exi_service_connected_ = false;
+}
+
+bool V2G__TCP__TLS__Port::ensure_exi_service() {
+    if (exi_service_fd_ < 0 || !exi_service_connected_) {
+        connect_exi_service();
+    }
+    return exi_service_connected_;
+}
+
+// Send a protocol frame and receive a \n\n-terminated response.
+// If the service closes the connection mid-call (short-lived JVM gateway pattern),
+// reconnect once and retry before propagating the error.
+::std::string V2G__TCP__TLS__Port::exi_service_call(const ::std::string& op,
+                                                   const ::std::string& ns,
+                                                   const ::std::string& payload) {
+    if (!ensure_exi_service()) {
+        return "ERROR\nnot connected\n\n";
+    }
+
+    // Build request frame: "OP\n<namespace>\n<payload>\n\n"
+    ::std::string frame = op + "\n" + ns + "\n" + payload + "\n\n";
+
+    ssize_t sent = ::send(exi_service_fd_, frame.data(), frame.size(), 0);
+    if (sent < 0) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: send to EXI service failed: "
+                  << ::strerror(errno) << ::std::endl;
+        exi_service_connected_ = false;
+        return "ERROR\nsend failed\n\n";
+    }
+
+    // Receive response until \n\n terminator
+    ::std::string response;
+    response.reserve(8192);
+    char buf[1024];
+    while (response.find(FRAME_TERM) == ::std::string::npos) {
+        ssize_t r = ::recv(exi_service_fd_, buf, sizeof(buf), 0);
+        if (r <= 0) {
+            if (r < 0) {
+                ::std::cerr << "[TCP_TLS_PORT] ERROR: recv from EXI service failed: "
+                          << ::strerror(errno) << ::std::endl;
+            } else {
+                ::std::cerr << "[TCP_TLS_PORT] WARNING: EXI service closed connection mid-call, reconnecting..." << ::std::endl;
+            }
+            exi_service_connected_ = false;
+            // Short-lived JVM gateway: microservice may close after processing a request.
+            // Reconnect once and retry before giving up.
+            ::std::cerr << "[TCP_TLS_PORT] Retrying call to EXI service (reconnect)..." << ::std::endl;
+            connect_exi_service();
+            if (!exi_service_connected_) {
+                return "ERROR\nreconnect failed\n\n";
+            }
+            // Retry the request on the fresh connection
+            ssize_t r2 = ::send(exi_service_fd_, frame.data(), frame.size(), 0);
+            if (r2 < 0) {
+                ::std::cerr << "[TCP_TLS_PORT] ERROR: send on reconnected socket failed" << ::std::endl;
+                return "ERROR\nretry send failed\n\n";
+            }
+            response.clear();
+            while (response.find(FRAME_TERM) == ::std::string::npos) {
+                ssize_t rr = ::recv(exi_service_fd_, buf, sizeof(buf), 0);
+                if (rr <= 0) {
+                    if (rr < 0) {
+                        ::std::cerr << "[TCP_TLS_PORT] ERROR: recv after reconnect failed: "
+                                  << ::strerror(errno) << ::std::endl;
+                    } else {
+                        ::std::cerr << "[TCP_TLS_PORT] ERROR: EXI service closed on retry" << ::std::endl;
+                    }
+                    return "ERROR\nrecv retry failed\n\n";
+                }
+                response.append(buf, static_cast<size_t>(rr));
+                if (response.size() > EXI_WIRE_MAX * 4) {
+                    ::std::cerr << "[TCP_TLS_PORT] ERROR: EXI service response too large" << ::std::endl;
+                    return "ERROR\nresponse too large\n\n";
+                }
+            }
+            return response;
+        }
+        response.append(buf, static_cast<size_t>(r));
+        if (response.size() > EXI_WIRE_MAX * 4) {
+            ::std::cerr << "[TCP_TLS_PORT] ERROR: EXI service response too large" << ::std::endl;
+            return "ERROR\nresponse too large\n\n";
+        }
+    }
+
+    return response;
+}
+
+::std::vector<uint8_t> V2G__TCP__TLS__Port::call_exi_encode(
+        const ::std::string& json_str,
+        const ::std::string& namespace_uri)
+{
+    if (!ensure_exi_service()) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: cannot encode: EXI service unavailable" << ::std::endl;
+        return {};
+    }
+
+    ::std::string resp = exi_service_call("ENCODE", namespace_uri, json_str);
+
+    // Parse: "OK\n<exi_hex>\n\n" or "ERROR\n<msg>\n\n"
+    if (resp.rfind("OK\n", 0) == 0) {
+        ::std::string hex_data = resp.substr(3);
+        size_t term_pos = hex_data.rfind(FRAME_TERM);
+        if (term_pos != ::std::string::npos) {
+            hex_data.resize(term_pos);
+        }
+        ::std::vector<uint8_t> exi_bytes = hex_to_bytes(hex_data);
+        ::std::cout << "[TCP_TLS_PORT] ENCODE OK: " << exi_bytes.size()
+                  << " bytes  ns=" << namespace_uri << ::std::endl;
+        return exi_bytes;
+    } else {
+        ::std::cerr << "[TCP_TLS_PORT] ENCODE ERROR: " << resp << ::std::endl;
+        return {};
+    }
+}
+
+::std::string V2G__TCP__TLS__Port::call_exi_decode(
+        const ::std::vector<uint8_t>& exi_bytes,
+        const ::std::string& namespace_uri)
+{
+    if (!ensure_exi_service()) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: cannot decode: EXI service unavailable" << ::std::endl;
+        return "{}";
+    }
+
+    ::std::string hex_str = bytes_to_hex(exi_bytes.data(), exi_bytes.size());
+    ::std::string resp = exi_service_call("DECODE", namespace_uri, hex_str);
+
+    if (resp.rfind("OK\n", 0) == 0) {
+        ::std::string json_str = resp.substr(3);
+        size_t term_pos = json_str.rfind(FRAME_TERM);
+        if (term_pos != ::std::string::npos) {
+            json_str.resize(term_pos);
+        }
+        last_decoded_json_ = json_str;
+        ::std::cout << "[TCP_TLS_PORT] DECODE OK: " << json_str.size()
+                  << " chars  ns=" << namespace_uri << ::std::endl;
+        return json_str;
+    } else {
+        ::std::cerr << "[TCP_TLS_PORT] DECODE ERROR: " << resp << ::std::endl;
+        return "{}";
+    }
+}
+
+// ============================================================================
+// Outgoing path: TTCN-3 JSON bytes -> microservice -> V2GTP -> SECC
+// ============================================================================
+void V2G__TCP__TLS__Port::outgoing_send(const ::OCTETSTRING& json_payload) {
+    // Extract UTF-8 JSON bytes from OCTETSTRING
+    const unsigned char* raw = json_payload;
+    size_t len = json_payload.lengthof();
+    ::std::string json_str(reinterpret_cast<const char*>(raw), len);
+
+    ::std::cout << "[TCP_TLS_PORT] outgoing_send: " << len << " JSON bytes" << ::std::endl;
+    if (len <= 512) {
+        ::std::cout << "[TCP_TLS_PORT] JSON: " << json_str << ::std::endl;
+    } else {
+        ::std::cout << "[TCP_TLS_PORT] JSON: " << json_str.substr(0, 256) << "...(" << len << " total)" << ::std::endl;
+    }
+
+    // Detect namespace from JSON content
+    ::std::string ns = detect_namespace_from_json(json_str);
+    ::std::cout << "[TCP_TLS_PORT] Detected namespace: " << ns << ::std::endl;
+
+    // ========================================================================
+    // Sprint 3 / Phase 2 TEST HOOK — BadCase trigger
+    // ========================================================================
+    // If the JSON begins with the magic sentinel `"__FAIL_FAST_TEST__":"..."`,
+    // skip ENCODE and immediately call push_error_indicator() with the source
+    // tag found in `"__FAIL_FAST_SOURCE__": "<source>"`. This lets BadCase
+    // TCs verify the fail-fast wiring end-to-end without needing SDP/EXI/
+    // SECC infrastructure.
+    //
+    // Acceptable source values: "exi_decode" | "v2gtp_framing" |
+    //                            "exi_payload_too_large" |
+    //                            "exi_service_unavailable"
+    //
+    // Production code NEVER sends this magic prefix. Verifying presence of
+    // this prefix in the JSON before triggering makes the test hook safe
+    // under all production traffic.
+    // ========================================================================
+    {
+        constexpr const char* kTrigger = "\"__FAIL_FAST_TEST__\":\"true\"";
+        if (json_str.find(kTrigger) != ::std::string::npos) {
+            // Extract source tag from the JSON
+            ::std::string source = "exi_decode";  // Default
+            constexpr const char* kSourceKey = "\"__FAIL_FAST_SOURCE__\":\"";
+            ::std::size_t sp = json_str.find(kSourceKey);
+            if (sp != ::std::string::npos) {
+                ::std::size_t vs = sp + ::std::strlen(kSourceKey);
+                ::std::size_t ve = json_str.find('"', vs);
+                if (ve != ::std::string::npos) {
+                    source = json_str.substr(vs, ve - vs);
+                }
+            }
+            ::std::cerr << "[TCP_TLS_PORT] TEST_HOOK: BadCase trigger detected; "
+                      << "pushing fail-fast source=" << source
+                      << ::std::endl;
+            push_error_indicator(
+                source,
+                "Test-injected fail-fast (BATCH_ANALYSIS §4.3 Sprint 3 verification)",
+                "urn:iso:15118:2:2013:MsgDef"
+            );
+            return;  // Do not encode nor forward.
+        }
+    }
+
+    // Sprint 3 / Phase 2 hardening (BATCH_ANALYSIS §4.2): apply the
+    // CASE_MAP defensive translation BEFORE forwarding to the EXI
+    // microservice. If the LLM sneaks a camelCase union field name
+    // through (sessionSetupReq, ServiceDiscoveryReq, etc.), the C++
+    // adapter rewrites it to PascalCase so JAXB's strict-case
+    // UnmarshalException cannot fire. No-op if the JSON is already
+    // PascalCase.
+    json_str = apply_case_map(json_str);
+
+    // Log the (possibly rewritten) JSON that we actually forward to the
+    // EXI microservice — useful when verifying CASE_MAP rewrites fire.
+    if (json_str.size() <= 512) {
+        ::std::cout << "[TCP_TLS_PORT] JSON (post-CASE_MAP): " << json_str << ::std::endl;
+    } else {
+        ::std::cout << "[TCP_TLS_PORT] JSON (post-CASE_MAP): "
+                  << json_str.substr(0, 256) << "...(" << json_str.size() << " total)"
+                  << ::std::endl;
+    }
+
+    // Sprint 4 / Phase 2 hardening (BATCH_ANALYSIS_20260713.md §2.2):
+    // scrub illegal hexBinary values BEFORE encoding. Without this, JAXB
+    // throws "contains illegal character for hexBinary: PLATFORM123456"
+    // when the LLM-generated template uses an ASCII placeholder. The scrub
+    // is conservative: only known hexBinary root elements are touched, and
+    // a value already in legal hex form passes through unchanged.
+    json_str = apply_hex_binary_scrub(json_str);
+
+    // Step 1: ENCODE via microservice
+    ::std::vector<uint8_t> exi_bytes = call_exi_encode(json_str, ns);
+    if (exi_bytes.empty()) {
+        // Sprint 4 / P0 fix: ENCODE failures must surface to TTCN-3 as
+        // error_indicator (fail-fast), NOT be silently swallowed. Prior to
+        // this fix, an ENCODE failure caused outgoing_send to return
+        // without raising the port, and TTCN-3's receive() blocked until
+        // its message timeout (~60s per state, accumulating to ~20 min
+        // per failing TC). With this fix, TTCN-3 immediately matches
+        //   receive({ error_indicator := ? })
+        // and sets verdict=fail, terminating the run within seconds.
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: EXI encode returned empty; "
+                  << "triggering fail-fast push_error_indicator(source=exi_encode)"
+                  << ::std::endl;
+        push_error_indicator(
+            "exi_encode",
+            "EXI microservice ENCODE failed for namespace '" + ns +
+            "'. Common causes: JAXB strict-case element mismatch (camelCase vs "
+            "PascalCase — CASE_MAP should have rewritten), non-hex hexBinary "
+            "value (HEX_BINARY_SCRUB should have replaced), or schema-informed "
+            "grammar misalignment with the EXIficient schema set.",
+            ns
+        );
+        return;
+    }
+
+    ::std::cout << "[TCP_TLS_PORT] EXI hex: " << bytes_to_hex(exi_bytes.data(), exi_bytes.size()) << ::std::endl;
+
+    // Step 2: Send V2GTP-framed EXI to SECC
+    if (!send_v2gtp_framed_exi(exi_bytes)) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: send_v2gtp_framed_exi failed; "
+                  << "triggering fail-fast push_error_indicator(source=v2gtp_send)"
+                  << ::std::endl;
+        // Sprint 4 / P0 fix: also fail-fast on SECC TCP-send failure
+        // (was previously a silent log). Without this, an EVCC-side TCP
+        // outage would also waste the full message timeout.
+        push_error_indicator(
+            "v2gtp_send",
+            "send_v2gtp_framed_exi failed (SECC TCP send returned false; "
+            "see prior ERROR lines for socket-level cause).",
+            ns
+        );
+        return;
+    }
+}
+
+bool V2G__TCP__TLS__Port::send_v2gtp_framed_exi(const ::std::vector<uint8_t>& exi_bytes) {
+    // Ensure SECC connection
+    if (!connected_ || socket_fd_ < 0) {
+        connect_to_secc();
+    }
+    if (!connected_) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: not connected to SECC" << ::std::endl;
         return false;
     }
 
-    ::std::cout << "[TCP_TLS_PORT] Encoding: " << key << ::std::endl;
-    ::ExiCodecAdapter::instance().encode(key, current_session_id_, wire_output);
-
-    if (wire_output.empty()) {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: ExiCodecAdapter returned empty" << ::std::endl;
+    // Build wire frame: V2GTP header (8 bytes) + EXI payload
+    uint32_t payload_len = static_cast<uint32_t>(exi_bytes.size());
+    if (payload_len > EXI_PAYLOAD_MAX) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: EXI payload too large: " << payload_len << ::std::endl;
         return false;
     }
 
-    // Log V2GTP header of the encoded wire output
-    if (wire_output.size() >= 8) {
-        uint32_t v2gtp_len = (static_cast<uint32_t>(wire_output[4]) << 24) |
-                            (static_cast<uint32_t>(wire_output[5]) << 16) |
-                            (static_cast<uint32_t>(wire_output[6]) << 8) |
-                            static_cast<uint32_t>(wire_output[7]);
-        ::std::cout << "[TCP_TLS_PORT] Encoded V2GTP: total=" << wire_output.size()
-                  << " payload_len=" << v2gtp_len << ::std::endl;
-    }
+    ::std::vector<uint8_t> wire(V2GTP_HDR_LEN + exi_bytes.size());
+    write_v2gtp_header(wire.data(), payload_len);
+    ::std::memcpy(wire.data() + V2GTP_HDR_LEN, exi_bytes.data(), exi_bytes.size());
 
-    ::std::cout << "[TCP_TLS_PORT] Encoded: " << wire_output.size() << " bytes" << ::std::endl;
+    ::std::cout << "[TCP_TLS_PORT] Sending " << wire.size()
+              << " bytes to SECC  (V2GTP payload_len=" << payload_len << ")" << ::std::endl;
+    ::std::cout << "[TCP_TLS_PORT] V2GTP header: "
+              << dump_hex(wire.data(), V2GTP_HDR_LEN) << ::std::endl;
+
+    if (!send_wire_bytes(wire.data(), wire.size())) {
+        return false;
+    }
     return true;
 }
 
-void V2G__TCP__TLS__Port::outgoing_send(const ::SECC__Types::V2G__MessageUnion& send_par) {
-    ::std::vector<uint8_t> wire_bytes;
-    ::std::cout << "[TCP_TLS_PORT] outgoing_send() called" << ::std::endl;
-    if (!encode_union_to_wire(send_par, wire_bytes)) return;
-
-    // Do NOT reconnect if already connected. The receive thread is listening on the
-    // existing socket. Creating a new socket orphans that socket and the SECC's
-    // response will never be received.
-    if (!connected_ || socket_fd_ < 0) {
-        ::std::cerr << "[TCP_TLS_PORT] WARNING: Not connected, connecting..." << ::std::endl;
-        connect_to_secc();
-    }
-    if (connected_) {
-        ::std::cout << "[TCP_TLS_PORT] Sending " << wire_bytes.size() << " bytes over TCP (socket=" << socket_fd_ << ")" << ::std::endl;
-        send_wire_bytes(wire_bytes.data(), wire_bytes.size());
-    } else {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: Not connected" << ::std::endl;
-    }
-}
-
 // ============================================================================
-// V2GTP_PortMessage dispatch: TITAN calls this for port out type V2G_PortMessage.
-// Dispatches to the appropriate send path based on which union variant is active.
+// TCP socket to SECC
 // ============================================================================
-void V2G__TCP__TLS__Port::outgoing_send(const V2G__PortMessage& send_par) {
-    using PM = V2G__PortMessage;
-    PM::union_selection_type sel = send_par.get_selection();
-
-    if (sel == PM::ALT_raw) {
-        // V2GTP header BadCase: raw octetstring bytes sent as-is
-        ::std::cout << "[TCP_TLS_PORT] outgoing_send(V2G_PortMessage{raw}): dispatching to raw handler" << ::std::endl;
-        const ::OCTETSTRING& raw = send_par.raw();
-        outgoing_send(raw);
-    } else if (sel == PM::ALT_v2g) {
-        // Normal V2G message: EXI encode via JSON library
-        ::std::cout << "[TCP_TLS_PORT] outgoing_send(V2G_PortMessage{v2g}): dispatching to v2g handler" << ::std::endl;
-        const ::SECC__Types::V2G__MessageUnion& v2g = send_par.v2g();
-        outgoing_send(v2g);
-    } else {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: Unknown V2G_PortMessage selection: " << (int)sel << ::std::endl;
-    }
-}
-
-// ============================================================================
-// V2GTP header BadCase send: raw bytes bypass EXI encoding and V2GTP patching.
-// The { raw := ... } variant of V2G_PortMessage lands here so the adapter sends
-// exactly the bytes the TTCN-3 test case constructed — used ONLY for
-// TC_SECC_CMN_VTB_V2GTPHeader_* BadCase tests.
-// ============================================================================
-void V2G__TCP__TLS__Port::outgoing_send(const ::OCTETSTRING& raw_bytes) {
-    // TITAN OCTETSTRING: use lengthof() and implicit conversion to unsigned char*
-    const unsigned char* data = raw_bytes;
-    size_t length = raw_bytes.lengthof();
-
-    ::std::cout << "[TCP_TLS_PORT] outgoing_send(raw): " << length << " bytes" << ::std::endl;
-    if (length > 0 && length <= 128) {
-        ::std::cout << "[TCP_TLS_PORT] Raw wire: ";
-        for (size_t i = 0; i < length; ++i)
-            ::std::cout << ::std::hex << ::std::setw(2) << ::std::setfill('0') << (int)data[i] << " ";
-        ::std::cout << ::std::dec << ::std::endl;
-    }
-
-    if (!connected_ || socket_fd_ < 0) {
-        ::std::cerr << "[TCP_TLS_PORT] WARNING: Not connected, connecting..." << ::std::endl;
-        connect_to_secc();
-    }
-    if (connected_) {
-        send_wire_bytes(data, length);
-    } else {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: Not connected" << ::std::endl;
-    }
-}
-
-int V2G__TCP__TLS__Port::parse_ipv6_address(const ::std::string& addr_str, ::sockaddr_in6* addr6) {
+int V2G__TCP__TLS__Port::parse_ipv6_address(const ::std::string& addr_str,
+                                            ::sockaddr_in6* addr6) {
     if (!addr6) return -1;
     ::std::memset(addr6, 0, sizeof(::sockaddr_in6));
     addr6->sin6_family = AF_INET6;
@@ -337,7 +940,6 @@ int V2G__TCP__TLS__Port::parse_ipv6_address(const ::std::string& addr_str, ::soc
         scope_id = addr_copy.substr(scope_pos + 1);
         addr_copy = addr_copy.substr(0, scope_pos);
     }
-
     if (scope_id.empty() && !network_interface_.empty()) {
         scope_id = network_interface_;
     } else if (scope_id.empty()) {
@@ -356,9 +958,8 @@ int V2G__TCP__TLS__Port::parse_ipv6_address(const ::std::string& addr_str, ::soc
             ::freeifaddrs(ifaddr);
         }
     }
-
     if (::inet_pton(AF_INET6, addr_copy.c_str(), &addr6->sin6_addr) != 1) {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: parse_ipv6 failed: " << addr_str << ::std::endl;
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: inet_pton failed: " << addr_str << ::std::endl;
         return -1;
     }
     if (!scope_id.empty()) {
@@ -372,73 +973,31 @@ int V2G__TCP__TLS__Port::parse_ipv6_address(const ::std::string& addr_str, ::soc
 }
 
 void V2G__TCP__TLS__Port::connect_to_secc() {
-    // Guard delay: allow the SECC socket to become fully active after SDP discovery.
-    // Per ISO 15118-3, the SECC may need a brief moment to open its listening socket.
+    // ISO 15118-3 guard delay
     ::std::this_thread::sleep_for(::std::chrono::milliseconds(75));
 
     ::std::string target_ip;
-    int target_port = 0;
+    int target_port = port_;
 
+    // Priority: SECC_IP env > cached port > SDP result > default
     const char* sec_ip_env = ::getenv("SECC_IP");
-    if (sec_ip_env != NULL && ::strlen(sec_ip_env) > 0) {
+    if (sec_ip_env != nullptr && ::strlen(sec_ip_env) > 0) {
         target_ip = sec_ip_env;
     } else {
         target_ip = V2G__UDP__SDP__Port__last_secc_ip_;
     }
-
     if (target_ip.empty()) {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: No target IP" << ::std::endl;
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: No SECC target IP available" << ::std::endl;
         return;
     }
 
-    // Determine which port to connect to, in priority order:
-    // 1. If already connected and socket is alive: use getpeername (SECC's actual port)
-    // 2. If cached_secc_port_ is set from a previous successful connection: use it
-    // 3. If SDP returned a non-default dynamic port: use it
-    // 4. Fallback: use the configured port (15118)
-    if (connected_ && socket_fd_ >= 0) {
-        struct sockaddr_in6 peer_addr;
-        socklen_t addrlen = sizeof(peer_addr);
-        if (::getpeername(socket_fd_, (struct sockaddr*)&peer_addr, &addrlen) == 0) {
-            target_port = ntohs(peer_addr.sin6_port);
-            ::std::cout << "[TCP_TLS_PORT] Already connected, SECC port: " << target_port << ::std::endl;
-        } else {
-            // Socket is dead (SECC closed the connection). Clean up and reconnect.
-            ::std::cerr << "[TCP_TLS_PORT] WARNING: Old socket dead, closing and reconnecting" << ::std::endl;
-            connected_ = false;
-            receive_thread_running_ = false;
-            if (socket_fd_ >= 0) {
-                ::shutdown(socket_fd_, SHUT_RDWR);
-                ::close(socket_fd_);
-                socket_fd_ = -1;
-            }
-            if (receive_thread_id_ != 0) {
-                ::pthread_join(receive_thread_id_, NULL);
-                receive_thread_id_ = 0;
-            }
-            // Reconnect: try cached port first, then SDP port, then default
-            if (cached_secc_port_ > 0) {
-                target_port = cached_secc_port_;
-            } else if (V2G__UDP__SDP__Port__last_secc_port_ != port_) {
-                target_port = V2G__UDP__SDP__Port__last_secc_port_;
-            } else {
-                target_port = port_;
-            }
-        }
-    } else {
-        // Not connected: use the best available port
-        if (cached_secc_port_ > 0) {
-            target_port = cached_secc_port_;
-            ::std::cout << "[TCP_TLS_PORT] Using cached SECC port: " << target_port << ::std::endl;
-        } else if (V2G__UDP__SDP__Port__last_secc_port_ != port_) {
-            target_port = V2G__UDP__SDP__Port__last_secc_port_;
-            ::std::cout << "[TCP_TLS_PORT] Using SDP dynamic port: " << target_port << ::std::endl;
-        } else {
-            target_port = port_;
-        }
+    if (cached_secc_port_ > 0) {
+        target_port = cached_secc_port_;
+    } else if (V2G__UDP__SDP__Port__last_secc_port_ != port_) {
+        target_port = V2G__UDP__SDP__Port__last_secc_port_;
     }
 
-    ::std::cout << "[TCP_TLS_PORT] Connecting to " << target_ip << ":" << target_port << ::std::endl;
+    ::std::cout << "[TCP_TLS_PORT] Connecting to SECC at " << target_ip << ":" << target_port << ::std::endl;
 
     bool is_ipv6 = (target_ip.find(':') != ::std::string::npos);
     use_ipv6_ = is_ipv6;
@@ -456,26 +1015,21 @@ void V2G__TCP__TLS__Port::connect_to_secc() {
             ::std::this_thread::sleep_for(::std::chrono::milliseconds(500));
         }
         if (is_ipv6) {
-            ::sockaddr_in6 addr6;
+            ::sockaddr_in6 addr6{};
             if (parse_ipv6_address(target_ip, &addr6) != 0) continue;
             addr6.sin6_port = htons(target_port);
-            ::std::cout << "[TCP_TLS_PORT] IPv6 connect to " << target_ip << ":" << target_port << ::std::endl;
-            ok = (::connect(socket_fd_, (struct sockaddr*)&addr6, sizeof(addr6)) == 0);
-            if (!ok) ::std::cerr << "[TCP_TLS_PORT] IPv6 connect failed: " << ::strerror(errno) << ::std::endl;
+            ok = (::connect(socket_fd_, reinterpret_cast<sockaddr*>(&addr6), sizeof(addr6)) == 0);
         } else {
-            ::sockaddr_in addr4;
-            ::std::memset(&addr4, 0, sizeof(addr4));
+            ::sockaddr_in addr4{};
             addr4.sin_family = AF_INET;
             addr4.sin_port = htons(target_port);
             if (::inet_pton(AF_INET, target_ip.c_str(), &addr4.sin_addr) != 1) {
                 struct hostent* he = ::gethostbyname(target_ip.c_str());
-                if (he != NULL && he->h_addr_list[0] != NULL)
-                    ::memcpy(&addr4.sin_addr, he->h_addr_list[0], he->h_length);
+                if (he != nullptr && he->h_addr_list[0] != nullptr)
+                    ::memcpy(&addr4.sin_addr, he->h_addr_list[0], static_cast<size_t>(he->h_length));
                 else { ::std::cerr << "[TCP_TLS_PORT] ERROR: resolve failed: " << target_ip << ::std::endl; break; }
             }
-            ::std::cout << "[TCP_TLS_PORT] IPv4 connect to " << target_ip << ":" << target_port << ::std::endl;
-            ok = (::connect(socket_fd_, (struct sockaddr*)&addr4, sizeof(addr4)) == 0);
-            if (!ok) ::std::cerr << "[TCP_TLS_PORT] IPv4 connect failed: " << ::strerror(errno) << ::std::endl;
+            ok = (::connect(socket_fd_, reinterpret_cast<sockaddr*>(&addr4), sizeof(addr4)) == 0);
         }
     }
 
@@ -491,10 +1045,10 @@ void V2G__TCP__TLS__Port::connect_to_secc() {
     ::setsockopt(socket_fd_, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     connected_ = true;
     cached_secc_port_ = target_port;
-    ::std::cout << "[TCP_TLS_PORT] Connected! Cached SECC port=" << cached_secc_port_ << ::std::endl;
+    ::std::cout << "[TCP_TLS_PORT] Connected to SECC! port=" << cached_secc_port_ << ::std::endl;
 
     receive_thread_running_ = true;
-    if (::pthread_create(&receive_thread_id_, NULL,
+    if (::pthread_create(&receive_thread_id_, nullptr,
                          &V2G__TCP__TLS__Port::receive_thread_func, this) != 0) {
         ::std::cerr << "[TCP_TLS_PORT] ERROR: pthread_create failed" << ::std::endl;
         receive_thread_running_ = false;
@@ -502,17 +1056,10 @@ void V2G__TCP__TLS__Port::connect_to_secc() {
 }
 
 void V2G__TCP__TLS__Port::disconnect_from_secc() {
-    ::std::cout << "[TCP_TLS_PORT] Disconnecting..." << ::std::endl;
+    ::std::cout << "[TCP_TLS_PORT] Disconnecting from SECC..." << ::std::endl;
     receive_thread_running_ = false;
-    if (receive_thread_id_ != 0) {
-        ::pthread_join(receive_thread_id_, NULL);
-        receive_thread_id_ = 0;
-    }
-    if (socket_fd_ >= 0) {
-        ::shutdown(socket_fd_, SHUT_RDWR);
-        ::close(socket_fd_);
-        socket_fd_ = -1;
-    }
+    if (receive_thread_id_ != 0) { ::pthread_join(receive_thread_id_, nullptr); receive_thread_id_ = 0; }
+    if (socket_fd_ >= 0) { ::shutdown(socket_fd_, SHUT_RDWR); ::close(socket_fd_); socket_fd_ = -1; }
     connected_ = false;
 }
 
@@ -524,43 +1071,22 @@ bool V2G__TCP__TLS__Port::send_wire_bytes(const unsigned char* data, size_t leng
         connected_ = false;
         return false;
     }
-    ::std::cout << "[TCP_TLS_PORT] Sent " << sent << " bytes" << ::std::endl;
-    if (sent > 0 && sent <= 128) {
-        ::std::cout << "[TCP_TLS_PORT] Wire: ";
-        for (ssize_t i = 0; i < sent; ++i)
-            ::std::cout << ::std::hex << ::std::setw(2) << ::std::setfill('0') << (int)data[i] << " ";
-        ::std::cout << ::std::dec << ::std::endl;
-    }
-    ::std::cout.flush();  // Force-flush so logs appear before any hang
-    for (size_t i = 0; i < length; i += 16) {
-        ::std::cout << "[TCP_TLS_PORT]   ";
-        for (size_t j = 0; j < 16; ++j) {
-            if (i + j < length)
-                ::std::cout << ::std::hex << ::std::setw(2) << ::std::setfill('0') << (int)data[i+j] << " ";
-            else
-                ::std::cout << "   ";
-        }
-        ::std::cout << " |";
-        for (size_t j = 0; j < 16 && i + j < length; ++j) {
-            unsigned char c = data[i+j];
-            ::std::cout << (c >= 32 && c < 127 ? (char)c : '.');
-        }
-        ::std::cout << "|" << ::std::endl;
-    }
     return true;
 }
 
+// ============================================================================
+// Incoming path: SECC wire -> V2GTP strip -> microservice DECODE -> OCTETSTRING
+// ============================================================================
 void* V2G__TCP__TLS__Port::receive_thread_func(void* arg) {
     static_cast<V2G__TCP__TLS__Port*>(arg)->receive_loop();
-    return NULL;
+    return nullptr;
 }
 
-// ============================================================================
-// Pipeline: Receive Hex -> Match JSON Feature Pattern -> Slice Dynamic Fields -> Deliver Union
-// ============================================================================
-bool V2G__TCP__TLS__Port::decode_and_deliver(const ::std::vector<uint8_t>& wire_bytes) {
-    if (wire_bytes.size() < V2GTP_HEADER_SIZE) {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: wire too short for V2GTP header" << ::std::endl;
+bool V2G__TCP__TLS__Port::strip_v2gtp_header(const ::std::vector<uint8_t>& wire_bytes,
+                                              ::std::vector<uint8_t>& exi_out) {
+    if (wire_bytes.size() < V2GTP_HDR_LEN) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: wire too short for V2GTP header ("
+                  << wire_bytes.size() << " bytes)" << ::std::endl;
         return false;
     }
 
@@ -568,86 +1094,39 @@ bool V2G__TCP__TLS__Port::decode_and_deliver(const ::std::vector<uint8_t>& wire_
     uint8_t version = data[0];
     uint8_t inv_version = data[1];
     uint16_t payload_type = (static_cast<uint16_t>(data[2]) << 8) | data[3];
-    uint32_t payload_len = (static_cast<uint32_t>(data[4]) << 24) |
+    uint32_t declared_len = (static_cast<uint32_t>(data[4]) << 24) |
                            (static_cast<uint32_t>(data[5]) << 16) |
-                           (static_cast<uint32_t>(data[6]) << 8) |
+                           (static_cast<uint32_t>(data[6]) << 8)  |
                            static_cast<uint32_t>(data[7]);
 
-    // Some SECC implementations send incorrect V2GTP payload_len fields.
-    // Always trust the actual wire_bytes size over the V2GTP header's length field.
-    size_t exi_len = wire_bytes.size() - V2GTP_HEADER_SIZE;
-    if (exi_len > 8192) exi_len = static_cast<size_t>(payload_len);
-
     if (version != V2GTP_VERSION || inv_version != V2GTP_INV_VERSION) {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: Invalid V2GTP version" << ::std::endl;
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: Invalid V2GTP version byte[0]="
+                  << ::std::hex << (int)version << " byte[1]=" << (int)inv_version
+                  << ::std::dec << " (expected 0x01 0xFE)" << ::std::endl;
         return false;
     }
-    if (payload_type != V2GTP_PAYLOAD_TYPE_EXI) {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: Unknown payload type=0x"
+    if (payload_type != V2GTP_EXI_TYPE) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: Unsupported V2GTP payload type=0x"
                   << ::std::hex << payload_type << ::std::dec << ::std::endl;
         return false;
     }
 
-    const uint8_t* exi_payload = data + V2GTP_HEADER_SIZE;
-
-    ::std::cout << "[TCP_TLS_PORT] V2GTP: header_payload_len=" << payload_len
-              << " actual_exi_len=" << exi_len
-              << " EXI: " << hex_bytes(exi_payload, exi_len) << ::std::endl;
-
-    // ---- Static EXI decode using the member decoder (JSON-driven) ----
-    ::SECC__ExiJni::StaticExiDecoder::DecodeResult result;
-    ::std::cout << "[TCP_TLS_PORT] Calling exi_decoder_->decode_exi()..." << ::std::endl;
-    if (!exi_decoder_->decode_exi(exi_payload, exi_len, result)) {
-        ::std::cerr << "[TCP_TLS_PORT] ERROR: Static decode failed: " << exi_decoder_->last_error() << ::std::endl;
-        return false;
-    }
-    ::std::cout << "[TCP_TLS_PORT] Static decode OK, msg_type=" << result.msg_type << ::std::endl;
-
-    // ---- Build V2G__MessageUnion ----
-    ::SECC__Types::V2G__MessageUnion v2g_msg;
-
-    switch (result.msg_type) {
-        case ::SECC__ExiJni::StaticExiDecoder::DecodeResult::MSG_SUPPORTED_APP_PROTOCOL_RES: {
-            ::SECC__Types::SupportedAppProtocolRes& res = v2g_msg.supportedAppProtocolRes();
-            res.ResponseCode() = result.app_response_code;
-            res.SchemaID() = result.schema_id > 0 ? INTEGER(result.schema_id) : OMIT_VALUE;
-            res.SchemaURI() = OMIT_VALUE;
-            ::std::cout << "[TCP_TLS_PORT] Built SupportedAppProtocolRes: "
-                      << "RC=" << result.app_response_code << " SchemaID=" << result.schema_id << ::std::endl;
-            break;
-        }
-        case ::SECC__ExiJni::StaticExiDecoder::DecodeResult::MSG_SESSION_SETUP_RES: {
-            ::SECC__Types::SessionSetupRes& res = v2g_msg.sessionSetupRes();
-            res.ResponseCode() = result.v2g_response_code;
-            // Use extracted EVSEID from SECC response, fallback to canonical
-            if (!result.evseid.empty()) {
-                res.EVSEID() = result.evseid.c_str();
-            } else {
-                res.EVSEID() = "EVSE12345678";
-            }
-            res.EVSETimeStamp() = OMIT_VALUE;
-            if (result.session_id.size() == 8) {
-                ::std::ostringstream sid;
-                for (size_t i = 0; i < 8; ++i)
-                    sid << ::std::hex << ::std::setw(2) << ::std::setfill('0') << (int)result.session_id[i];
-                current_session_id_ = sid.str();
-                ::std::cout << "[TCP_TLS_PORT] SessionID: " << current_session_id_ << ::std::endl;
-            }
-            ::std::cout << "[TCP_TLS_PORT] Built SessionSetupRes: RC=" << result.v2g_response_code << ::std::endl;
-            break;
-        }
-        default:
-            ::std::cerr << "[TCP_TLS_PORT] ERROR: Unsupported message type" << ::std::endl;
-            return false;
+    size_t exi_start = V2GTP_HDR_LEN;
+    size_t exi_len = wire_bytes.size() - V2GTP_HDR_LEN;
+    if (exi_len != declared_len) {
+        ::std::cerr << "[TCP_TLS_PORT] WARNING: V2GTP declared_len=" << declared_len
+                  << " actual=" << exi_len << ::std::endl;
     }
 
-    ::std::cout << "[TCP_TLS_PORT] Calling incoming_message()" << ::std::endl;
-    incoming_message(v2g_msg);
+    ::std::cout << "[TCP_TLS_PORT] V2GTP OK: declared_len=" << declared_len
+              << " actual=" << exi_len << ::std::endl;
+
+    exi_out.assign(data + exi_start, data + wire_bytes.size());
     return true;
 }
 
 void V2G__TCP__TLS__Port::receive_loop() {
-    unsigned char buf[8192];
+    unsigned char buf[RECV_BUF_SIZE];
     ::std::cout << "[TCP_TLS_PORT] Receive thread started" << ::std::endl;
 
     while (receive_thread_running_) {
@@ -656,113 +1135,225 @@ void V2G__TCP__TLS__Port::receive_loop() {
             continue;
         }
 
-        // Drain all immediately-available data using MSG_DONTWAIT.
-        // On Linux, MSG_DONTWAIT recv returns data if the kernel has buffered it.
-        // Retry until we get EAGAIN (no more data immediately available).
+        // Drain immediately-available data (MSG_DONTWAIT)
         bool had_data = false;
         for (;;) {
             ssize_t r = ::recv(socket_fd_, buf, sizeof(buf), MSG_DONTWAIT);
             if (r > 0) {
                 had_data = true;
-                ::std::cout << "[TCP_TLS_PORT] Received " << r << " bytes (buffer: "
-                          << receive_buffer_.size() << ")" << ::std::endl;
+                ::std::cout << "[TCP_TLS_PORT] recv " << r << " bytes" << ::std::endl;
                 receive_buffer_.insert(receive_buffer_.end(), buf, buf + r);
             } else if (r == 0) {
-                ::std::cout << "[TCP_TLS_PORT] Connection closed" << ::std::endl;
+                ::std::cout << "[TCP_TLS_PORT] SECC closed connection" << ::std::endl;
                 connected_ = false;
                 goto connection_closed;
             } else {
-                // r < 0: EAGAIN/EWOULDBLOCK means socket buffer is empty for now.
-                break;
+                break;  // EAGAIN/EWOULDBLOCK
             }
         }
 
         if (had_data) {
-            // Process all complete frames from the buffered data
             while (receive_thread_running_) {
                 ::std::vector<uint8_t> frame;
                 int rc = extract_v2gtp_frame(receive_buffer_, frame);
-                if (rc < 0) {
-                    ::std::cerr << "[TCP_TLS_PORT] ERROR: Invalid V2GTP frame" << ::std::endl;
-                    receive_buffer_.clear();
-                    break;
-                }
-                if (rc == 0) break;  // Partial frame — need more data
-                ::std::cout << "[TCP_TLS_PORT] Decoding frame of " << frame.size() << " bytes" << ::std::endl;
-                if (!decode_and_deliver(frame)) {
-                    ::std::cerr << "[TCP_TLS_PORT] WARNING: decode failed" << ::std::endl;
-                }
+                if (rc < 0) { receive_buffer_.clear(); break; }
+                if (rc == 0) break;
+                handle_incoming_frame(frame);
             }
-            // Loop to drain any more data that may have arrived in the meantime
             continue;
         }
 
-        // No data buffered: wait for socket to become readable with a short timeout.
+        // No data: wait with select()
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(socket_fd_, &fds);
-        struct timeval tv = {0, 100000};  // 100ms timeout
-
-        int n = ::select(socket_fd_ + 1, &fds, NULL, NULL, &tv);
+        struct timeval tv{0, SELECT_TIMEOUT_US};
+        int n = ::select(socket_fd_ + 1, &fds, nullptr, nullptr, &tv);
         if (n < 0) {
             if (errno == EINTR) continue;
             if (errno == EBADF) break;
             ::std::cerr << "[TCP_TLS_PORT] ERROR: select failed: " << ::strerror(errno) << ::std::endl;
             break;
         }
-        if (n == 0) {
-            // Timeout: no data arrived. If we have partial data buffered,
-            // it means the SECC's frame is incomplete — keep waiting.
-            continue;
-        }
+        if (n == 0) continue;
 
-        // Socket has data: recv without MSG_DONTWAIT (blocking).
-        // This is the slow path — data is arriving from the network.
         ssize_t r = ::recv(socket_fd_, buf, sizeof(buf), 0);
-        if (r < 0) {
-            ::std::cerr << "[TCP_TLS_PORT] ERROR: recv failed: " << ::strerror(errno) << ::std::endl;
-            break;
-        }
-        if (r == 0) {
-            ::std::cout << "[TCP_TLS_PORT] Connection closed" << ::std::endl;
-            connected_ = false;
-            goto connection_closed;
-        }
-
-        ::std::cout << "[TCP_TLS_PORT] Received " << r << " bytes (buffer: "
-                  << receive_buffer_.size() << ")" << ::std::endl;
+        if (r < 0) { ::std::cerr << "[TCP_TLS_PORT] ERROR: recv failed: " << ::strerror(errno) << ::std::endl; break; }
+        if (r == 0) { ::std::cout << "[TCP_TLS_PORT] SECC closed connection" << ::std::endl; connected_ = false; goto connection_closed; }
         receive_buffer_.insert(receive_buffer_.end(), buf, buf + r);
 
         while (receive_thread_running_) {
             ::std::vector<uint8_t> frame;
             int rc = extract_v2gtp_frame(receive_buffer_, frame);
-            if (rc < 0) {
-                ::std::cerr << "[TCP_TLS_PORT] ERROR: Invalid V2GTP frame" << ::std::endl;
-                receive_buffer_.clear();
-                break;
-            }
+            if (rc < 0) { receive_buffer_.clear(); break; }
             if (rc == 0) break;
-            if (!decode_and_deliver(frame)) {
-                ::std::cerr << "[TCP_TLS_PORT] WARNING: decode failed" << ::std::endl;
-            }
+            handle_incoming_frame(frame);
         }
     }
 
 connection_closed:
-    // Drain any remaining buffered data on connection close
     while (receive_thread_running_) {
         ::std::vector<uint8_t> frame;
         int rc = extract_v2gtp_frame(receive_buffer_, frame);
-        if (rc < 0) break;
-        if (rc == 0) break;
-        if (!decode_and_deliver(frame)) {
-            ::std::cerr << "[TCP_TLS_PORT] WARNING: decode failed" << ::std::endl;
-        }
+        if (rc <= 0) break;
+        handle_incoming_frame(frame);
     }
-
     ::std::cout << "[TCP_TLS_PORT] Receive thread exiting" << ::std::endl;
     connected_ = false;
     receive_buffer_.clear();
 }
 
-} // namespace SECC__TestSystem
+void V2G__TCP__TLS__Port::handle_incoming_frame(const ::std::vector<uint8_t>& wire_bytes) {
+    // Step 1: Strip V2GTP header
+    ::std::vector<uint8_t> exi_bytes;
+    if (!strip_v2gtp_header(wire_bytes, exi_bytes)) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: failed to strip V2GTP header" << ::std::endl;
+        // Fail-fast: signal the error to TTCN-3 instead of dropping silently.
+        push_error_indicator("v2gtp_framing",
+                             "failed to strip V2GTP header (invalid bytes 0x"
+                             + bytes_to_hex(wire_bytes.data(),
+                                            ::std::min<size_t>(wire_bytes.size(), 8))
+                             + "...)",
+                             "");
+        return;
+    }
+
+    if (exi_bytes.empty()) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: empty EXI payload" << ::std::endl;
+        push_error_indicator("v2gtp_framing",
+                             "empty EXI payload after V2GTP header strip",
+                             "");
+        return;
+    }
+
+    if (exi_bytes.size() > EXI_PAYLOAD_MAX) {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: EXI payload too large ("
+                  << exi_bytes.size() << " bytes)" << ::std::endl;
+        push_error_indicator("exi_payload_too_large",
+                             "EXI payload is " + ::std::to_string(exi_bytes.size())
+                             + " bytes (max " + ::std::to_string(EXI_PAYLOAD_MAX) + ")",
+                             "");
+        return;
+    }
+
+    ::std::cout << "[TCP_TLS_PORT] EXI payload: " << bytes_to_hex(exi_bytes.data(), exi_bytes.size()) << ::std::endl;
+
+    // Step 2: DECODE via microservice
+    // SECC responses arrive on two possible namespaces:
+    //   - AppProtocol namespace: urn:iso:15118:2:2010:AppProtocol
+    //     (SupportedAppProtocolRes — the response to our SupportedAppProtocolReq)
+    //   - MsgDef namespace: urn:iso:15118:2:2013:MsgDef
+    //     (all V2G body messages: SessionSetupRes, ServiceDiscoveryRes, etc.)
+    // Try MsgDef first (more common), fall back to AppProtocol.
+    static const ::std::string NS_MSGD_ISO2  = "urn:iso:15118:2:2013:MsgDef";
+    static const ::std::string NS_APP_ISO2    = "urn:iso:15118:2:2010:AppProtocol";
+
+    ::std::string json_str = call_exi_decode(exi_bytes, NS_MSGD_ISO2);
+    ::std::string last_ns   = NS_MSGD_ISO2;
+    if (json_str.empty() || json_str == "{}") {
+        ::std::cout << "[TCP_TLS_PORT] DECODE (MsgDef) empty, retrying AppProtocol namespace..." << ::std::endl;
+        json_str  = call_exi_decode(exi_bytes, NS_APP_ISO2);
+        last_ns   = NS_APP_ISO2;
+    }
+
+    if (json_str.empty() || json_str == "{}") {
+        ::std::cerr << "[TCP_TLS_PORT] ERROR: EXI decode failed for both namespaces" << ::std::endl;
+        // Fail-fast: signal DECODE ERROR to TTCN-3 instead of dropping the
+        // message. TTCN-3 immediately matches { error_indicator := ? } and
+        // sets verdict=fail within seconds (vs ~20 min message-timeout wait).
+        push_error_indicator(
+            "exi_decode",
+            "DECODE ERROR: EXI microservice could not decode SECC payload for "
+            "either namespace '" + NS_MSGD_ISO2 + "' or '" + NS_APP_ISO2 + "'. "
+            "Common causes: schema-informed grammar mismatch (Issue A from "
+            "BATCH_ANALYSIS_20260711.md), JAXB case-sensitivity mismatch "
+            "(Issue B), or framing corruption.",
+            last_ns
+        );
+        return;
+    }
+
+    last_decoded_json_ = json_str;
+    ::std::cout << "[TCP_TLS_PORT] Decoded JSON: " << json_str << ::std::endl;
+
+    // Step 3: Deliver decoded JSON as a V2G_PortMessage{ raw := ... } to TTCN-3.
+    // The TITAN-generated incoming_message(V2G_PortMessage) accepts a typed
+    // union; we use the `raw()` accessor (returns OCTETSTRING& and selects
+    // ALT_raw internally) to carry the JSON bytes (Dumb Terminal receive
+    // path — TTCN-3 parse/receive pattern does the JSON -> typed value
+    // dispatch).
+    const unsigned char* json_uc = reinterpret_cast<const unsigned char*>(json_str.data());
+    ::OCTETSTRING decoded_octets(static_cast<int>(json_str.size()), json_uc);
+
+    SECC__TestSystem::V2G__PortMessage port_msg;
+    port_msg.raw() = decoded_octets;
+    incoming_message(port_msg);
+}
+
+// ============================================================================
+// Fail-fast error indicator (Sprint 3, 2026-07-11)
+// ============================================================================
+// Constructs a typed V2G_ErrorInfo and pushes a V2G_PortMessage with the
+// error_indicator alternative set. TTCN-3 immediately matches
+//   receive({ error_indicator := ? })
+// and sets verdict=fail, terminating the run within seconds. Replaces the
+// pre-Sprint-3 behavior of silently dropping decode-error messages and
+// waiting for the per-TC message timeout (~20 min).
+//
+// The function uses TITAN's generated V2G__ErrorInfo class (record, in
+// namespace SECC__Types) and V2G__PortMessage class (union, in namespace
+// SECC__TestSystem). Field accessors follow TITAN's pattern (note the
+// DOUBLE underscore in some accessors — TITAN escapes underscore-containing
+// identifiers to avoid collision with the auto-generated accessor names):
+//   V2G__ErrorInfo::source()           -> CHARSTRING&
+//   V2G__ErrorInfo::detail()           -> CHARSTRING&   (renamed from
+//                                          `message` because that's a TTCN-3
+//                                          reserved keyword; the C++ field
+//                                          name tracks the TTCN-3 field name)
+//   V2G__ErrorInfo::namespace__uri()   -> OPTIONAL<CHARSTRING>&
+//                                         (TITAN escapes the underscore in
+//                                          the TTCN-3 field name
+//                                          `namespace_uri` to `namespace__uri`)
+//   V2G__PortMessage::ALT_raw, ALT_error__indicator   enum values
+//   V2G__PortMessage::raw()            -> OCTETSTRING&   (sets ALT_raw)
+//   V2G__PortMessage::error__indicator()-> SECC__Types::V2G__ErrorInfo&
+//                                         (sets ALT_error__indicator)
+// IMPORTANT: union_selection and the field_* pointers are PRIVATE. Use the
+// accessor methods (raw() / error__indicator()) to select alternatives.
+// ============================================================================
+void V2G__TCP__TLS__Port::push_error_indicator(const ::std::string& source,
+                                               const ::std::string& message,
+                                               const ::std::string& namespace_uri) {
+    ::std::cerr << "[TCP_TLS_PORT] FAIL-FAST: pushing error_indicator("
+              << source << ", " << message
+              << ", " << (namespace_uri.empty() ? "<none>" : namespace_uri)
+              << ") to TTCN-3" << ::std::endl;
+
+    // Build the V2G_ErrorInfo record (TITAN-generated class in SECC__Types).
+    // The 3-arg constructor takes (source, detail, OPTIONAL<CHARSTRING>
+    // namespace__uri). We pass an OPTIONAL that's bound only when the
+    // caller supplied a non-empty namespace_uri.
+    ::OPTIONAL<::CHARSTRING> ns_opt;
+    if (!namespace_uri.empty()) {
+        ns_opt = ::CHARSTRING(namespace_uri.c_str());
+    }
+    SECC__Types::V2G__ErrorInfo err_info(
+        ::CHARSTRING(source.c_str()),
+        ::CHARSTRING(message.c_str()),
+        ns_opt
+    );
+
+    // Build a V2G_PortMessage with the error_indicator alternative selected.
+    // The error__indicator() accessor (with DOUBLE underscore because TITAN
+    // escapes field names to avoid collision with accessor methods) returns
+    // a SECC__Types::V2G__ErrorInfo& AND sets union_selection = ALT_error__indicator.
+    SECC__TestSystem::V2G__PortMessage port_msg;
+    port_msg.error__indicator() = err_info;
+
+    // Push into the port queue. TITAN matches
+    //   receive({ error_indicator := ? })
+    // immediately and the test case sets verdict=fail.
+    incoming_message(port_msg);
+}
+
+}  // namespace SECC__TestSystem

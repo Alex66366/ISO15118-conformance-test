@@ -1,0 +1,124 @@
+module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001 {
+
+    import from SECC_TestSystem all;
+    import from SECC_Types all;
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+
+    // ================================================================
+    // Test Behavior Function: V2GTPSessionSetup — Sprint 3 fail-fast verification
+    //
+    // Purpose: This is a SELF-CONTAINED negative test that verifies the
+    //          Sprint 3 fail-fast wiring end-to-end:
+    //
+    //            1. TTCN-3 sends a magic JSON through outgoing_send():
+    //               `{"__FAIL_FAST_TEST__":"true","__FAIL_FAST_SOURCE__":"exi_decode"}`.
+    //            2. C++ V2G_TCP_TLS_Port::outgoing_send detects the magic
+    //               prefix and calls push_error_indicator() with the given
+    //               source instead of encoding/forwarding.
+    //            3. push_error_indicator() constructs a V2G__PortMessage
+    //               with `error_indicator` selected and pushes it via
+    //               incoming_message() into TTCN-3's queue.
+    //            4. TITAN's alt-block matches `receive({ error_indicator := ? })`
+    //               within milliseconds and the alt-block fires.
+    //            5. setverdict(pass) is set because the FAILURE TO TRIGGER
+    //               fail-fast is what would fail this test — the trigger
+    //               firing IS the expected behavior.
+    //
+    // Sprint 3 SOP (port `in` is V2G_PortMessage = { raw, error_indicator }):
+    //   alt {
+    //     [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ error_indicator := ? })
+    //         -> value v_err { ... setverdict ... }   // FAIL-FAST (1st branch)
+    //     [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? })
+    //         -> value v_msg { ... }                  // SUCCESS
+    //     [] tc_V2G_SECC_Msg_Timer.timeout { ... }    // TIMEOUT
+    //   }
+    //
+    // Reference: BATCH_ANALYSIS_20260711.md §4.3 ("No 'Fail-Fast' Propagation
+    //            from EXI Microservice to TTCN-3") — Sprint 3 fix.
+    // ================================================================
+
+    function f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001()
+        runs on SECCTester
+        return verdicttype
+    {
+        timer tc_V2G_SECC_Msg_Timer := 5.0;  // 5s hard ceiling
+
+        // Pre-declare receive redirect variables (TITAN's `value` clause requires
+        // pre-declared variables).
+        var V2G_PortMessage v_err;
+        var V2G_PortMessage v_msg;
+
+        // Compose the magic JSON that triggers the C++ adapter's TEST_HOOK.
+        // The adapter detects the `__FAIL_FAST_TEST__` key, skips ENCODE,
+        // and calls push_error_indicator() with the source in
+        // `__FAIL_FAST_SOURCE__`. Allow override of the source by switching
+        // the literal — but for now we hard-code "exi_decode" to verify the
+        // most common trigger.
+        var charstring trigger_json :=
+            "{\"__FAIL_FAST_TEST__\":\"true\","
+            & "\"__FAIL_FAST_SOURCE__\":\"exi_decode\"}";
+
+        log("BadCase trigger: sending magic JSON through outgoing_send()...");
+        log("Magic JSON: ", trigger_json);
+
+        tc_V2G_SECC_Msg_Timer.start;
+
+        // Send the magic JSON. C++ adapter detects it and immediately calls
+        // push_error_indicator() instead of forwarding.
+        pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct(trigger_json));
+
+        alt {
+            // ===== FAIL-FAST BRANCH (the one we're verifying) =====
+            // TITAN must match this branch within milliseconds of the C++
+            // adapter calling push_error_indicator().
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ error_indicator := ? })
+                -> value v_err {
+                tc_V2G_SECC_Msg_Timer.stop;
+                // Sprint 3 verification: if we reach this branch, the
+                // push_error_indicator → incoming_message → TITAN receive
+                // chain works. The actual source/detail don't matter for
+                // fail-fast wiring validation; we accept any of the four
+                // documented sources.
+                if (v_err.error_indicator.source == "exi_decode" or
+                    v_err.error_indicator.source == "v2gtp_framing" or
+                    v_err.error_indicator.source == "exi_payload_too_large" or
+                    v_err.error_indicator.source == "exi_service_unavailable") {
+                    log("Sprint 3 fail-fast fired correctly: source=",
+                        v_err.error_indicator.source,
+                        ", detail=", v_err.error_indicator.detail);
+                    setverdict(pass,
+                        "Sprint 3 fail-fast verified: C++ adapter pushed ",
+                        v_err.error_indicator.source,
+                        " error to TTCN-3 within the alt-block.");
+                } else {
+                    setverdict(fail,
+                        "Unknown error_indicator.source: ",
+                        v_err.error_indicator.source);
+                }
+            }
+
+            // ===== SUCCESS BRANCH (should NOT fire for this test) =====
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? })
+                -> value v_msg {
+                tc_V2G_SECC_Msg_Timer.stop;
+                // If we reach this branch, the C++ adapter pushed a raw JSON
+                // message instead of an error_indicator. Sprint 3 fail-fast
+                // wiring is broken.
+                setverdict(fail,
+                    "FAIL-FAST did NOT fire — C++ adapter pushed { raw := ... } ",
+                    "instead of { error_indicator := ... }. Sprint 3 wiring broken.");
+            }
+
+            // ===== TIMEOUT BRANCH =====
+            [] tc_V2G_SECC_Msg_Timer.timeout {
+                setverdict(fail,
+                    "Neither fail-fast nor raw branch fired within 5s — ",
+                    "magic trigger did not push error_indicator. Sprint 3 wiring broken.");
+            }
+        }
+
+        return getverdict;
+    }
+
+} // end of module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001

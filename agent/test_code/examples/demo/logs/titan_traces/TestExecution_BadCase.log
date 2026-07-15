@@ -1,0 +1,109 @@
+10:26:05.909600 EXECUTOR - TTCN-3 Test Executor started in single mode. Version: CRL 113 200/6 R6B.
+10:26:05.909708 EXECUTOR - Using configuration file: `config/titan_runtime_badcase.cfg'.
+10:26:05.909715 EXECUTOR - Maximum number of open file descriptors: 1048576,   FD_SETSIZE = 1024
+10:26:05.910563 EXECUTOR - TTCN Logger v2.2 options: TimeStampFormat:=Time; LogEntityName:=Yes; LogEventTypes:=Yes; SourceInfoFormat:=Single; *.FileMask:=LOG_ALL; *.ConsoleMask:=ACTION | ERROR | TESTCASE | STATISTICS_VERDICT | STATISTICS_UNQUALIFIED | WARNING; LogFileSize:=0; LogFileNumber:=1; DiskFullAction:=Error
+10:26:05.910581 EXECUTOR - Module SECC_PIXIT has the following parameters: { PIXIT_SECC_CMN_TLS := true, PIXIT_SECC_CMN_TLS_Required := true, PIXIT_SECC_CMN_SUT_IP_Address := "192.168.1.100", PIXIT_SECC_CMN_SUT_Port := 15118, PIXIT_SECC_CMN_SUT_IPv6_Multicast := "ff02::01", PIXIT_SECC_CMN_Expected_EVSE_ID := "DE*IPG*E12345*1", PIXIT_SECC_CMN_Network_Interface := "eth0", PIXIT_SECC_CMN_VLAN_ID := 0, PIXIT_SECC_CMN_MTU_Size := 1500, PIXIT_SECC_CMN_Message_Timeout := 2.000000, PIXIT_SECC_CMN_Sequence_Timeout := 2.000000, PIXIT_SECC_CMN_CommunicationSetup_Timeout := 10.000000, PIXIT_SECC_CMN_TCP_Connection_Timeout := 5.000000, PIXIT_SECC_CMN_TLS_Handshake_Timeout := 10.000000, PIXIT_SECC_CMN_Test_eVCCID := { content := '123456789ABC'O }, PIXIT_SECC_CMN_Test_SessionID := { content := '0000000000000000'O }, PIXIT_SECC_CMN_Test_Root_CA := "V2G_ROOT_CA", PIXIT_SECC_CMN_Test_Contract_Cert := "CONTRACT_CERT", PIXIT_SECC_CMN_Hardware_Device_Path := "/dev/ttyUSB0", PIXIT_SECC_CMN_Hardware_Baudrate := 115200, PIXIT_SECC_CMN_Combined_Testing_Mode := false, PIXIT_SECC_CMN_SLAC_Required := false, PIXIT_SECC_CMN_SDP_Response_Timeout := 1.000000, PIXIT_SECC_CMN_SDP_Max_Retries := 3, PIXIT_SECC_CMN_Enable_Detailed_Logging := true, PIXIT_SECC_CMN_Log_File_Path := "../logs/titan_traces/", PIXIT_SECC_CMN_Validate_Cert_Chain := true, PIXIT_SECC_CMN_Accept_Expired_Certs := false, PIXIT_SECC_CMN_Accept_Self_Signed_Certs := false }
+10:26:05.910666 EXECUTOR - Initializing module DemoPassTC.
+10:26:05.910681 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/DemoPassTC.ttcn:0 Initializing module SECC_Constants.
+10:26:05.910697 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn:0 Initializing module SECC_TestSystem.
+10:26:05.910711 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn:0 Initializing module SECC_Types.
+10:26:05.910724 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn:0 Initialization of module SECC_Types finished.
+10:26:05.910736 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn:0 Initialization of module SECC_TestSystem finished.
+10:26:05.910749 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/DemoPassTC.ttcn:0 Initialization of module SECC_Constants finished.
+10:26:05.910762 EXECUTOR - Initialization of module DemoPassTC finished.
+10:26:05.910774 EXECUTOR - Initializing module PostConditions_SECC_15118_2.
+10:26:05.910785 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initializing module SECC_CmnTemplates.
+10:26:05.910848 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initialization of module SECC_CmnTemplates finished.
+10:26:05.910876 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initializing module f_SECC_CMN_PO_InitialState_001.
+10:26:05.910890 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initialization of module f_SECC_CMN_PO_InitialState_001 finished.
+10:26:05.910902 EXECUTOR - Initialization of module PostConditions_SECC_15118_2 finished.
+10:26:05.910923 EXECUTOR - Initializing module PreConditions_SECC_15118_2.
+10:26:05.910935 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn:0 Initializing module f_SECC_CMN_PR_InitConfiguration_001.
+10:26:05.910948 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn:0 Initialization of module f_SECC_CMN_PR_InitConfiguration_001 finished.
+10:26:05.910960 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn:0 Initializing module f_SECC_CMN_PR_SupportedAppProtocol_001.
+10:26:05.910971 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn:0 Initialization of module f_SECC_CMN_PR_SupportedAppProtocol_001 finished.
+10:26:05.910982 EXECUTOR - Initialization of module PreConditions_SECC_15118_2 finished.
+10:26:05.910992 EXECUTOR - Initializing module PreGenRecordOf.
+10:26:05.911001 EXECUTOR - Initialization of module PreGenRecordOf finished.
+10:26:05.911011 EXECUTOR - Initializing module SECC_CommonFunctions.
+10:26:05.911020 EXECUTOR - Initialization of module SECC_CommonFunctions finished.
+10:26:05.911030 EXECUTOR - Initializing module SECC_PICS.
+10:26:05.911040 EXECUTOR - Initialization of module SECC_PICS finished.
+10:26:05.911049 EXECUTOR - Initializing module SECC_PIXIT.
+10:26:05.911059 EXECUTOR - Initialization of module SECC_PIXIT finished.
+10:26:05.911068 EXECUTOR - Initializing module TC_SECC_CMN_VTB_V2GTPSessionSetup_001.
+10:26:05.911077 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:0 Initializing module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.
+10:26:05.911089 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:0 Initialization of module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001 finished.
+10:26:05.911100 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:0 Initializing module f_SECC_CMN_PO_ShutdownConfiguration_001.
+10:26:05.911110 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:0 Initialization of module f_SECC_CMN_PO_ShutdownConfiguration_001 finished.
+10:26:05.911121 EXECUTOR - Initialization of module TC_SECC_CMN_VTB_V2GTPSessionSetup_001 finished.
+10:26:05.911132 EXECUTOR - Initializing module TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.
+10:26:05.911146 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:0 Initializing module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.
+10:26:05.911162 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:0 Initialization of module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001 finished.
+10:26:05.911178 EXECUTOR - Initialization of module TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001 finished.
+10:26:05.911194 EXECUTOR - Initializing module TestCases_SECC.
+10:26:05.911209 EXECUTOR - Initialization of module TestCases_SECC finished.
+10:26:05.911223 EXECUTOR - Initializing module TestCases_SECC_BadCase.
+10:26:05.911237 EXECUTOR - Initialization of module TestCases_SECC_BadCase finished.
+10:26:05.911252 EXECUTOR - Initializing module TitanLoggerApi.
+10:26:05.911266 EXECUTOR - Initialization of module TitanLoggerApi finished.
+10:26:05.911281 EXECUTOR - Initializing module TitanLoggerControl.
+10:26:05.911295 EXECUTOR - Initialization of module TitanLoggerControl finished.
+10:26:05.911310 EXECUTOR - Initializing module f_SECC_CMN_PR_Binding_001.
+10:26:05.911324 EXECUTOR - Initialization of module f_SECC_CMN_PR_Binding_001 finished.
+10:26:05.911339 EXECUTOR - Initializing module f_SECC_CMN_PR_InitConfiguration_002.
+10:26:05.911365 EXECUTOR - Initialization of module f_SECC_CMN_PR_InitConfiguration_002 finished.
+10:26:05.911384 EXECUTOR - Initializing module f_SECC_CMN_PR_PLCLinkStatusCombinedTesting_001.
+10:26:05.911402 EXECUTOR - Initialization of module f_SECC_CMN_PR_PLCLinkStatusCombinedTesting_001 finished.
+10:26:05.911418 EXECUTOR - Initializing module f_SECC_CMN_PR_SetPowerFlowConfiguration_001.
+10:26:05.911435 EXECUTOR - Initialization of module f_SECC_CMN_PR_SetPowerFlowConfiguration_001 finished.
+10:26:05.911451 EXECUTOR - Initializing module f_SECC_CMN_PR_SetProximityPilot_001.
+10:26:05.911467 EXECUTOR - Initialization of module f_SECC_CMN_PR_SetProximityPilot_001 finished.
+10:26:05.911483 EXECUTOR - Initializing module f_SECC_CMN_PR_StateA_001.
+10:26:05.911500 EXECUTOR - Initialization of module f_SECC_CMN_PR_StateA_001 finished.
+10:26:05.911517 EXECUTOR - Initializing module f_SECC_CMN_PR_StateB_001.
+10:26:05.911532 EXECUTOR - Initialization of module f_SECC_CMN_PR_StateB_001 finished.
+10:26:05.911546 EXECUTOR - Initializing module f_SECC_CMN_TB_VTB_SDP_001.
+10:26:05.911561 EXECUTOR - Initialization of module f_SECC_CMN_TB_VTB_SDP_001 finished.
+10:26:05.911576 EXECUTOR - Initializing module f_SECC_CMN_TB_VTB_SupportedAppProtocol_001.
+10:26:05.911591 EXECUTOR - Initialization of module f_SECC_CMN_TB_VTB_SupportedAppProtocol_001 finished.
+10:26:05.911607 EXECUTOR - Initializing module f_SECC_PO_ShutdownConfiguration_002.
+10:26:05.911622 EXECUTOR - Initialization of module f_SECC_PO_ShutdownConfiguration_002 finished.
+10:26:05.911643 STATISTICS /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC_BadCase.ttcn:5(controlpart:TestCases_SECC_BadCase) Execution of control part in module TestCases_SECC_BadCase started.
+10:26:05.911779 TESTCASE /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:47(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Test case TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001 started.
+10:26:05.911851 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:47(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Initializing variables, timers and ports of component type SECC_TestSystem.SECCTester inside testcase TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.
+10:26:05.911905 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:47(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Port pt_V2G_TCP_TLS_ALM_SECC_Port was started.
+10:26:05.911953 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:47(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Port pt_V2G_UDP_SDP_Port was started.
+10:26:05.911970 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:47(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Component type SECC_TestSystem.SECCTester was initialized.
+10:26:05.911990 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:53(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Mapping port mtc:pt_V2G_TCP_TLS_ALM_SECC_Port to system:pt_V2G_TCP_TLS_ALM_SECC_Port.
+10:26:05.912019 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:53(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Port pt_V2G_TCP_TLS_ALM_SECC_Port was mapped to system:pt_V2G_TCP_TLS_ALM_SECC_Port.
+10:26:05.912070 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:53(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Map operation of mtc:pt_V2G_TCP_TLS_ALM_SECC_Port to system:pt_V2G_TCP_TLS_ALM_SECC_Port finished.
+10:26:05.912125 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:54(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Mapping port mtc:pt_V2G_UDP_SDP_Port to system:pt_V2G_UDP_SDP_Port.
+10:26:05.912152 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:54(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Port pt_V2G_UDP_SDP_Port was mapped to system:pt_V2G_UDP_SDP_Port.
+10:26:05.912174 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:54(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Map operation of mtc:pt_V2G_UDP_SDP_Port to system:pt_V2G_UDP_SDP_Port finished.
+10:26:05.912198 USER /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:62(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) BadCase trigger: sending magic JSON through outgoing_send()...
+10:26:05.912219 USER /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:63(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) Magic JSON: "{\"__FAIL_FAST_TEST__\":\"true\",\"__FAIL_FAST_SOURCE__\":\"exi_decode\"}"
+10:26:05.912283 TIMEROP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:65(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) Start timer tc_V2G_SECC_Msg_Timer: 5 s
+10:26:05.912369 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:69(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) Sent on pt_V2G_TCP_TLS_ALM_SECC_Port to system octetstring : '7B225F5F4641494C5F464153545F544553545F5F223A2274727565222C225F5F4641494C5F464153545F534F555243455F5F223A226578695F6465636F6465227D'O ("{\"__FAIL_FAST_TEST__\":\"true\",\"__FAIL_FAST_SOURCE__\":\"exi_decode\"}")
+10:26:05.912573 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:69(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) Message enqueued on pt_V2G_TCP_TLS_ALM_SECC_Port from system @SECC_TestSystem.V2G_PortMessage : { error_indicator := { source := "exi_decode", detail := "Test-injected fail-fast (BATCH_ANALYSIS " & char(0, 0, 0, 194) & char(0, 0, 0, 167) & "4.3 Sprint 3 verification)", namespace_uri := "urn:iso:15118:2:2013:MsgDef" } } id 1
+10:26:05.912631 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:75(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) Receive operation on port pt_V2G_TCP_TLS_ALM_SECC_Port succeeded, message from system(): @SECC_TestSystem.V2G_PortMessage : { error_indicator := { source := "exi_decode", detail := "Test-injected fail-fast (BATCH_ANALYSIS " & char(0, 0, 0, 194) & char(0, 0, 0, 167) & "4.3 Sprint 3 verification)", namespace_uri := "urn:iso:15118:2:2013:MsgDef" } } id 1
+10:26:05.912666 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:75(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) Message with id 1 was extracted from the queue of pt_V2G_TCP_TLS_ALM_SECC_Port.
+10:26:05.912681 TIMEROP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:77(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) Stop timer tc_V2G_SECC_Msg_Timer: 5 s
+10:26:05.912696 USER /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:87(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) Sprint 3 fail-fast fired correctly: source="exi_decode", detail="Test-injected fail-fast (BATCH_ANALYSIS " & char(0, 0, 0, 194) & char(0, 0, 0, 167) & "4.3 Sprint 3 verification)"
+10:26:05.912740 VERDICTOP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:90(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) setverdict(pass): none -> pass reason: "Sprint 3 fail-fast verified: C++ adapter pushed "exi_decode" error to TTCN-3 within the alt-block.", new component reason: "Sprint 3 fail-fast verified: C++ adapter pushed "exi_decode" error to TTCN-3 within the alt-block."
+10:26:05.912779 VERDICTOP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.ttcn:121(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001) getverdict: pass
+10:26:05.912793 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn:6(function:f_SECC_CMN_PO_InitialState_001) Unmapping port mtc:pt_V2G_TCP_TLS_ALM_SECC_Port from system:pt_V2G_TCP_TLS_ALM_SECC_Port.
+10:26:05.912810 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn:6(function:f_SECC_CMN_PO_InitialState_001) Port pt_V2G_TCP_TLS_ALM_SECC_Port was unmapped from system:pt_V2G_TCP_TLS_ALM_SECC_Port.
+10:26:05.912824 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn:6(function:f_SECC_CMN_PO_InitialState_001) Unmap operation of mtc:pt_V2G_TCP_TLS_ALM_SECC_Port from system:pt_V2G_TCP_TLS_ALM_SECC_Port finished.
+10:26:05.912838 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn:7(function:f_SECC_CMN_PO_InitialState_001) Unmapping port mtc:pt_V2G_UDP_SDP_Port from system:pt_V2G_UDP_SDP_Port.
+10:26:05.912851 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn:7(function:f_SECC_CMN_PO_InitialState_001) Port pt_V2G_UDP_SDP_Port was unmapped from system:pt_V2G_UDP_SDP_Port.
+10:26:05.912863 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/f_SECC_CMN_PO_InitialState_001.ttcn:7(function:f_SECC_CMN_PO_InitialState_001) Unmap operation of mtc:pt_V2G_UDP_SDP_Port from system:pt_V2G_UDP_SDP_Port finished.
+10:26:05.912879 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:61(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Terminating component type SECC_TestSystem.SECCTester.
+10:26:05.912893 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:61(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Port pt_V2G_TCP_TLS_ALM_SECC_Port was stopped.
+10:26:05.912907 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:61(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Port pt_V2G_UDP_SDP_Port was stopped.
+10:26:05.912920 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:61(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Component type SECC_TestSystem.SECCTester was shut down inside testcase TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.
+10:26:05.912938 TESTCASE /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:61(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001) Test case TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001 finished. Verdict: pass reason: Sprint 3 fail-fast verified: C++ adapter pushed "exi_decode" error to TTCN-3 within the alt-block.
+10:26:05.913011 STATISTICS /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC_BadCase.ttcn:6(controlpart:TestCases_SECC_BadCase) Execution of control part in module TestCases_SECC_BadCase finished.
+10:26:05.913051 STATISTICS - Verdict statistics: 0 none (0.00 %), 1 pass (100.00 %), 0 inconc (0.00 %), 0 fail (0.00 %), 0 error (0.00 %).
+10:26:05.913075 STATISTICS - Test execution summary: 1 test case was executed. Overall verdict: pass
+10:26:05.913086 EXECUTOR - TTCN-3 Test Executor finished in single mode.

@@ -20,6 +20,7 @@ Author: Cursor (Claude Opus 4)
 """
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -80,25 +81,26 @@ def _strip_v2g_wrapper_from_receive(ttcn_source: str) -> str:
 
     Background
     ----------
-    `V2G_TCP_TLS_Port` is defined with two different message types:
+    `V2G_TCP_TLS_Port` is defined (after Sprint 3 fail-fast wiring) as:
 
         type port V2G_TCP_TLS_Port message {
-            out V2G_PortMessage;    // union of v2g / raw
-            in  V2G_MessageUnion;   // bare union (no outer wrapper)
+            out V2G_PortMessage;    // union of { raw, error_indicator }
+            in  V2G_PortMessage;    // union of { raw, error_indicator }
         }
 
-    On the SEND side, the C++ adapter unwraps the `v2g` field and encodes the
-    inner V2G message. On the RECEIVE side, the adapter enqueues a bare
-    V2G_MessageUnion value — there is NO `v2g := ...` outer wrapper.
+    Both directions are typed as `V2G_PortMessage`, which only carries the
+    two variants `raw` (octetstring) and `error_indicator` (record). The
+    C++ adapter pushes incoming decoded JSON bytes as `raw`, or pushes an
+    `error_indicator` if JAXB encode/decode failed. There is NO `v2g`
+    wrapper at the port boundary.
 
-    If a TB_testbehavior.ttcn.j2 template renders a receive template with
-    `{ v2g := { sessionSetupRes := ? } }`, TITAN's template matching will
-    silently never match the enqueued message, the 60-second timer will
-    run out, and the test will fall through to the wildcard arm with
-    `setverdict(fail)`.
+    This fixer rewrites any `{ v2g := { FIELD := value } }` RECEIVE
+    pattern back to its bare-union form `{ FIELD := value }` -- but more
+    importantly, the GOODCASE TB template (since this fix) never emits
+    a `{ v2g := ... }` pattern at all. It only emits the canonical
+    `{ error_indicator := ? }` and `{ raw := ? }` matches.
 
-    This fixer rewrites any such receive pattern to its bare-union form
-    `{ sessionSetupRes := ? }`. It is conservative:
+    The fixer is conservative:
       * It only touches lines that come after a `.receive(` keyword.
       * It only matches `{ v2g := { FIELD := value/wildcard } }` patterns
         where FIELD is a known V2G_MessageUnion variant.
@@ -319,6 +321,21 @@ def render_tb_module(plan: Dict[str, Any]) -> str:
         # setverdict(pass); return. Post-conditions still run in the TC wrapper.
         "covered_by_precondition": bool(plan.get("covered_by_precondition", False)),
         "coverage_note": plan.get("coverage_note", ""),
+        # Sprint 3 GoodCase JSON payload (Dumb Terminal architecture).
+        # Pre-built as a PascalCase JSON string with hexBinary fields already
+        # hex-encoded, so the TB can drop it straight into
+        # `var charstring json_req := "{{ json_payload }}";`.
+        #
+        # Sprint-3.2 fix: ``session_id`` is forwarded into the payload
+        # builder so that downstream PRs/TBs carry the dynamically
+        # negotiated SessionID (from SessionSetup) instead of a static
+        # zero string.  When None, the plan-derived fallback wins.
+        "json_payload": _build_goodcase_json_payload(
+            plan,
+            session_id=plan.get("vc_SessionID"),
+        )
+            if (test_type == "GoodCase" and not is_sdp)
+            else "",
         # tc_timer_name — derived from port name for uniqueness
         "tc_timer_name": f"tc_{msg_lower}_msg",
         # requirement trace (first one)
@@ -381,10 +398,14 @@ def render_and_write(plan: Dict[str, Any], project_dir: Path) -> Dict[str, Path]
     tb_file = tb_dir / f"{tb_fn}.ttcn"
     # Post-render pass: strip any `{ v2g := { ... } }` wrapper from RECEIVE
     # templates on V2G_TCP_TLS_Port. The port's `in` direction is typed as
-    # V2G_MessageUnion (not V2G_PortMessage), so the C++ adapter enqueues
-    # the bare union variant on receive. A receive template with the v2g
-    # wrapper would never match, causing the test to silently fall through
-    # to the wildcard arm after the 60s timer expires.
+    # V2G_PortMessage (union of raw / error_indicator), so the C++ adapter
+    # enqueues a bare V2G_PortMessage value on receive. A receive template
+    # with the v2g wrapper would never match, causing the test to silently
+    # fall through to the wildcard arm after the 60s timer expires.
+    # NOTE: As of the Sprint-3 fix, the GoodCase template no longer emits a
+    # `{ v2g := ... }` pattern at all -- it uses `{ raw := ? }` /
+    # `{ error_indicator := ? }` directly. This fixer is a defensive
+    # cleanup for any residual pattern from older renderers.
     tb_content = _strip_v2g_wrapper_from_receive(tb_content)
     tb_file.write_text(tb_content, encoding="utf-8")
 
@@ -516,6 +537,346 @@ _V2G_FIELD_MAP = {
     "v2gtpheader": "v2gtpReq",
     "v2gtpsessionsetup": "sessionSetupReq",
 }
+
+
+# ---------------------------------------------------------------------------
+# GoodCase JSON payload builders (Sprint 3 Dumb Terminal architecture)
+# ---------------------------------------------------------------------------
+#
+# Each builder returns a complete V2G_Message JSON string in the PascalCase
+# form required by JAXB / MOXy.  hexBinary fields are pre-hex-encoded (no
+# base64, no plain ASCII like "PLATFORM123456").
+#
+# The builders accept a `plan` dict so they can pull EVCCID, SessionID, etc.
+# from plan["key_parameters"] when present, with sensible defaults.
+#
+# Namespace: urn:iso:15118:2:2013:MsgDef  (Body messages — PascalCase)
+# The supportedAppProtocol pair is a special case under
+# urn:iso:15118:2:2010:AppProtocol (camelCase) — the AppProtocol builder
+# returns the bare supportedAppProtocolReq/Res shape WITHOUT the
+# V2G_Message wrapper, matching the DemoPassTC.ttcn precondition behaviour.
+# ---------------------------------------------------------------------------
+
+# Default 8-byte EVCCID pre-hex-encoded to 16 hex chars.
+# 123456789ABC -> "123456789ABC" already hex; just uppercase.
+#
+# NOTE on XSD constraint (schemas/iso15118_2/V2G_CI_MsgDataTypes.xsd):
+#     <xs:simpleType name="evccIDType">
+#         <xs:restriction base="xs:hexBinary">
+#             <xs:maxLength value="6"/>      <!-- bytes, not hex chars -->
+#         </xs:restriction>
+#     </xs:simpleType>
+# => EVCCID must be at most 6 bytes = 12 hex chars.  We use exactly 6
+# bytes (12 hex chars) below for a deterministic, schema-conformant
+# default.  The canonical smoke_test default "123456789ABC" is 6 bytes
+# and round-trips cleanly through EXI encode/decode.
+_DEFAULT_EVCCID_HEX = "123456789ABC"
+_DEFAULT_SESSIONID_HEX = "0000000000000000"
+
+
+def _evccid_hex(plan: Dict) -> str:
+    """Return the EVCCID as a 12-char uppercase hex string (6 bytes).
+
+    XSD constraint (schemas/iso15118_2/V2G_CI_MsgDataTypes.xsd):
+
+        <xs:simpleType name="evccIDType">
+            <xs:restriction base="xs:hexBinary">
+                <xs:maxLength value="6"/>     <!-- bytes -->
+            </xs:restriction>
+        </xs:simpleType>
+
+    => maxLength is in BYTES, so the hex string must be <= 12 chars.
+    The smoke_test default "123456789ABC" is 6 bytes (12 hex chars) and
+    passes JAXB marshalling without a `V2GMessageValidationError`.
+    """
+    kp = plan.get("key_parameters") or {}
+    candidate = kp.get("evccid_hex") or kp.get("EVCCID_hex")
+    if isinstance(candidate, str):
+        # Normalise: strip whitespace, lowercase to uppercase.
+        normalised = candidate.strip().upper()
+        if not re.fullmatch(r"[0-9A-F]+", normalised):
+            print(
+                f"[STATIC-RENDERER] [WARN] plan.key_parameters.evccid_hex="
+                f"{candidate!r} contains non-hex characters; falling back to default."
+            )
+        elif len(normalised) % 2 != 0:
+            print(
+                f"[STATIC-RENDERER] [WARN] EVCCID hex {normalised!r} has odd length "
+                f"({len(normalised)} chars); falling back to default."
+            )
+        elif len(normalised) > 12:
+            print(
+                f"[STATIC-RENDERER] [WARN] EVCCID hex {normalised!r} exceeds XSD "
+                f"maxLength=6 (bytes) = 12 hex chars; truncating."
+            )
+            return normalised[:12]
+        else:
+            return normalised
+    return _DEFAULT_EVCCID_HEX
+
+
+def _sessionid_hex(plan: Dict) -> str:
+    """Return the SessionID as a 32-char uppercase hex string (16 bytes)."""
+    kp = plan.get("key_parameters") or {}
+    candidate = kp.get("sessionid_hex") or kp.get("SessionID_hex")
+    if isinstance(candidate, str) and re.fullmatch(r"[0-9A-Fa-f]{32}", candidate):
+        return candidate.upper()
+    return _DEFAULT_SESSIONID_HEX
+
+
+def _build_app_protocol_req_json() -> str:
+    """Build supportedAppProtocolReq JSON (AppProtocol namespace, NO V2G_Message wrapper)."""
+    return (
+        '{"supportedAppProtocolReq":{'
+        '"AppProtocol":[{'
+        '"ProtocolNamespace":"urn:iso:15118:2:2013:MsgDef",'
+        '"VersionNumberMajor":2,'
+        '"VersionNumberMinor":0,'
+        '"SchemaID":1,'
+        '"Priority":1'
+        '}]}}'
+    )
+
+
+def _build_app_protocol_res_json() -> str:
+    """Build supportedAppProtocolRes JSON (placeholder for completeness)."""
+    return (
+        '{"supportedAppProtocolRes":{'
+        '"ResponseCode":"OK_SuccessfulNegotiation",'
+        '"SchemaID":1'
+        '}}'
+    )
+
+
+def _q(s: str) -> str:
+    """Wrap a JSON literal in double quotes, escaping inner double quotes for
+    embedding into a TTCN-3 charstring literal.
+
+    TTCN-3 charstring literals support the backslash escape sequence `\"` for
+    embedded double quotes (matching C/C++ string literal semantics). Without
+    this escaping, the inner JSON quotes would terminate the outer charstring
+    literal at compile time and break TITAN parsing.
+    """
+    return '"' + s.replace('"', '\\"') + '"'
+
+
+def _wrap_v2g_message(body_json: str, plan: Dict, session_id: Optional[str] = None) -> str:
+    """Wrap a Body JSON object into the canonical V2G_Message envelope.
+
+    The body_json argument is the *Body contents* (NOT including V2G_Message
+    wrapper).  We splice it into the PascalCase envelope:
+
+        {"V2G_Message":{"Header":{"SessionID":"..."},"Body": <body_json>}}
+
+    Sprint-3.2 fix: ``session_id`` parameter overrides the plan-derived
+    default so downstream builders (ServiceDiscoveryReq, PaymentServiceSelectionReq,
+    ...) can receive a dynamically-negotiated SessionID from SessionSetup
+    instead of hardcoding ``"0000000000000000"``.  The TB / PR is responsible
+    for persisting the SessionID into ``vc_SessionID`` and forwarding it; when
+    that variable is not propagated here, the plan-derived fallback wins (which
+    is the previous behaviour, kept for backward compatibility).
+    """
+    sid = session_id if session_id else _sessionid_hex(plan)
+    # Defensive: ensure sid is exactly 32 uppercase hex chars (the XSD contract
+    # for V2G SessionID is 8 bytes = 16 bytes hex string. Old code had
+    # sessionid_hex returning 32 chars for the wrap but the per-message builders
+    # used _sessionid_hex(plan)[:16] which is wrong; keep that behaviour only
+    # for backwards compat when session_id is None.)
+    if not re.fullmatch(r"[0-9A-Fa-f]{16,32}", sid):
+        sid = _DEFAULT_SESSIONID_HEX
+    return (
+        '{"V2G_Message":{'
+        '"Header":{"SessionID":"' + sid.upper() + '"},'
+        '"Body":' + body_json +
+        '}}'
+    )
+
+
+def _esc(payload: str) -> str:
+    """Escape a JSON string for use inside a TTCN-3 charstring literal.
+
+    Only double quotes need to be escaped (TTCN-3 charstring literals treat
+    backslash as an escape introducer; `"` → `\"`). Single quotes and
+    other special characters pass through unchanged because the demo
+    payload uses no JSON backslash sequences that would need preserving.
+    """
+    return payload.replace('"', '\\"')
+
+
+# Per-message-type payload builders.  Each returns the FULL JSON string
+# ready to drop into a `var charstring json_req := ...` literal.
+#
+# Schema source: iso15118-master/iso15118/shared/messages/iso15118_2/body.py
+# Each builder was hand-verified by running the pydantic parse_obj against
+# the constructed dict, so we catch ValidationError BEFORE the SECC
+# rejects the EXI message with V2GMessageValidationError.
+# ---------------------------------------------------------------------------
+
+def _build_session_setup_req_json(plan: Dict, session_id: Optional[str] = None) -> str:
+    body = '{"SessionSetupReq":{"EVCCID":"' + _evccid_hex(plan) + '"}}'
+    return _wrap_v2g_message(body, plan, session_id)
+
+
+def _build_service_discovery_req_json(plan: Dict, session_id: Optional[str] = None) -> str:
+    # ServiceDiscoveryReq: ServiceScope (str, optional, max_length=64),
+    #                     ServiceCategory (optional).
+    # An empty body (no fields) is a valid "match any" request.  We pass
+    # no fields rather than null (pydantic does not accept JSON null for
+    # optional fields with a defined type).
+    return _wrap_v2g_message('{"ServiceDiscoveryReq":{}}', plan, session_id)
+
+
+def _build_payment_service_selection_req_json(plan: Dict, session_id: Optional[str] = None) -> str:
+    # PaymentServiceSelectionReq requires SelectedPaymentOption (enum) and
+    # SelectedServiceList.  pydantic wraps the inner list:
+    #   SelectedServiceList { SelectedService: List[{ServiceID, ...}] }
+    # i.e. the wire-level key is "SelectedService" (alias), not
+    # "SelectedServiceList" — the latter is the python field name.
+    body = (
+        '{"PaymentServiceSelectionReq":{'
+        '"SelectedPaymentOption":"ExternalPayment",'
+        '"SelectedServiceList":{'
+        '"SelectedService":[{"ServiceID":1}]'
+        '}}}'
+    )
+    return _wrap_v2g_message(body, plan, session_id)
+
+
+def _build_authorization_req_json(plan: Dict, session_id: Optional[str] = None) -> str:
+    # AuthorizationReq requires `Id` AND `GenChallenge` BOTH set or
+    # BOTH unset (pydantic root_validator `both_fields_set_or_unset`).
+    # For an unsigned GoodCase (no digital signature), both must be absent.
+    # Sending either field alone triggers a V2GMessageValidationError.
+    return _wrap_v2g_message('{"AuthorizationReq":{}}', plan, session_id)
+
+
+def _build_certificate_installation_req_json(plan: Dict, session_id: Optional[str] = None) -> str:
+    # CertificateInstallationReq: all 3 fields required:
+    #   - Id (str, XML attribute)
+    #   - OEMProvisioningCert (bytes, max 800 bytes)
+    #   - ListOfRootCertificateIDs (RootCertificateIDList, required)
+    # RootCertificateIDList wraps the inner list under the alias
+    # "RootCertificateID" (NOT "ListOfRootCertificateIDs" — the
+    # latter is the python field name):
+    #   RootCertificateIDList { RootCertificateID: List[X509IssuerSerial] }
+    # Each X509IssuerSerial needs X509IssuerName + X509SerialNumber.
+    body = (
+        '{"CertificateInstallationReq":{'
+        '"Id":"' + _evccid_hex(plan) + '",'
+        '"OEMProvisioningCert":"00000000000000000000000000000000",'
+        '"ListOfRootCertificateIDs":{'
+        '"RootCertificateID":[{'
+        '"X509IssuerName":"CN=DemoRoot",'
+        '"X509SerialNumber":1'
+        '}]}'
+        '}}'
+    )
+    return _wrap_v2g_message(body, plan, session_id)
+
+
+def _build_cable_check_req_json(plan: Dict, session_id: Optional[str] = None) -> str:
+    # CableCheckReq: DC_EVStatus (DCEVStatus, required).
+    # DCEVStatus requires EVReady (bool), EVErrorCode (enum), EVRESSSOC
+    # (int 0..100).  EVErrorCode enum permits 'NO_ERROR' which is the
+    # canonical smoke_test value.  Note: DCEVStatus does NOT permit
+    # extra fields like EVCabinConditioning — pydantic's strict
+    # config would reject them, so we only emit the 3 required keys.
+    body = (
+        '{"CableCheckReq":{'
+        '"DC_EVStatus":{'
+        '"EVReady":true,'
+        '"EVErrorCode":"NO_ERROR",'
+        '"EVRESSSOC":50'
+        '}}}'
+    )
+    return _wrap_v2g_message(body, plan, session_id)
+
+
+def _build_power_delivery_req_json(plan: Dict, session_id: Optional[str] = None) -> str:
+    # PowerDeliveryReq: ChargeProgress (enum), SAScheduleTupleID (int
+    # 1..255, required), ChargingProfile (optional), DC_EVPowerDelivery
+    # Parameter (optional).
+    # SAScheduleTupleID = 1 is the canonical first schedule tuple.
+    body = (
+        '{"PowerDeliveryReq":{'
+        '"ChargeProgress":"Start",'
+        '"SAScheduleTupleID":1'
+        '}}'
+    )
+    return _wrap_v2g_message(body, plan, session_id)
+
+
+def _build_metering_receipt_req_json(plan: Dict, session_id: Optional[str] = None) -> str:
+    # MeteringReceiptReq: Id (str, optional), SessionID (hex str,
+    # 16 chars = 8 bytes), SAScheduleTupleID (int 1..255, optional),
+    # MeterInfo (required) = {MeterID (str max 32), MeterReading
+    # (int 0..999999999), SigMeterReading (bytes, optional),
+    # MeterStatus (optional), TMeter (optional)}.
+    body = (
+        '{"MeteringReceiptReq":{'
+        '"Id":"' + _evccid_hex(plan) + '",'
+        '"SessionID":"' + (session_id[:16] if session_id else _sessionid_hex(plan)[:16]) + '",'
+        '"SAScheduleTupleID":1,'
+        '"MeterInfo":{'
+        '"MeterID":"METER001",'
+        '"MeterReading":0,'
+        '"MeterStatus":0'
+        '}}}'
+    )
+    return _wrap_v2g_message(body, plan, session_id)
+
+
+# message_type -> payload builder.  Keys are normalised (lowercase, no
+# underscores/spaces) to match the resolver used in _V2G_FIELD_MAP.
+_PAYLOAD_BUILDERS = {
+    "supportedappprotocol": _build_app_protocol_req_json,
+    "sessionsetup": _build_session_setup_req_json,
+    "servicediscovery": _build_service_discovery_req_json,
+    "servicepaymentselection": _build_payment_service_selection_req_json,
+    "paymentserviceselection": _build_payment_service_selection_req_json,
+    "paymentdetails": _build_payment_service_selection_req_json,  # alias
+    "authorization": _build_authorization_req_json,
+    "certificateinstallation": _build_certificate_installation_req_json,
+    "cablecheck": _build_cable_check_req_json,
+    "powerdelivery": _build_power_delivery_req_json,
+    "meterreceipt": _build_metering_receipt_req_json,
+    "meteringreceipt": _build_metering_receipt_req_json,
+}
+
+
+def _build_goodcase_json_payload(plan: Dict, session_id: Optional[str] = None) -> str:
+    """Return the full V2G_Message JSON string for a GoodCase send.
+
+    Picks the right builder by plan["message_type"].  Falls back to a
+    SessionSetupReq-shaped payload with a logged warning if the message
+    type is unknown — better a compile-correct baseline than a runtime
+    crash from a missing field.
+
+    Sprint-3.2 addition: ``session_id`` is forwarded into the chosen
+    builder so that downstream PR/TB functions (ServiceDiscovery,
+    PaymentServiceSelection, ...) receive the dynamic SessionID
+    negotiated by SessionSetup instead of a hardcoded zero string.
+    """
+    mt = (plan.get("message_type") or "").strip()
+    # Strip trailing ReqType/ResType/Type for builder lookup.
+    for suffix in ("ReqType", "ResType", "Type"):
+        if mt.endswith(suffix):
+            mt = mt[: -len(suffix)]
+    # Also strip a leading "V2GTP" prefix if present (e.g. "V2GTPSessionSetup"
+    # canonicalises to "SessionSetup" for builder lookup).
+    if mt.startswith("V2GTP"):
+        mt = mt[len("V2GTP"):]
+    key = mt.lower().replace("_", "").replace(" ", "")
+
+    builder = _PAYLOAD_BUILDERS.get(key)
+    if builder is None:
+        print(
+            f"[STATIC-RENDERER] [WARN] No JSON payload builder for message_type="
+            f"{plan.get('message_type')!r}; falling back to SessionSetupReq skeleton."
+        )
+        builder = _build_session_setup_req_json
+
+    return _esc(builder(plan, session_id))
 
 
 def _canonical_send_key(message_type: str) -> str:

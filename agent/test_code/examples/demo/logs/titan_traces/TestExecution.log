@@ -1,0 +1,105 @@
+10:27:44.906523 EXECUTOR - TTCN-3 Test Executor started in single mode. Version: CRL 113 200/6 R6B.
+10:27:44.906595 EXECUTOR - Using configuration file: `config/titan_runtime.cfg'.
+10:27:44.906600 EXECUTOR - Maximum number of open file descriptors: 1048576,   FD_SETSIZE = 1024
+10:27:44.907236 EXECUTOR - TTCN Logger v2.2 options: TimeStampFormat:=Time; LogEntityName:=Yes; LogEventTypes:=Yes; SourceInfoFormat:=Single; *.FileMask:=LOG_ALL; *.ConsoleMask:=ACTION | ERROR | TESTCASE | STATISTICS_VERDICT | STATISTICS_UNQUALIFIED | WARNING; LogFileSize:=0; LogFileNumber:=1; DiskFullAction:=Error
+10:27:44.907252 EXECUTOR - Module SECC_PIXIT has the following parameters: { PIXIT_SECC_CMN_TLS := true, PIXIT_SECC_CMN_TLS_Required := true, PIXIT_SECC_CMN_SUT_IP_Address := "192.168.1.100", PIXIT_SECC_CMN_SUT_Port := 15118, PIXIT_SECC_CMN_SUT_IPv6_Multicast := "ff02::01", PIXIT_SECC_CMN_Expected_EVSE_ID := "DE*IPG*E12345*1", PIXIT_SECC_CMN_Network_Interface := "eth0", PIXIT_SECC_CMN_VLAN_ID := 0, PIXIT_SECC_CMN_MTU_Size := 1500, PIXIT_SECC_CMN_Message_Timeout := 2.000000, PIXIT_SECC_CMN_Sequence_Timeout := 2.000000, PIXIT_SECC_CMN_CommunicationSetup_Timeout := 10.000000, PIXIT_SECC_CMN_TCP_Connection_Timeout := 5.000000, PIXIT_SECC_CMN_TLS_Handshake_Timeout := 10.000000, PIXIT_SECC_CMN_Test_eVCCID := { content := '123456789ABC'O }, PIXIT_SECC_CMN_Test_SessionID := { content := '0000000000000000'O }, PIXIT_SECC_CMN_Test_Root_CA := "V2G_ROOT_CA", PIXIT_SECC_CMN_Test_Contract_Cert := "CONTRACT_CERT", PIXIT_SECC_CMN_Hardware_Device_Path := "/dev/ttyUSB0", PIXIT_SECC_CMN_Hardware_Baudrate := 115200, PIXIT_SECC_CMN_Combined_Testing_Mode := false, PIXIT_SECC_CMN_SLAC_Required := false, PIXIT_SECC_CMN_SDP_Response_Timeout := 1.000000, PIXIT_SECC_CMN_SDP_Max_Retries := 3, PIXIT_SECC_CMN_Enable_Detailed_Logging := true, PIXIT_SECC_CMN_Log_File_Path := "../logs/titan_traces/", PIXIT_SECC_CMN_Validate_Cert_Chain := true, PIXIT_SECC_CMN_Accept_Expired_Certs := false, PIXIT_SECC_CMN_Accept_Self_Signed_Certs := false }
+10:27:44.907332 EXECUTOR - Initializing module DemoPassTC.
+10:27:44.907346 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/DemoPassTC.ttcn:0 Initializing module SECC_Constants.
+10:27:44.907361 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn:0 Initializing module SECC_TestSystem.
+10:27:44.907374 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn:0 Initializing module SECC_Types.
+10:27:44.907386 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/2_Architecture/ComponentsAndPorts/ComponentsAndPorts.ttcn:0 Initialization of module SECC_Types finished.
+10:27:44.907398 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/1_Data_Definitions/Types/TimerAndConstants.ttcn:0 Initialization of module SECC_TestSystem finished.
+10:27:44.907409 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/DemoPassTC.ttcn:0 Initialization of module SECC_Constants finished.
+10:27:44.907421 EXECUTOR - Initialization of module DemoPassTC finished.
+10:27:44.907432 EXECUTOR - Initializing module PostConditions_SECC_15118_2.
+10:27:44.907442 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initializing module SECC_CmnTemplates.
+10:27:44.907501 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initialization of module SECC_CmnTemplates finished.
+10:27:44.907525 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initializing module f_SECC_CMN_PO_InitialState_001.
+10:27:44.907537 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PostConditions/PostConditions_SECC_15118_2.ttcn:0 Initialization of module f_SECC_CMN_PO_InitialState_001 finished.
+10:27:44.907548 EXECUTOR - Initialization of module PostConditions_SECC_15118_2 finished.
+10:27:44.907568 EXECUTOR - Initializing module PreConditions_SECC_15118_2.
+10:27:44.907580 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn:0 Initializing module f_SECC_CMN_PR_InitConfiguration_001.
+10:27:44.907592 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn:0 Initialization of module f_SECC_CMN_PR_InitConfiguration_001 finished.
+10:27:44.907603 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn:0 Initializing module f_SECC_CMN_PR_SupportedAppProtocol_001.
+10:27:44.907614 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/PreConditions_SECC_15118_2.ttcn:0 Initialization of module f_SECC_CMN_PR_SupportedAppProtocol_001 finished.
+10:27:44.907625 EXECUTOR - Initialization of module PreConditions_SECC_15118_2 finished.
+10:27:44.907634 EXECUTOR - Initializing module PreGenRecordOf.
+10:27:44.907644 EXECUTOR - Initialization of module PreGenRecordOf finished.
+10:27:44.907654 EXECUTOR - Initializing module SECC_CommonFunctions.
+10:27:44.907664 EXECUTOR - Initialization of module SECC_CommonFunctions finished.
+10:27:44.907673 EXECUTOR - Initializing module SECC_PICS.
+10:27:44.907683 EXECUTOR - Initialization of module SECC_PICS finished.
+10:27:44.907693 EXECUTOR - Initializing module SECC_PIXIT.
+10:27:44.907703 EXECUTOR - Initialization of module SECC_PIXIT finished.
+10:27:44.907713 EXECUTOR - Initializing module TC_SECC_CMN_VTB_V2GTPSessionSetup_001.
+10:27:44.907723 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:0 Initializing module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.
+10:27:44.907735 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:0 Initialization of module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001 finished.
+10:27:44.907746 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:0 Initializing module f_SECC_CMN_PO_ShutdownConfiguration_001.
+10:27:44.907757 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:0 Initialization of module f_SECC_CMN_PO_ShutdownConfiguration_001 finished.
+10:27:44.907768 EXECUTOR - Initialization of module TC_SECC_CMN_VTB_V2GTPSessionSetup_001 finished.
+10:27:44.907779 EXECUTOR - Initializing module TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.
+10:27:44.907790 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:0 Initializing module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001.
+10:27:44.907803 EXECUTOR /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001.ttcn:0 Initialization of module f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001 finished.
+10:27:44.907814 EXECUTOR - Initialization of module TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001 finished.
+10:27:44.907824 EXECUTOR - Initializing module TestCases_SECC.
+10:27:44.907834 EXECUTOR - Initialization of module TestCases_SECC finished.
+10:27:44.907844 EXECUTOR - Initializing module TestCases_SECC_BadCase.
+10:27:44.907854 EXECUTOR - Initialization of module TestCases_SECC_BadCase finished.
+10:27:44.907863 EXECUTOR - Initializing module TitanLoggerApi.
+10:27:44.907873 EXECUTOR - Initialization of module TitanLoggerApi finished.
+10:27:44.907882 EXECUTOR - Initializing module TitanLoggerControl.
+10:27:44.907891 EXECUTOR - Initialization of module TitanLoggerControl finished.
+10:27:44.907901 EXECUTOR - Initializing module f_SECC_CMN_PR_Binding_001.
+10:27:44.907911 EXECUTOR - Initialization of module f_SECC_CMN_PR_Binding_001 finished.
+10:27:44.907920 EXECUTOR - Initializing module f_SECC_CMN_PR_InitConfiguration_002.
+10:27:44.907938 EXECUTOR - Initialization of module f_SECC_CMN_PR_InitConfiguration_002 finished.
+10:27:44.907949 EXECUTOR - Initializing module f_SECC_CMN_PR_PLCLinkStatusCombinedTesting_001.
+10:27:44.907959 EXECUTOR - Initialization of module f_SECC_CMN_PR_PLCLinkStatusCombinedTesting_001 finished.
+10:27:44.907968 EXECUTOR - Initializing module f_SECC_CMN_PR_SetPowerFlowConfiguration_001.
+10:27:44.907978 EXECUTOR - Initialization of module f_SECC_CMN_PR_SetPowerFlowConfiguration_001 finished.
+10:27:44.907987 EXECUTOR - Initializing module f_SECC_CMN_PR_SetProximityPilot_001.
+10:27:44.907997 EXECUTOR - Initialization of module f_SECC_CMN_PR_SetProximityPilot_001 finished.
+10:27:44.908006 EXECUTOR - Initializing module f_SECC_CMN_PR_StateA_001.
+10:27:44.908015 EXECUTOR - Initialization of module f_SECC_CMN_PR_StateA_001 finished.
+10:27:44.908025 EXECUTOR - Initializing module f_SECC_CMN_PR_StateB_001.
+10:27:44.908034 EXECUTOR - Initialization of module f_SECC_CMN_PR_StateB_001 finished.
+10:27:44.908044 EXECUTOR - Initializing module f_SECC_CMN_TB_VTB_SDP_001.
+10:27:44.908053 EXECUTOR - Initialization of module f_SECC_CMN_TB_VTB_SDP_001 finished.
+10:27:44.908062 EXECUTOR - Initializing module f_SECC_CMN_TB_VTB_SupportedAppProtocol_001.
+10:27:44.908071 EXECUTOR - Initialization of module f_SECC_CMN_TB_VTB_SupportedAppProtocol_001 finished.
+10:27:44.908081 EXECUTOR - Initializing module f_SECC_PO_ShutdownConfiguration_002.
+10:27:44.908090 EXECUTOR - Initialization of module f_SECC_PO_ShutdownConfiguration_002 finished.
+10:27:44.908103 STATISTICS /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TestCases_SECC.ttcn:5(controlpart:TestCases_SECC) Execution of control part in module TestCases_SECC started.
+10:27:44.908164 TESTCASE /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:45(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_001) Test case TC_SECC_CMN_VTB_V2GTPSessionSetup_001 started.
+10:27:44.908214 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:45(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_001) Initializing variables, timers and ports of component type SECC_TestSystem.SECCTester inside testcase TC_SECC_CMN_VTB_V2GTPSessionSetup_001.
+10:27:44.908252 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:45(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_001) Port pt_V2G_TCP_TLS_ALM_SECC_Port was started.
+10:27:44.908271 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:45(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_001) Port pt_V2G_UDP_SDP_Port was started.
+10:27:44.908286 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/4_TestCases/TestCases_SECC/TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn:45(testcase:TC_SECC_CMN_VTB_V2GTPSessionSetup_001) Component type SECC_TestSystem.SECCTester was initialized.
+10:27:44.908304 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:6(function:f_SECC_CMN_PR_InitConfiguration_001) Mapping port mtc:pt_V2G_TCP_TLS_ALM_SECC_Port to system:pt_V2G_TCP_TLS_ALM_SECC_Port.
+10:27:44.908334 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:6(function:f_SECC_CMN_PR_InitConfiguration_001) Port pt_V2G_TCP_TLS_ALM_SECC_Port was mapped to system:pt_V2G_TCP_TLS_ALM_SECC_Port.
+10:27:44.908393 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:6(function:f_SECC_CMN_PR_InitConfiguration_001) Map operation of mtc:pt_V2G_TCP_TLS_ALM_SECC_Port to system:pt_V2G_TCP_TLS_ALM_SECC_Port finished.
+10:27:44.908428 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:7(function:f_SECC_CMN_PR_InitConfiguration_001) Mapping port mtc:pt_V2G_UDP_SDP_Port to system:pt_V2G_UDP_SDP_Port.
+10:27:44.908454 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:7(function:f_SECC_CMN_PR_InitConfiguration_001) Port pt_V2G_UDP_SDP_Port was mapped to system:pt_V2G_UDP_SDP_Port.
+10:27:44.908470 PARALLEL /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:7(function:f_SECC_CMN_PR_InitConfiguration_001) Map operation of mtc:pt_V2G_UDP_SDP_Port to system:pt_V2G_UDP_SDP_Port finished.
+10:27:44.908490 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:18(function:f_SECC_CMN_PR_InitConfiguration_001) Sent on pt_V2G_UDP_SDP_Port to system octetstring : '01FE9000000000021000'O
+10:27:44.909256 TIMEROP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:22(function:f_SECC_CMN_PR_InitConfiguration_001) Start timer t_sdp: 5 s
+10:27:44.926411 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:24(function:f_SECC_CMN_PR_InitConfiguration_001) Message enqueued on pt_V2G_UDP_SDP_Port from system octetstring : '01FE900100000014FE80000000000000A62CB277C0C43370EE071000'O id 1
+10:27:49.914641 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:25(function:f_SECC_CMN_PR_InitConfiguration_001) Receive operation on port pt_V2G_UDP_SDP_Port succeeded, message from system(): octetstring: '01FE900100000014FE80000000000000A62CB277C0C43370EE071000'O id 1
+10:27:49.915012 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:25(function:f_SECC_CMN_PR_InitConfiguration_001) Message with id 1 was extracted from the queue of pt_V2G_UDP_SDP_Port.
+10:27:49.915101 TIMEROP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:26(function:f_SECC_CMN_PR_InitConfiguration_001) Stop timer t_sdp: 5 s
+10:27:49.915142 USER /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_InitConfiguration_001.ttcn:27(function:f_SECC_CMN_PR_InitConfiguration_001) SDP discovery completed, SECC TCP server should be ready
+10:27:49.915171 USER /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:47(function:f_SECC_CMN_PR_SupportedAppProtocol_001) Phase B: Sending SupportedAppProtocolReq via OCTETSTRING JSON...
+10:27:49.915192 USER /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:48(function:f_SECC_CMN_PR_SupportedAppProtocol_001) JSON payload: "{\"supportedAppProtocolReq\":{\"AppProtocol\":[{\"ProtocolNamespace\":\"urn:iso:15118:2:2013:MsgDef\",\"VersionNumberMajor\":2,\"VersionNumberMinor\":0,\"SchemaID\":1,\"Priority\":1}]}}"
+10:27:49.915311 TIMEROP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:49(function:f_SECC_CMN_PR_SupportedAppProtocol_001) Start timer tc_V2G_EVCC_Msg_Timer: 60 s
+10:27:49.915444 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:52(function:f_SECC_CMN_PR_SupportedAppProtocol_001) Sent on pt_V2G_TCP_TLS_ALM_SECC_Port to system octetstring : '7B22737570706F7274656441707050726F746F636F6C526571223A7B2241707050726F746F636F6C223A5B7B2250726F746F636F6C4E616D657370616365223A2275726E3A69736F3A31353131383A323A323031333A4D7367446566222C2256657273696F6E4E756D6265724D616A6F72223A322C2256657273696F6E4E756D6265724D696E6F72223A302C22536368656D614944223A312C225072696F72697479223A317D5D7D7D'O ("{\"supportedAppProtocolReq\":{\"AppProtocol\":[{\"ProtocolNamespace\":\"urn:iso:15118:2:2013:MsgDef\",\"VersionNumberMajor\":2,\"VersionNumberMinor\":0,\"SchemaID\":1,\"Priority\":1}]}}")
+10:27:50.587554 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:64(function:f_SECC_CMN_PR_SupportedAppProtocol_001) Message enqueued on pt_V2G_TCP_TLS_ALM_SECC_Port from system @SECC_TestSystem.V2G_PortMessage : { raw := '7B22737570706F7274656441707050726F746F636F6C526573223A7B22526573706F6E7365436F6465223A224F4B5F5375636365737366756C4E65676F74696174696F6E222C22536368656D614944223A317D7D'O ("{\"supportedAppProtocolRes\":{\"ResponseCode\":\"OK_SuccessfulNegotiation\",\"SchemaID\":1}}") } id 1
+10:28:49.973575 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:75(function:f_SECC_CMN_PR_SupportedAppProtocol_001) Receive operation on port pt_V2G_TCP_TLS_ALM_SECC_Port succeeded, message from system(): @SECC_TestSystem.V2G_PortMessage : { raw := '7B22737570706F7274656441707050726F746F636F6C526573223A7B22526573706F6E7365436F6465223A224F4B5F5375636365737366756C4E65676F74696174696F6E222C22536368656D614944223A317D7D'O ("{\"supportedAppProtocolRes\":{\"ResponseCode\":\"OK_SuccessfulNegotiation\",\"SchemaID\":1}}") } id 1
+10:28:49.973741 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:75(function:f_SECC_CMN_PR_SupportedAppProtocol_001) Message with id 1 was extracted from the queue of pt_V2G_TCP_TLS_ALM_SECC_Port.
+10:28:49.973784 TIMEROP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:77(function:f_SECC_CMN_PR_SupportedAppProtocol_001) Stop timer tc_V2G_EVCC_Msg_Timer: 60 s
+10:28:49.973841 USER /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:81(function:f_SECC_CMN_PR_SupportedAppProtocol_001) SupportedAppProtocolRes received (raw JSON): "{\"supportedAppProtocolRes\":{\"ResponseCode\":\"OK_SuccessfulNegotiation\",\"SchemaID\":1}}"
+10:28:49.973889 VERDICTOP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:82(function:f_SECC_CMN_PR_SupportedAppProtocol_001) setverdict(pass): none -> pass reason: "SupportedAppProtocol exchange completed", new component reason: "SupportedAppProtocol exchange completed"
+10:28:49.973944 VERDICTOP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/PreConditions/f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn:89(function:f_SECC_CMN_PR_SupportedAppProtocol_001) getverdict: pass
+10:28:49.973971 USER /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.ttcn:36(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001) Phase C: Sending SessionSetupReq via OCTETSTRING JSON...
+10:28:49.973991 USER /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.ttcn:37(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001) JSON payload: "{\"V2G_Message\":{\"Header\":{\"SessionID\":\"0011223344556677\"},\"Body\":{\"SessionSetupReq\":{\"EVCCID\":\"ABCDEF012345\"}}}}"
+10:28:49.974024 TIMEROP /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.ttcn:38(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001) Start timer tc_V2G_SECC_Msg_Timer: 60 s
+10:28:49.974065 PORTEVENT /tmp/titan_build_1gqZhA/tc_build_129239/src/ttcn3/3_Behavior_Steps/TestBehavior/f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.ttcn:42(function:f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001) Sent on pt_V2G_TCP_TLS_ALM_SECC_Port to system octetstring : '7B225632475F4D657373616765223A7B22486561646572223A7B2253657373696F6E4944223A2230303131323233333434353536363737227D2C22426F6479223A7B2253657373696F6E5365747570526571223A7B22455643434944223A22414243444546303132333435227D7D7D7D'O ("{\"V2G_Message\":{\"Header\":{\"SessionID\":\"0011223344556677\"},\"Body\":{\"SessionSetupReq\":{\"EVCCID\":\"ABCDEF012345\"}}}}")

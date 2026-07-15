@@ -1,0 +1,53 @@
+module SECC_CmnTemplates {
+    import from SECC_Types all;
+
+    // ServiceDiscovery Request template
+    template ServiceDiscoveryReq md_CMN_ServiceDiscoveryReq_001 := {
+        serviceScope := omit,
+        serviceCategory := omit
+    };
+
+    // ServiceDiscovery Response matching template
+    template ServiceDiscoveryRes mdw_SECC_ServiceDiscoveryRes_001 := {
+        ResponseCode := ?,
+        ChargeService := ?,
+        ServiceList := *
+    };
+
+    // SessionSetup Request template
+    template SessionSetupReq md_CMN_SessionSetupReq_001 := {
+        EVCCID := "123456789ABC"
+    };
+
+    // SessionSetup Response matching template
+    template SessionSetupRes mdw_SECC_SessionSetupRes_001 := {
+        ResponseCode := ?,
+        EVSEID := ?,
+        EVSETimeStamp := *
+    };
+
+    // SupportedAppProtocol Request template
+    template SupportedAppProtocolReq md_CMN_SupportedAppProtocolReq_001 := {
+        protocolArray := omit
+    };
+
+    // SupportedAppProtocol Response matching template
+    template SupportedAppProtocolRes mdw_SECC_SupportedAppProtocolRes_001 := {
+        ResponseCode := ?,
+        SchemaID := *,
+        SchemaURI := *
+    };
+
+    // Common timeout altstep
+    altstep a_CMN_WaitTimeout(inout timer p_timer) {
+        [] p_timer.timeout {
+            setverdict(inconc, "Timeout occurred");
+        }
+    }
+
+    // Verdict helper
+    function f_CMN_IsVerdictPass(in verdicttype p_verdict) return boolean {
+        return (p_verdict == pass);
+    }
+
+} // end module

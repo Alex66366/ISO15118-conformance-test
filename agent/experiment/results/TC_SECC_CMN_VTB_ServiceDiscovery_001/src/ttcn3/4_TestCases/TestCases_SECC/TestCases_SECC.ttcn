@@ -1,0 +1,8 @@
+module TestCases_SECC {
+    import from SECC_TestSystem all;
+    import from TC_SECC_CMN_VTB_ServiceDiscovery_001 all;
+
+    control {
+        execute(TC_SECC_CMN_VTB_ServiceDiscovery_001());
+    }
+} // end module

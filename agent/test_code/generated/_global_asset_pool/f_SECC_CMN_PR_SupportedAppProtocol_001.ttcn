@@ -1,0 +1,85 @@
+module f_SECC_CMN_PR_SupportedAppProtocol_001 {
+    import from SECC_TestSystem all;
+    import from SECC_Constants all;
+    import from SECC_CmnTemplates all;
+
+    /**
+     * @desc    SupportedAppProtocolReq/Res exchange.
+     *          Position 2 in precondition chain.
+     *          Establishes protocol negotiation before SessionSetup.
+     */
+    function f_SECC_CMN_PR_SupportedAppProtocol_001()
+        runs on SECCTester
+        return verdicttype
+    {
+        timer tc_msg := PX_SECC_CMN_Message_Timeout;
+
+        // Build the SupportedAppProtocolReq as a JSON literal.  This is
+        // the canonical PascalCase envelope expected by the EXI codec
+        // for the AppProtocol namespace.
+        var charstring json_req :=
+            "{"
+            & "\"supportedAppProtocolReq\":{"
+            & "\"AppProtocol\":[{"
+            & "\"ProtocolNamespace\":\"urn:iso:15118:2:2013:MsgDef\","
+            & "\"VersionNumberMajor\":2,"
+            & "\"VersionNumberMinor\":0,"
+            & "\"SchemaID\":1,"
+            & "\"Priority\":1"
+            & "}]"
+            & "}"
+            & "}";
+
+        log("Sending SupportedAppProtocolReq...");
+        tc_msg.start(PX_SECC_CMN_Message_Timeout);
+
+        // Sprint 3 Dumb Terminal: port out is octetstring (raw JSON).
+        pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct(json_req));
+
+        var V2G_PortMessage v_err;
+        var V2G_PortMessage v_msg;
+
+        alt {
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ error_indicator := ? })
+                -> value v_err {
+                tc_msg.stop;
+                setverdict(fail,
+                    "C++ adapter error_indicator: ",
+                    v_err.error_indicator.source,
+                    ": ", v_err.error_indicator.detail);
+            }
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? })
+                -> value v_msg {
+                tc_msg.stop;
+                var octetstring resp_payload := v_msg.raw;
+                var charstring  resp_json    := oct2char(resp_payload);
+                log("SECC SupportedAppProtocol response (raw JSON): ", resp_json);
+
+                var boolean resp_ok := false;
+                if (match(resp_json, "*\"ResponseCode\":\"OK*\"")) {
+                    resp_ok := true;
+                } else if (match(resp_json, "*\"ResponseCode\":\"FAILED*\"")) {
+                    setverdict(fail,
+                        "SupportedAppProtocol rejected by SECC. ResponseCode=FAILED_*.");
+                } else if (match(resp_json, "*\"Notification\"*") or
+                           match(resp_json, "*ParsingError*")) {
+                    setverdict(fail,
+                        "SupportedAppProtocol Notification fault: ", resp_json);
+                } else {
+                    setverdict(fail,
+                        "SupportedAppProtocol: ResponseCode field missing or unparseable: ",
+                        resp_json);
+                }
+                if (resp_ok) {
+                    setverdict(pass,
+                        "SupportedAppProtocol exchange successful — SECC returned OK");
+                }
+            }
+            [] tc_msg.timeout {
+                setverdict(inconc, "Timeout waiting for SupportedAppProtocolRes");
+            }
+        }
+
+        return getverdict;
+    }
+}

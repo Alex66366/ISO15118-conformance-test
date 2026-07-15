@@ -1,0 +1,261 @@
+module SECC_Types {
+
+    // Section 1: Basic ID types
+    type record EvccIDType { octetstring content optional };
+    type record SessionIDType { octetstring content optional };
+
+    // Section 2: AppProtocol messages
+    type record AppProtocolEntry {
+        charstring   protocolNamespace,
+        integer      versionNumberMajor,
+        integer      versionNumberMinor,
+        integer      SchemaID optional
+    };
+    type record SupportedAppProtocolReq {
+        AppProtocolEntry protocolArray[1 .. 16] optional
+    };
+    type record SupportedAppProtocolRes {
+        integer ResponseCode,
+        integer SchemaID optional
+    };
+
+    // Section 3: SessionSetup messages
+    type record SessionSetupReq {
+        charstring   EVCCID
+    };
+    type record SessionSetupRes {
+        integer ResponseCode,
+        charstring   EVSEID,
+        integer EVSETimeStamp optional
+    };
+
+    // Section 4: ServiceDiscovery messages
+    type record ServiceType {
+        integer      ServiceID,
+        charstring   ServiceName optional,
+        integer      ServiceCategory optional,
+        boolean      FreeService optional
+    };
+    type record ServiceDiscoveryReq {
+        integer      ServiceScope optional,
+        integer      ServiceCategory optional
+    };
+    type record ServiceDiscoveryRes {
+        integer      ResponseCode,
+        ServiceType  ChargeService,
+        ServiceType  ServiceList[0 .. 8] optional
+    };
+
+    // Section 5: ServiceDetails messages
+    type record ServiceDetailsReq {
+        integer      ServiceID
+    };
+    type record ServiceDetailsRes {
+        integer      ResponseCode,
+        integer      ServiceID,
+        charstring   ServiceParameterList optional
+    };
+
+    // Section 6: ServicePaymentSelection messages
+    type record ServicePaymentSelectionReq {
+        integer      SelectedPaymentOption,
+        integer      SelectedServiceList[1 .. 16] optional
+    };
+    type record ServicePaymentSelectionRes {
+        integer      ResponseCode
+    };
+
+    // Section 7: PaymentDetails messages
+    type record PaymentDetailsReq {
+        charstring   eMAID,
+        charstring   ContractSignatureCertChain optional
+    };
+    type record PaymentDetailsRes {
+        integer      ResponseCode,
+        charstring   GenChallenge optional,
+        integer      EVSETimeStamp optional
+    };
+
+    // Section 8: Authorization messages
+    type record AuthorizationReq {
+        charstring   GenChallenge optional,
+        charstring   Id optional
+    };
+    type record AuthorizationRes {
+        integer      ResponseCode,
+        integer      EVSEProcessing
+    };
+
+    // Section 9: CertificateInstallation messages
+    type record CertificateInstallationReq {
+        charstring   Id,
+        charstring   OEMProvisioningCert,
+        charstring   ListOfRootCertificateIDs optional
+    };
+    type record CertificateInstallationRes {
+        integer      ResponseCode,
+        charstring   SAProvisioningCertificateChain optional,
+        charstring   ContractSignatureCertChain optional,
+        charstring   ContractSignatureEncryptedPrivateKey optional,
+        charstring   DHpublickey optional,
+        charstring   eMAID optional
+    };
+
+    // Section 10: CertificateUpdate messages
+    type record CertificateUpdateReq {
+        charstring   Id,
+        charstring   ContractSignatureCertChain optional,
+        charstring   ListOfRootCertificateIDs optional,
+        charstring   eMAID optional
+    };
+    type record CertificateUpdateRes {
+        integer      ResponseCode,
+        charstring   SAProvisioningCertificateChain optional,
+        charstring   ContractSignatureCertChain optional,
+        charstring   ContractSignatureEncryptedPrivateKey optional,
+        charstring   DHpublickey optional,
+        charstring   eMAID optional,
+        integer      RetryCounter optional
+    };
+
+    // Section 11: ChargeParameterDiscovery messages
+    type record ChargeParameterDiscoveryReq {
+        integer      MaxEntriesSAScheduleTuple optional,
+        integer      RequestedEnergyTransferMode
+    };
+    type record ChargeParameterDiscoveryRes {
+        integer      ResponseCode,
+        integer      EVSEProcessing,
+        charstring   SAScheduleList optional
+    };
+
+    // Section 12: PowerDelivery messages
+    type record PowerDeliveryReq {
+        integer      ChargeProgress,
+        integer      SAScheduleTupleID,
+        charstring   ChargingProfile optional
+    };
+    type record PowerDeliveryRes {
+        integer      ResponseCode,
+        charstring   EVSEStatus optional
+    };
+
+    // Section 13: SessionStop messages
+    type record SessionStopReq {
+        integer      ChargingSession
+    };
+    type record SessionStopRes {
+        integer      ResponseCode
+    };
+
+    // Section 14: ChargingStatus messages
+    type record ChargingStatusReq {
+    };
+    type record ChargingStatusRes {
+        integer      ResponseCode,
+        charstring   EVSEID,
+        integer      SAScheduleTupleID,
+        charstring   EVSEStatus optional
+    };
+
+    // Section 15: CableCheck messages
+    type record CableCheckReq {
+        charstring   DCEVStatus
+    };
+    type record CableCheckRes {
+        integer      ResponseCode,
+        integer      EVSEProcessing,
+        charstring   DCEVSEStatus
+    };
+
+    // Section 16: CurrentDemand messages
+    type record CurrentDemandReq {
+        charstring   DCEVStatus,
+        charstring   EVTargetCurrent,
+        charstring   EVMaximumVoltageLimit optional,
+        charstring   EVMaximumCurrentLimit optional,
+        charstring   EVMaximumPowerLimit optional
+    };
+    type record CurrentDemandRes {
+        integer      ResponseCode,
+        charstring   DCEVSEStatus,
+        charstring   EVSEPresentVoltage,
+        charstring   EVSEPresentCurrent
+    };
+
+    // Section 17: MeterReceipt messages
+    type record MeterReceiptReq {
+        charstring   Id optional,
+        charstring   SessionID,
+        charstring   SAScheduleTupleID optional,
+        charstring   MeterInfo
+    };
+    type record MeterReceiptRes {
+        integer      ResponseCode,
+        charstring   ACEVSEStatus optional
+    };
+
+    // Section 18: PreCharge messages
+    type record PreChargeReq {
+        charstring   DCEVStatus,
+        charstring   EVTargetVoltage,
+        charstring   EVTargetCurrent
+    };
+    type record PreChargeRes {
+        integer      ResponseCode,
+        charstring   DCEVSEStatus,
+        charstring   EVSEPresentVoltage
+    };
+
+    // Section 19: WeldingDetection messages
+    type record WeldingDetectionReq {
+        charstring   DCEVStatus
+    };
+    type record WeldingDetectionRes {
+        integer      ResponseCode,
+        charstring   DCEVSEStatus,
+        charstring   EVSEPresentVoltage
+    };
+
+    // Section 20: V2G_MessageUnion (top-level union for V2G messages)
+    type union V2G_MessageUnion {
+        SupportedAppProtocolReq       supportedAppProtocolReq,
+        SupportedAppProtocolRes       supportedAppProtocolRes,
+        SessionSetupReq               sessionSetupReq,
+        SessionSetupRes               sessionSetupRes,
+        ServiceDiscoveryReq           serviceDiscoveryReq,
+        ServiceDiscoveryRes           serviceDiscoveryRes,
+        ServiceDetailsReq             serviceDetailsReq,
+        ServiceDetailsRes             serviceDetailsRes,
+        ServicePaymentSelectionReq    servicePaymentSelectionReq,
+        ServicePaymentSelectionRes    servicePaymentSelectionRes,
+        PaymentDetailsReq             paymentDetailsReq,
+        PaymentDetailsRes             paymentDetailsRes,
+        AuthorizationReq              authorizationReq,
+        AuthorizationRes              authorizationRes,
+        CertificateInstallationReq    certificateInstallationReq,
+        CertificateInstallationRes    certificateInstallationRes,
+        CertificateUpdateReq          certificateUpdateReq,
+        CertificateUpdateRes          certificateUpdateRes,
+        ChargeParameterDiscoveryReq   chargeParameterDiscoveryReq,
+        ChargeParameterDiscoveryRes   chargeParameterDiscoveryRes,
+        PowerDeliveryReq              powerDeliveryReq,
+        PowerDeliveryRes              powerDeliveryRes,
+        SessionStopReq                sessionStopReq,
+        SessionStopRes                sessionStopRes,
+        ChargingStatusReq             chargingStatusReq,
+        ChargingStatusRes             chargingStatusRes,
+        CableCheckReq                 cableCheckReq,
+        CableCheckRes                 cableCheckRes,
+        CurrentDemandReq              currentDemandReq,
+        CurrentDemandRes              currentDemandRes,
+        MeterReceiptReq               meterReceiptReq,
+        MeterReceiptRes               meterReceiptRes,
+        PreChargeReq                  preChargeReq,
+        PreChargeRes                  preChargeRes,
+        WeldingDetectionReq           weldingDetectionReq,
+        WeldingDetectionRes           weldingDetectionRes,
+        V2G_MessageUnion              v2g
+    };
+
+} // end module

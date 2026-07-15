@@ -13,7 +13,7 @@ Retrieve the following in priority order:
 
 1. **TTCN-3 Template Definitions** for the message type -- show the record fields,
    mandatory vs. optional fields, and `_isUsed` flag usage. The Core Agent now uses
-   structured TTCN-3 templates and the ExiCodecAdapter handles EXI encoding automatically.
+   structured TTCN-3 templates and the Python EXI microservice (localhost:9000) handles EXI encoding automatically.
 2. **Test behavior function** showing send/receive with structured templates
 3. **Test case module structure** showing the canonical pattern
 4. **DO NOT retrieve raw hexadecimal EXI byte sequences** -- the Core Agent uses

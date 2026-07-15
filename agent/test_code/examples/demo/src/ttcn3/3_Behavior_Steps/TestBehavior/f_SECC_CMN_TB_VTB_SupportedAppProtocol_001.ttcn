@@ -12,11 +12,20 @@ module f_SECC_CMN_TB_VTB_SupportedAppProtocol_001 {
     //       test behavior function body when adding a dedicated
     //       SupportedAppProtocol test case that is the PRIMARY test target.
     //
-    // SOP for V2G application messages:
-    //   STEP 1: Lookup wire_hex in exi_payload_library.json
-    //   STEP 2: Locate md_CMN_SupportedAppProtocolReq_001 in SECC_CmnTemplates.ttcn
-    //   STEP 3: Send via structured union template
-    //   STEP 4: Receive via matching template, set verdict
+    // Sprint 3 Dumb Terminal protocol (port `in` is V2G_PortMessage):
+    //   Send (port `out` is octetstring):
+    //     pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct(<well-formed JSON>))
+    //   Receive alt-block template:
+    //     alt {
+    //       [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ error_indicator := ? })
+    //           -> value v_err { setverdict(fail, ...); }  // FAIL-FAST (MANDATORY 1st branch)
+    //       [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? })
+    //           -> value v_msg { var octetstring j := v_msg.raw; ... }  // SUCCESS
+    //       [] tc_V2G_SECC_Msg_Timer.timeout { setverdict(inconc, ...); }
+    //     }
+    //
+    // NOTE: SupportedAppProtocol is normally a PRECONDITION.
+    //       Implement this as a dedicated primary test when needed.
     //
     // NOTE: This is a stub. Implement the test behavior function body
     //       when adding a SupportedAppProtocol test case.
@@ -28,9 +37,12 @@ module f_SECC_CMN_TB_VTB_SupportedAppProtocol_001 {
     {
         // TODO: Implement SupportedAppProtocol test behavior.
         // For SupportedAppProtocol as the primary test target:
-        //   - Send: pt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { supportedAppProtocolReq := md_CMN_SupportedAppProtocolReq_001 } })
-        //   - Receive: { supportedAppProtocolRes := md_CMN_SupportedAppProtocolRes_001 }
+        //   - Send (Sprint 3):
+        //       pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct("{\"V2G_Message\":...}"))
+        //   - Receive alt-block (Sprint 3): see header comment above.
         log("STUB: f_SECC_CMN_TB_VTB_SupportedAppProtocol_001 -- implement when adding SupportedAppProtocol test case");
-        return pass;
+        // LAYER-1/3 FIX (2026-07-12): see SDP TB for explanation.
+        setverdict(pass, "SupportedAppProtocol stub short-circuit (verdict_not_set fix)");
+        return getverdict;
     }
 }

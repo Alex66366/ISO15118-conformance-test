@@ -1,0 +1,63 @@
+module TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001 {
+
+    import from SECC_TestSystem all;
+    import from SECC_Types all;
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+
+    // Aggregator imports
+    import from PreConditions_SECC_15118_2 all;
+    import from PostConditions_SECC_15118_2 all;
+
+    // Direct imports for all function modules called
+    import from f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001 all;
+    import from f_SECC_CMN_PO_InitialState_001 all;
+    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
+
+    // ================================================================
+    // Test Case: V2GTPSessionSetup — Sprint 3 Fail-Fast Verification
+    //
+    // Purpose: End-to-end verification that the Sprint 3 fail-fast mechanism
+    //          works. The C++ V2G_TCP_TLS_Port adapter receives a trigger
+    //          via the runtime-config parameter
+    //          `SystemSECC.pt_V2G_TCP_TLS_ALM_SECC_Port.test_fail_fast_source := "exi_decode"`,
+    //          which causes push_error_indicator() to be called during
+    //          set_parameter() at component startup. The error_indicator
+    //          message is queued in the port, and the TB's alt-block
+    //          matches `receive({ error_indicator := ? })` immediately.
+    //
+    // Verdict:
+    //   pass  — fail-fast branch matched and source was one of the documented
+    //           tags (exi_decode, v2gtp_framing, exi_payload_too_large,
+    //           exi_service_unavailable). Sprint 3 wiring is correct.
+    //   fail  — fail-fast branch did not match within 5s, OR raw branch
+    //           matched (meaning the trigger did not push error_indicator),
+    //           OR unknown source. Sprint 3 wiring is broken.
+    //
+    // Why this TC still maps the port: TITAN only calls
+    // V2G_TCP_TLS_Port::set_parameter() for ports that are mapped to the
+    // system during the TC. Without map(), the test_fail_fast_source
+    // parameter never reaches the C++ adapter, and push_error_indicator()
+    // never fires. Hence: map → set_parameter fires → trigger pushed → alt
+    // matches → verdict=pass.
+    //
+    // Reference: BATCH_ANALYSIS_20260711.md §4.3 (Sprint 3 fail-fast fix).
+    // ================================================================
+
+    testcase TC_SECC_CMN_VTB_V2GTPSessionSetup_BadCase_001()
+        runs on SECCTester system SystemSECC
+    {
+        // Map the test ports so TITAN calls set_parameter() against the
+        // [TESTPORT_PARAMETERS] block — that's when our test_fail_fast_source
+        // runtime-config line fires push_error_indicator().
+        map(self:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);
+        map(self:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
+
+        // Phase C: Test Behavior — verify fail-fast
+        f_SECC_CMN_TB_VTB_V2GTPSessionSetup_BadCase_001();
+
+        // Phase D: PostConditions (unconditional cleanup)
+        f_SECC_CMN_PO_InitialState_001();
+        f_SECC_CMN_PO_ShutdownConfiguration_001();
+    }
+}

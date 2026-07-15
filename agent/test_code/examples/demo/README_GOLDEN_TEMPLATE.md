@@ -1,248 +1,170 @@
-# ISO 15118-2 V2G Test Suite -- Golden Template
+# ISO 15118-2 V2G Test Suite — Sprint 2 Golden Template
 
-**Version:** 1.0 (Golden Template)
-**Purpose:** Minimal working reference implementation for the Multi-Agent Automated Generation Framework
-**Standards:** ISO 15118-2 / DIN SPEC 70121
-
----
-
-## Overview
-
-This `demo/` directory is the **Golden Template** -- a minimal, working reference that demonstrates the complete V2G message exchange pipeline end-to-end. It is used as the blueprint by the Multi-Agent system to generate the remaining 20+ message sequences.
-
-The demo implements a single test case: `TC_SECC_CMN_VTB_V2GTPSessionSetup_001`, which performs the SupportedAppProtocol exchange followed by a SessionSetup exchange with the SECC.
+**Version:** Sprint 2 — v4 Dumb Terminal
+**Purpose:** Minimal working reference for the Multi-Agent Automated Generation Framework
+**Standards:** ISO 15118-2 / DIN SPEC 70121 / ISO 15118-20
+**Architecture:** Universal EXI Bridge v4 — Python microservice + Siemens EXIficient
 
 ---
 
-## The 4-Step SOP (Pure Static Data-Driven Pipeline)
+## Design Philosophy: Dumb Terminal
 
-Every V2G application message exchange follows this mechanical procedure:
+The C++ adapter knows **absolutely nothing** about:
+- V2G message semantics (SessionSetupReq, ServiceDiscoveryReq, etc.)
+- JSON field names or XSD element names
+- ISO 15118 namespaces
+- Session IDs or any application-level state
 
-| Step | Action | Details |
-|------|--------|---------|
-| **1** | Lookup JSON | Read `exi_payload_library.json`. Record `wire_hex`, `is_dynamic`, `feature_pattern` anchor bytes, and `dynamic_field_offsets`. |
-| **2** | Locate Template | Find `md_CMN_{Msg}Req_001` (send) in `CmnTemplates.ttcn`. For receive, use lenient template `{ msgRes := ? }`. |
-| **3** | Send Union | `pt_V2G_TCP_TLS_ALM_SECC_Port.send({ msgType := md_CMN_MsgReq_001 })` -- `StaticExiDecoder` encodes from JSON patterns. |
-| **4** | Receive Verdict | `receive({ resType := ? })` -- `StaticExiDecoder` extracts dynamic fields and delivers `V2G_MessageUnion`. Stop timer. `setverdict(pass/fail)`. `return getverdict;` |
-
-**SDP messages ONLY (UDP):** Use raw octetstrings on `pt_V2G_UDP_SDP_Port`.
-
-### NEGATIVE CONSTRAINTS (MUST NOT)
-
-- **MUST NOT** use `int2oct`, `'01'O`, `'FE'O`, `'8001'O` in TTCN-3 for V2GTP header construction
-- **MUST NOT** send raw octetstrings to the TCP port for V2G application messages
-- **MUST NOT** use openv2g encoder or X-Macro mapping -- `StaticExiDecoder` handles all encoding/decoding via static JSON patterns
-- **MUST NOT** hardcode ResponseCode, SessionID, or EVSEID values in receive templates -- the C++ decoder extracts them from wire bytes dynamically
+**The adapter is a pure transparent byte pipe.** TTCN-3 is the sole authority over JSON correctness.
 
 ---
 
 ## Architecture
 
 ```
-TTCN-3 Test Case
+TTCN-3 Test Behavior (charstring JSON)
     |
-    | send({ sessionSetupReq := md_CMN_SessionSetupReq_001 })
+    | send(char2oct(json))        [port "out" type = OCTETSTRING]
     v
-V2G_TCP_TLS_Port (C++ Port Adapter)
+V2G_TCP_TLS_Port.cc (v4 Dumb Terminal)
     |
-    | outgoing_send(OCTETSTRING) -- TITAN serialized the union
+    | detect_namespace_from_json() — sniffs JSON key to pick namespace
     v
-StaticExiDecoder (C++ -- JSON-driven)
+ENCODE request to localhost:9000
     |
-    | encode("session_setup_req", session_id)
+    | microservice returns EXI hex bytes
     v
-exi_payload_library.json (pre-encoded wire bytes + feature_patterns)
-    |
-    | (if is_dynamic) patch SessionID placeholder
-    v
-wire_bytes (V2GTP header + EXI payload)
+wire = V2GTP header (8 bytes) + EXI payload
     |
     v
 TCP Socket -> SECC
+```
 
---- Receive path (static data-driven) ---
-
+```
 TCP Socket <- SECC
     |
     v
-V2G_TCP_TLS_Port.receive_loop() -- raw TCP/TLS frame
+V2G_TCP_TLS_Port.cc (v4 Dumb Terminal)
+    |
+    | strip V2GTP header, extract EXI bytes
+    v
+DECODE request to localhost:9000
+    |
+    | microservice returns JSON UTF-8 bytes
+    v
+deliver OCTETSTRING to TTCN-3     [port "in" type = OCTETSTRING]
     |
     v
-extract_v2gtp_frame() -- strip TLS header, parse V2GTP header
-    |
-    v
-StaticExiDecoder.decode_exi() -- anchor-based pattern matching
-    |
-    | STEP 1: Match feature_pattern anchor bytes from JSON
-    | STEP 2: Slice dynamic fields (SessionID, ResponseCode, EVSEID) by offset
-    | STEP 3: Map ResponseCode byte to TTCN-3 enum integer
-    v
-V2G_MessageUnion (SessionSetupRes with extracted fields)
-    |
-    v
-incoming_message() -> TTCN-3 receive()
+TTCN-3 receive(?) -> value var octetstring
 ```
 
-**SECC Port Behavior:** The SECC listens on a dynamic port (e.g., 62897) advertised via SDP. The TCP port adapter:
-1. Uses `V2G__UDP__SDP__Port__last_secc_port_` (from SDP) for the initial TCP connect
-2. Caches the actual connected port via `getpeername()` for reconnection
-3. Adds a 75ms guard delay after SDP discovery before TCP handshake
-
----
-
-## Directory Structure
-
-```
-demo/
-├── exi_payload_library.json       # Pre-encoded V2G message wire bytes + metadata
-├── build.sh                       # Build script (makefilegen + make)
-├── config/
-│   └── titan_runtime.cfg          # TITAN runtime configuration
-└── src/
-    └── ttcn3/
-        ├── 1_Data_Definitions/
-        │   ├── Types/
-        │   │   ├── Types_SECC_15118_2.ttcn   # V2G_MessageUnion + message types
-        │   │   └── TimerAndConstants.ttcn     # Timer constants, default values
-        │   └── Templates/
-        │       └── CmnTemplates.ttcn           # Send/receive templates (md_CMN_*, mdw_SECC_*)
-        ├── 2_Architecture/
-        │   └── ComponentsAndPorts/
-        │       └── ComponentsAndPorts.ttcn     # Port types: V2G_MessageUnion for TCP
-        ├── 3_Behavior_Steps/
-        │   ├── PreConditions/
-        │   │   ├── PreConditions_SECC_15118_2.ttcn
-        │   │   ├── PreConditions_InitConfig.ttcn  # f_SECC_CMN_PR_InitConfiguration_001
-        │   │   └── f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn
-        │   ├── PostConditions/
-        │   │   ├── PostConditions_SECC_15118_2.ttcn
-        │   │   └── f_SECC_CMN_PO_InitialState_001.ttcn
-        │   └── TestBehavior/
-        │       └── f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.ttcn
-        └── 4_TestCases/
-            └── TestCases_SECC/
-                └── TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn
-
-demo/src/cpp_adapters/             # C++ port adapters
-    ├── CD/exi_engine/
-    │   ├── ExiCodecAdapter.hh
-    │   └── ExiCodecAdapter.cc     # Singleton: encode/decode + SessionID patching
-    ├── SA/ports/
-    │   ├── V2G_TCP_TLS_Port.hh
-    │   └── V2G_TCP_TLS_Port.cc   # Integrates ExiCodecAdapter
-    └── SA/hardware/
-```
-
----
-
-## Key Components
-
-### StaticExiDecoder (Pure Static, Data-Driven)
-
-**Location:** `src/cpp_adapters/common/StaticExiDecoder.cc`
-
-The `StaticExiDecoder` is a **zero-dependency** C++ EXI decoder that uses pre-computed static patterns from `exi_payload_library.json`. No external libraries.
-
-**Interface:**
-
-```cpp
-class StaticExiDecoder {
-    bool load_from_json(const std::string& path);
-    bool decode(const uint8_t* wire_bytes, size_t wire_len, DecodeResult& result);
-    bool decode_exi(const uint8_t* exi_payload, size_t exi_len, DecodeResult& result);
-    struct DecodeResult {
-        MsgType msg_type;      // e.g., MSG_SESSION_SETUP_RES
-        int app_response_code; // SupportedAppProtocolRes: 0=OK, 1=Failed
-        int schema_id;         // 1=ISO15118, 2=DINSPEC70121
-        int v2g_response_code; // SessionSetupRes: 0=OK, 1=OK_NewSessionEstablished
-        std::vector<uint8_t> session_id; // 8-byte session identifier
-        std::string evseid;    // EVSE identifier (extracted as raw hex)
-    };
-};
-```
-
-**How it works (receive path):**
-1. Parse V2GTP header (version, payload type, payload length)
-2. Match EXI bytes against `feature_pattern` anchor bytes from JSON
-3. Slice dynamic fields by fixed byte offsets (SessionID, ResponseCode, EVSEID)
-4. Map ResponseCode byte to TTCN-3 enum integer via `V2GResponseCodeMap`
-5. Construct and return `DecodeResult` with all extracted fields
-
-**Pattern matching:**
-- `find_pattern()`: checks for matching anchor bytes at `anchor_offset`
-- Falls back to header-based detection for edge cases (e.g., 8-bit vs 10-bit EXI)
-- `parse_session_setup_res()`: hardcoded byte offsets for known SECC responses
-
-**Payload library resolution (in order):**
-1. `EXI_PAYLOAD_LIBRARY` environment variable (absolute path)
-2. Relative path from build directory
-3. Absolute fallback path
-
-### SessionID Patching
-
-Four messages carry `SessionID` and must patch the placeholder `0000000000000000`:
-
-| Message Key | `is_dynamic` | Dynamic Fields |
-|-------------|-------------|----------------|
-| `session_setup_req` | `true` | `SessionID` |
-| `session_setup_res` | `true` | `SessionID` |
-| `session_stop_req` | `true` | `SessionID` |
-| `session_stop_res` | `true` | `SessionID` |
-
-The patching logic searches for 8 consecutive zero bytes in the EXI payload portion (after the 8-byte V2GTP header) and replaces them with the established session ID bytes.
-
-### V2G_MessageUnion
-
-The `V2G_MessageUnion` (defined in `Types_SECC_15118_2.ttcn`) is a TTCN-3 union type that contains all V2G message body variants:
-
+**Port type (ComponentsAndPorts.ttcn):**
 ```ttcn3
-type union V2G_MessageUnion {
-    SupportedAppProtocolReq    supportedAppProtocolReq,
-    SupportedAppProtocolRes   supportedAppProtocolRes,
-    SessionSetupReq           sessionSetupReq,
-    SessionSetupRes           sessionSetupRes,
-    // ... all other V2G message types
+type port V2G_TCP_TLS_Port message {
+    out octetstring;   // UTF-8 JSON bytes (LLM-generated)
+    in  octetstring;   // UTF-8 JSON bytes (microservice-decoded)
 }
 ```
 
-When declared as the port message type, TITAN serializes union values to `OCTETSTRING` (per JSON encoding annotations) before calling `outgoing_send()`. The C++ port adapter intercepts this and substitutes the pre-encoded wire bytes.
+---
 
-### V2G_TCP_TLS_Port (C++)
+## Sprint 2: The Only Send Pattern
 
-**Location:** `src/cpp_adapters/SA/ports/V2G_TCP_TLS_Port.cc`
+TTCN-3 test code sends by constructing a `charstring` JSON literal and converting it:
 
-The TCP/TLS port adapter:
-1. **Send:** Receives serialized union bytes from TITAN via `outgoing_send()`, calls `StaticExiDecoder` to encode, sends over TCP
-2. **Receive:** Stores raw bytes, parses V2GTP header, calls `StaticExiDecoder.decode_exi()`, delivers `V2G_MessageUnion` via `incoming_message()`
-3. **Port Discovery:** Reads dynamic port from `V2G__UDP__SDP__Port__last_secc_port_` (set by SDP response)
-4. **Reconnection:** Caches actual peer port via `getpeername()` for graceful reconnection
-5. **Guard Delay:** 75ms pause after SDP discovery before TCP handshake (per ISO 15118-3)
+```ttcn3
+var charstring json_req := "{...well-formed JSON...}";
+port.send(char2oct(json_req));
+```
 
-### V2G_UDP_SDP_Port
+The `char2oct()` conversion makes the UTF-8 bytes an `OCTETSTRING`, which matches the port's `out octetstring` type. The C++ adapter receives this directly.
 
-**Location:** `src/cpp_adapters/SA/ports/V2G_UDP_SDP_Port.cc`
-
-The UDP SDP port handles raw octetstrings only. No EXI encoding. SDP request payload: `'01FE9000000000021000'O` (V2GTP header + SDP body).
+**For receive:**
+```ttcn3
+port.receive(?) -> value var octetstring resp {
+    var charstring json := oct2char(resp);
+    log("Decoded: ", json);
+}
+```
 
 ---
 
-## Precondition Chain
+## IRONCLAD JSON RULES (Non-Negotiable)
 
-The demo demonstrates a two-phase precondition chain:
+Violating these silently produces 2-byte empty EXI or NullPointerException. See
+`generation_patterns.json::_ironclad_json_payload_rules` for the full reference.
+
+### Rule 1: PascalCase Keys (XSD element names, not Java field names)
+
+MOXy uses the **XSD element name** as the JSON key, NOT the Java field name.
+
+```ttcn3
+// WRONG (camelCase / lowercase):
+"{ \"appProtocol\": [...] }"
+"{ \"header\": { \"sessionID\": \"...\" } }"
+
+// CORRECT (PascalCase XSD names):
+"{ \"AppProtocol\": [...] }"
+"{ \"Header\": { \"SessionID\": \"...\" } }"
+```
+
+### Rule 2: hexBinary = Hex String (NOT base64)
+
+SessionID (8 bytes), EVCCID (6 bytes), GenChallenge (16 bytes) must be hex strings.
+
+```ttcn3
+// WRONG (base64):
+"{ \"EVCCID\": \"q83vASNF\" }"
+
+// CORRECT (hex):
+"{ \"EVCCID\": \"ABCDEF012345\" }"
+```
+
+### Rule 3: Namespace Whitelist
+
+Only these 8 namespaces are accepted by EXIficient. Any other string causes NullPointerException.
+
+| Namespace | Use for |
+|---|---|
+| `urn:iso:15118:2:2010:AppProtocol` | supportedAppProtocolReq/Res |
+| `urn:iso:15118:2:2013:MsgDef` | ISO 15118-2 V2G_Message |
+| `urn:din:70121:2012:MsgDef` | DIN SPEC 70121 V2G_Message |
+| `urn:iso:std:iso:15118:-20:CommonMessages` | ISO 15118-20 common |
+| `urn:iso:std:iso:15118:-20:AC` | ISO 15118-20 AC |
+| `urn:iso:std:iso:15118:-20:DC` | ISO 15118-20 DC |
+| `urn:iso:std:iso:15118:-20:WPT` | ISO 15118-20 WPT |
+| `urn:iso:std:iso:15118:-20:ACDP` | ISO 15118-20 ACDP |
+
+**`urn:iso:15118:2:2010:MsgDef` does NOT exist.**
+
+### Canonical Correct Examples
+
+```
+AppProtocol REQ:  {"supportedAppProtocolReq":{"AppProtocol":[{"ProtocolNamespace":"urn:iso:15118:2:2010:MsgDef","VersionNumberMajor":2,"VersionNumberMinor":0,"SchemaID":1,"Priority":1}]}}
+AppProtocol RES:  {"supportedAppProtocolRes":{"ResponseCode":"OK_SuccessfulNegotiation","SchemaID":1}}
+V2G_Message SetupReq: {"V2G_Message":{"Header":{"SessionID":"0000000000000000"},"Body":{"SessionSetupReq":{"EVCCID":"020000000001"}}}}
+```
+
+---
+
+## Precondition Chain (Demo)
 
 ```
 Phase A: InitConfiguration
   -> Port mapping (TCP + UDP)
   -> SDP Discovery via UDP multicast
-  -> (TCP connection to SECC established)
+  -> TCP connection to SECC established
 
-Phase B: SupportedAppProtocol
-  -> Send SupportedAppProtocolReq via structured union
-  -> Receive SupportedAppProtocolRes
-  -> SessionID initialized to 0000000000000000
+Phase B: SupportedAppProtocol (PRECONDITION)
+  -> send(char2oct(JSON))
+  -> receive(?) -> value var octetstring
+  -> setverdict(pass/inconc)
+
+Phase C: SessionSetup (TEST BEHAVIOR)
+  -> send(char2oct(JSON with SessionID=0011223344556677))
+  -> receive(?) -> value var octetstring
+  -> setverdict(pass/fail/inconc)
 ```
-
-After Phase B, the SessionSetup exchange (Phase C -- the actual test behavior) can proceed.
 
 ---
 
@@ -250,65 +172,71 @@ After Phase B, the SessionSetup exchange (Phase C -- the actual test behavior) c
 
 ```bash
 cd agent/test_code/examples/demo
+
+# Terminal 1: Start EXI microservice
+python3 /home/dmc/桌面/platform/agent/test_code/shared_infrastructure/exi_microservice/exi_microservice.py &
+
+# Terminal 2: Build
 bash build.sh
+
+# Run (requires a running SECC to connect to)
+cd build/bin
+./TestExecutable ../config/titan_runtime.cfg
 ```
 
-The build script:
-1. Sets up TITAN environment (detects `ttcn3_runtime` path)
-2. Copies C++ adapter files to `build/generated_cpp/`
-3. Runs `makefilegen` to generate the Makefile
-4. Runs `make` to compile TTCN-3 + link C++ adapters
-5. Produces `build/bin/TestExecutable`
+---
+
+## What's Deleted in v4 (vs v2/v3)
+
+| Component | Status | Reason |
+|---|---|---|
+| `OpenV2G_Wrapper.hh/.cc` | DELETED | No C EXI encoding |
+| `ExiCodecAdapter.hh/.cc` | DELETED | No C++ EXI encoding |
+| `StaticExiDecoder.hh/.cc` | DELETED | No static pattern matching |
+| `exi_payload_library.json` | DELETED | No pre-encoded wire bytes |
+| `V2G_MessageUnion` in port | DELETED | Port now uses OCTETSTRING |
+| `switch/case` for 26 message types | DELETED | Adapter is namespace-agnostic |
+| `set_parameter('session_id')` injection | REMOVED | SessionID is TT-CN-3 responsibility only |
 
 ---
 
-## Adding a New Message Type
+## Directory Structure
 
-To extend this demo for a new message type (e.g., ServiceDiscovery):
-
-1. **Add pre-encoded payload** to `exi_payload_library.json`:
-   ```json
-   "service_discovery_req": {
-     "wire_hex": "01FE8001...",
-     "is_dynamic": false,
-     "dynamic_fields": [],
-     "json_payload": { ... }
-   }
-   ```
-
-2. **Add send template** to `CmnTemplates.ttcn`:
-   ```ttcn3
-   template ServiceDiscoveryReq md_CMN_ServiceDiscoveryReq_001 := {
-     sessionId := PX_SECC_CMN_Default_SessionID,
-     // ... fields
-   }
-   ```
-
-3. **Implement precondition** in `f_SECC_CMN_PR_ServiceDiscovery_001.ttcn` following the SOP.
-   - For receive, use the lenient template `{ msgRes := ? }` to accept any dynamic field values extracted by `StaticExiDecoder`.
-
-4. **Implement test behavior** in `f_SECC_CMN_TB_VTB_ServiceDiscovery_001.ttcn` following the SOP.
-   - Use `{ msgRes := ? }` in the receive alt branch.
-
-5. **Register in aggregator** -- the pipeline handles aggregator import injection.
-
-6. **Run `bash build.sh`** -- the Multi-Agent system handles all of this automatically.
+```
+demo/
+├── build.sh                              # TITAN build (V3/V4 compatible)
+├── config/
+│   └── titan_runtime.cfg
+└── src/
+    ├── ttcn3/
+    │   ├── 1_Data_Definitions/
+    │   │   ├── Types/
+    │   │   │   └── Types_SECC_15118_2.ttcn    # V2G_MessageUnion (types only, no port binding)
+    │   │   └── TimerAndConstants.ttcn
+    │   ├── 2_Architecture/
+    │   │   └── ComponentsAndPorts/
+    │   │       └── ComponentsAndPorts.ttcn      # V2G_TCP_TLS_Port: out/in = OCTETSTRING
+    │   ├── 3_Behavior_Steps/
+    │   │   ├── PreConditions/
+    │   │   │   └── f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn  # char2oct(JSON)
+    │   │   └── TestBehavior/
+    │   │       └── f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.ttcn
+    │   └── 4_TestCases/
+    └── cpp_adapters/SA/ports/
+        ├── V2G_TCP_TLS_Port.hh          # v4 Dumb Terminal (pure byte pipe)
+        ├── V2G_TCP_TLS_Port.cc          # 420 lines (vs 877 old)
+        ├── V2G_UDP_SDP_Port.hh
+        └── V2G_UDP_SDP_Port.cc
+```
 
 ---
 
-## Reference Files
+## Key Files
 
 | File | Purpose |
-|------|--------|
-| `exi_payload_library.json` | Pre-encoded wire bytes for all V2G messages |
-| `CmnTemplates.ttcn` | Send/receive templates (`md_CMN_*`, `mdw_SECC_*`) |
-| `Types_SECC_15118_2.ttcn` | Type definitions including `V2G_MessageUnion` |
-| `ComponentsAndPorts.ttcn` | Port type declarations |
-| `V2G_TCP_TLS_Port.cc` | C++ port adapter integrating ExiCodecAdapter |
-| `StaticExiDecoder.cc` | Pure static JSON-driven EXI encode/decode, ResponseCode mapping, SessionID patching |
-| `f_SECC_CMN_TB_VTB_V2GTPSessionSetup_001.ttcn` | Golden SOP reference (test behavior) |
-| `f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn` | Golden SOP reference (precondition) |
-| `TC_SECC_CMN_VTB_V2GTPSessionSetup_001.ttcn` | Golden SOP reference (test case) |
-| `ttcn3_generation_sop.json` | Mechanical SOP with negative constraints |
-| `infrastructure_agent_prompt.txt` | Infrastructure Agent prompt (SOP-locked) |
-| `core_agent_prompt.txt` | Core Agent prompt (SOP-locked) |
+|---|---|
+| `generation_patterns.json::_ironclad_json_payload_rules` | **MANDATORY READ** before writing any JSON |
+| `core_agent_prompt.txt::Ironclad JSON Payload Rules` | LLM must follow these rules |
+| `V2G_TCP_TLS_Port.cc` | v4 Dumb Terminal implementation (pure byte pipe) |
+| `ComponentsAndPorts.ttcn` | Port types (out/in = OCTETSTRING since Sprint 2) |
+| `smoke_test.sh` | Live verification of microservice correctness (5/5 PASS) |

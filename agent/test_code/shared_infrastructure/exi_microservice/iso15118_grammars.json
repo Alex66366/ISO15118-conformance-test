@@ -1,0 +1,85 @@
+# ISO 15118 Protocol Namespace -> EXI Grammar Mapping
+#
+# Keys are the namespace URIs used in V2G messages.
+# Values are the schema files used by EXIficient to encode/decode.
+#
+# Schema directory: ../../schemas/  (relative to this file)
+# EXICodec.jar resolves the schema automatically when namespace is passed.
+#
+# Source files:
+#   iso15118_2:  iso15118_2/V2G_CI_MsgDef.xsd
+#   iso15118_20: iso15118_20/V2G_CI_CommonMessages.xsd
+#   app_protocol: V2G_CI_AppProtocol.xsd
+#   din_spec:    din_spec/V2G_CI_MsgDef.xsd
+
+{
+  "namespaces": {
+    "urn:iso:15118:2:2010:AppProtocol": {
+      "description": "ISO 15118-2 SupportedAppProtocol (EXICodec.jar uses 2010 AppProtocol)",
+      "schema_dir": ".",
+      "schema_file": "V2G_CI_AppProtocol.xsd",
+      "version": "2.0",
+      "protocol": "ISO15118_2",
+      "root_elements": ["supportedAppProtocolReq", "supportedAppProtocolRes"]
+    },
+    "urn:iso:15118:2:2013:MsgDef": {
+      "description": "ISO 15118-2 V2G Message Definition (DIN SPEC 70121 compatible)",
+      "schema_dir": "iso15118_2",
+      "schema_file": "V2G_CI_MsgDef.xsd",
+      "version": "2.0",
+      "protocol": "ISO15118_2",
+      "root_elements": ["sessionSetupReq", "sessionSetupRes", "serviceDiscoveryReq", "serviceDiscoveryRes", "serviceDetailReq", "serviceDetailRes", "paymentServiceSelectionReq", "paymentServiceSelectionRes", "authorizationReq", "authorizationRes", "certificateInstallationReq", "certificateInstallationRes", "powerDeliveryReq", "powerDeliveryRes", "meteringReceiptReq", "meteringReceiptRes", "cableCheckReq", "cableCheckRes", "chargingStatusReq", "chargingStatusRes", "currentDemandReq", "currentDemandRes", "weldingDetectionReq", "weldingDetectionRes", "sessionStopReq", "sessionStopRes"]
+    },
+    "urn:iso:std:iso:15118:-20:CommonMessages": {
+      "description": "ISO 15118-20 Common Messages",
+      "schema_dir": "iso15118_20",
+      "schema_file": "V2G_CI_CommonMessages.xsd",
+      "version": "20.0",
+      "protocol": "ISO15118_20"
+    },
+    "urn:iso:std:iso:15118:-20:AC": {
+      "description": "ISO 15118-20 AC charging",
+      "schema_dir": "iso15118_20",
+      "schema_file": "V2G_CI_AC.xsd",
+      "version": "20.0",
+      "protocol": "ISO15118_20"
+    },
+    "urn:iso:std:iso:15118:-20:DC": {
+      "description": "ISO 15118-20 DC charging",
+      "schema_dir": "iso15118_20",
+      "schema_file": "V2G_CI_DC.xsd",
+      "version": "20.0",
+      "protocol": "ISO15118_20"
+    },
+    "urn:iso:std:iso:15118:-20:WPT": {
+      "description": "ISO 15118-20 Wireless Power Transfer",
+      "schema_dir": "iso15118_20",
+      "schema_file": "V2G_CI_WPT.xsd",
+      "version": "20.0",
+      "protocol": "ISO15118_20"
+    },
+    "urn:iso:std:iso:15118:-20:ACDP": {
+      "description": "ISO 15118-20 ACDP (AC Discharge Protocol)",
+      "schema_dir": "iso15118_20",
+      "schema_file": "V2G_CI_ACDP.xsd",
+      "version": "20.0",
+      "protocol": "ISO15118_20"
+    },
+    "http://www.w3.org/2000/09/xmldsig#": {
+      "description": "XML Digital Signature",
+      "schema_dir": ".",
+      "schema_file": "xmldsig-core-schema.xsd",
+      "version": "1.0",
+      "protocol": "XMLDSIG"
+    },
+    "urn:din:70121:2012:MsgDef": {
+      "description": "DIN SPEC 70121:2012 (older namespace used by EXICodec.jar)",
+      "schema_dir": "din_spec",
+      "schema_file": "V2G_CI_MsgDef.xsd",
+      "version": "1.0",
+      "protocol": "DIN_SPEC_70121"
+    }
+  },
+  "_note": "EXICodec.jar (v1.55) uses these exact namespace URIs internally. Mismatched namespaces cause 'A descriptor with default root element X was not found' errors. Element names are camelCase (e.g. 'supportedAppProtocolReq'), not PascalCase.",
+  "_correct_namespace_for_app_protocol": "urn:iso:15118:2:2010:AppProtocol (not :2013:appProtocol)"
+}

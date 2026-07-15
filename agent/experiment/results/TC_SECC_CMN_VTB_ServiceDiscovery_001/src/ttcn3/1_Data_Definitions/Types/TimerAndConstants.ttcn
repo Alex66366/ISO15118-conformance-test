@@ -1,0 +1,31 @@
+module SECC_Constants {
+
+    // Message Timeouts (ISO 15118-2)
+    const float PX_SECC_CMN_Message_Timeout := 60.0;
+    const float PX_SECC_CMN_Sequence_Timeout := 2.0;
+    const float PX_SECC_CMN_SDP_Response_Timeout := 1.0;
+    const float PX_SECC_CMN_TCP_Connection_Timeout := 5.0;
+    const float PX_SECC_CMN_TLS_Handshake_Timeout := 10.0;
+
+    // Default Timer Values
+    const float PX_SECC_CMN_DefaultTimer := 5.0;
+    const float PX_SECC_CMN_LongTimer := 30.0;
+
+    // ServiceDiscovery Timer
+    const float par_V2G_SECC_Msg_Timeout_ServiceDiscoveryReq := 5.0;
+    const float par_V2G_SECC_Msg_Timeout_ServiceDiscoveryRes := 5.0;
+
+    // V2GTP Protocol Version
+    const octetstring PX_SECC_CMN_V2GTP_ProtocolVersion := '01'O;
+    const octetstring PX_SECC_CMN_V2GTP_InvVersion      := 'FE'O;
+
+    // Default EVCCID and SessionID
+    const octetstring PX_SECC_CMN_Default_EVCCID     := '123456789ABC'O;
+    const octetstring PX_SECC_CMN_Default_SessionID  := '0000000000000000'O;
+
+    // SDP / V2G Port
+    const charstring PX_SECC_CMN_SDP_Multicast_Addr := "ff02::01";
+    const integer    PX_SECC_CMN_SDP_Port            := 15118;
+    const integer    PX_SECC_CMN_V2G_Port            := 15118;
+
+} // end module SECC_Constants

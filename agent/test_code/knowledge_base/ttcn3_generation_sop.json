@@ -62,6 +62,16 @@
       "V2GResponseCodeMap provides ResponseCode byte -> TTCN-3 enum integer mapping for all 27 ISO 15118-2 codes",
       "Added SECC port behavior: dynamic port from SDP, cached peer port for reconnection, 75ms guard delay",
       "Updated agent prompts and demo README to reflect 4-step pipeline: Receive Hex -> Match JSON Pattern -> Slice Fields -> Deliver Union"
+    ],
+    "2.0_to_3.0": [
+      "Replaced OpenV2G + ExiCodecAdapter + StaticExiDecoder with Universal EXI Bridge (Python microservice on localhost:9000)",
+      "All V2G messages encoded as JSON via C++ Dumb Terminal; Python microservice handles EXIficient encoding via py4j",
+      "Removed libexi_bridge.a, openv2g/ directory, exi_payload_library.json entirely",
+      "C++ V2G_TCP_TLS_Port reduced from 1087 lines to ~550 lines (Dumb Terminal only)",
+      "generation_patterns.json updated: OpenV2G_SessionSetupReq_Bypass replaced by Universal_EXI_Bridge_v3",
+      "build.sh v3 removes all OpenV2G -I/-L flags and libexi_bridge.a linking",
+      "LLM NEVER generates EXI bytes or V2GTP headers in v3 architecture",
+      "ttcn3_generation_pipeline.py updated to prefer canonical_build.sh.v3"
     ]
   },
   "overview": {
@@ -770,6 +780,21 @@
     {
       "error": "Receive template mismatch: hardcoded EVSEID/ResponseCode/SessionID",
       "fix": "Use lenient template `{ msgRes := ? }` in the receive alt branch. StaticExiDecoder extracts dynamic field values (SessionID, ResponseCode, EVSEID) from wire bytes. The lenient `?` template accepts any values. Do NOT hardcode response codes like ResponseCode := 0 or EVSEID := 'EVSE12345678' in receive templates -- real SECCs use different values.",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "Core Agent uses set_parameter() or port API to persist protocol state",
+      "fix": "Protocol state (SessionID, EVSEID, SAScheduleTupleID, etc.) MUST be stored in TTCN-3 component variables (vc_ prefix) declared in ComponentsAndPorts.ttcn. The C++ adapter is a stateless translator. NEVER use set_parameter() or get_param() to store or retrieve protocol state. Violation: ExiCodecAdapter static Fallback cannot reliably reconstruct EXI with modified state.",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "Core Agent uses wildcard receive without extracting protocol state to a component variable",
+      "fix": "After receiving a response that carries a state value needed later (e.g., SessionID from SessionSetupRes), the Core Agent MUST: (1) assign the decoded Union payload to a concrete Record variable via explicit branch matching, (2) immediately assign the relevant field to a vc_ component variable, (3) use the vc_ variable in subsequent sends. Do NOT rely on C++ adapter state or log parsing as the extraction mechanism.",
+      "category": "ttcn_compile"
+    },
+    {
+      "error": "Core Agent injects component variable directly without using valueof(template) as intermediate",
+      "fix": "When injecting a vc_ component variable into a request, first instantiate the template with valueof(template_name), assign the component variable to the target field of the resulting record, then wrap in Union and send. Never inline vc_ directly in send() argument. Correct: var ServiceDiscoveryReq v_req := valueof(md_CMN_ServiceDiscoveryReq_001); v_req.sessionID.content := vc_SessionID; pt_V2G_TCP_TLS_ALM_SECC_Port.send({ serviceDiscoveryReq := v_req });",
       "category": "ttcn_compile"
     }
   ],

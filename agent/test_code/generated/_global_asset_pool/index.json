@@ -1,0 +1,29 @@
+{
+  "f_SECC_CMN_PR_SessionSetup_001": {
+    "file": "f_SECC_CMN_PR_SessionSetup_001.ttcn",
+    "first_promoted_by": "TC_SECC_CMN_VTB_ServiceDiscovery_001_20260713_151402",
+    "promoted_at": "2026-07-13T07:17:48.964596Z",
+    "last_updated_by": "Sprint_3.3_hotfix_20260714_234500",
+    "compilable": true,
+    "line_count": 167,
+    "sprint_3_3_fixes_applied": [
+      "match()/substr() instead of regexp()/indexof()",
+      "out octetstring po_session_id parameter for SessionID return",
+      "dropped phantom setparameter() calls",
+      "dropped module-scope var (TTCN-3 illegal)"
+    ]
+  },
+  "f_SECC_CMN_PR_SupportedAppProtocol_001": {
+    "file": "f_SECC_CMN_PR_SupportedAppProtocol_001.ttcn",
+    "first_promoted_by": "TC_SECC_CMN_VTB_ServiceDiscovery_001_20260713_151402",
+    "promoted_at": "2026-07-13T07:17:48.964596Z",
+    "last_updated_by": "Sprint_3.3_hotfix_20260714_234500",
+    "compilable": true,
+    "line_count": 75,
+    "sprint_3_3_fixes_applied": [
+      "match() instead of regexp()/indexof()",
+      "var V2G_PortMessage v_err / v_msg declarations added",
+      "send() now emits octetstring JSON (Sprint 3 Dumb Terminal)"
+    ]
+  }
+}

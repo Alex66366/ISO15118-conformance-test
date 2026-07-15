@@ -1,0 +1,129 @@
+module f_SECC_CMN_PR_SessionSetup_001 {
+
+    import from SECC_TestSystem all;
+    import from SECC_Types all;
+    import from SECC_CmnTemplates all;
+    import from SECC_Constants all;
+
+    // ================================================================
+    // Sprint 3.3 — Precondition Function: SessionSetup GoodCase.
+    //
+    // TTCN-3 LANGUAGE FACTS (verified with /usr/bin/compiler):
+    //   * Module-level `var` is illegal (TTCN-3 has no globals). We
+    //     cannot store the negotiated SessionID inside this module.
+    //   * State MUST persist via component variables (declared in the
+    //     SECCTester component type, which lives in SECC_TestSystem.ttcn)
+    //     OR via an `out` parameter of this function.  We use BOTH: the
+    //     `out octetstring po_session_id` so the TC orchestrator can
+    //     stash it on its own component variable, and we return the
+    //     verdict so the TC knows whether to proceed.
+    //   * `regexp()` returns a matched substring (you must use capture
+    //     groups) — it does NOT return -1.  The LLM-idiom
+    //     `regexp(...) != -1` does NOT compile.
+    //   * `indexof()` does not exist for charstrings in TTCN-3.
+    //   * `match()` with `*` wildcards is the ONLY safe substring-
+    //     detection API that compiles in TITAN.
+    //   * `setparameter()` is NOT a TTCN-3 built-in; it must be defined
+    //     on a specific test port.  Since our port does not implement
+    //     it, we drop it entirely.  The downstream PRs/TBs read the
+    //     SessionID from the JSON envelope itself, not from the C++
+    //     adapter's parameter cache.
+    // ================================================================
+
+    function f_SECC_CMN_PR_SessionSetup_001(
+        out octetstring po_session_id
+    ) runs on SECCTester return verdicttype {
+        timer tc_V2G_EVCC_Msg_Timer := PX_SECC_CMN_Message_Timeout;
+
+        // Initialise out parameter to the "no session yet" default.
+        po_session_id := '0000000000000000'O;
+
+        // Build the SessionSetupReq JSON.  We use charstring concatenation
+        // (`&`) between literals.  Important: the SessionID value here is
+        // intentionally "0000000000000000" — that signals "I have no
+        // session yet, please allocate one" to the SECC.
+        var charstring json_req :=
+            "{"
+            & "\"V2G_Message\":{"
+            & "\"Header\":{\"SessionID\":\"0000000000000000\"},"
+            & "\"Body\":{"
+            & "\"SessionSetupReq\":{"
+            & "\"EVCCID\":\"020000000001\""
+            & "}"
+            & "}"
+            & "}"
+            & "}";
+
+        log("SessionSetup: sending SessionSetupReq...");
+        log("JSON payload: ", json_req);
+        tc_V2G_EVCC_Msg_Timer.start(PX_SECC_CMN_Message_Timeout);
+
+        // Sprint 3 Dumb Terminal send — port out: octetstring.
+        pt_V2G_TCP_TLS_ALM_SECC_Port.send(char2oct(json_req));
+
+        var V2G_PortMessage v_err;
+        var V2G_PortMessage v_msg;
+
+        alt {
+            // FAIL-FAST — propagate C++ adapter error immediately.
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ error_indicator := ? })
+                -> value v_err {
+                tc_V2G_EVCC_Msg_Timer.stop;
+                setverdict(fail,
+                    "C++ adapter error_indicator: ",
+                    v_err.error_indicator.source,
+                    ": ",
+                    v_err.error_indicator.detail);
+            }
+
+            // SUCCESS — decode the raw JSON bytes from SECC.
+            [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ raw := ? })
+                -> value v_msg {
+                tc_V2G_EVCC_Msg_Timer.stop;
+                var octetstring resp_payload := v_msg.raw;
+                var charstring  resp_json    := oct2char(resp_payload);
+                log("SessionSetupRes received (raw JSON): ", resp_json);
+
+                // Validate ResponseCode via match() (the ONLY safe TTCN-3
+                // substring-detection API — see HARD RULE #3).
+                var boolean resp_ok := false;
+                if (match(resp_json, "*\"ResponseCode\":\"OK*\"")) {
+                    resp_ok := true;
+                } else if (match(resp_json, "*\"ResponseCode\":\"FAILED*\"")) {
+                    log("SessionSetup rejected by SECC: ", resp_json);
+                    setverdict(fail,
+                        "SessionSetup rejected by SECC. ResponseCode=FAILED_*");
+                } else if (match(resp_json, "*\"Notification\"*") or
+                           match(resp_json, "*ParsingError*")) {
+                    setverdict(fail,
+                        "SessionSetup Notification fault: ",
+                        resp_json);
+                } else {
+                    setverdict(fail,
+                        "SessionSetup: ResponseCode missing or unparseable: ",
+                        resp_json);
+                }
+
+                // Extract the negotiated SessionID via match() + substr().
+                // Canonical envelope position: offset 33, length 16 hex
+                // chars.  The SessionID value sits immediately after the
+                // substring `{"V2G_Message":{"Header":{"SessionID":"`.
+                if (resp_ok) {
+                    if (match(resp_json, "*\"SessionID\":\"*\"*")) {
+                        po_session_id := char2oct(substr(resp_json, 33, 16));
+                    }
+                    log("SessionSetup: out session_id = ",
+                        oct2char(po_session_id));
+                    setverdict(pass,
+                        "SessionSetup exchange completed");
+                }
+            }
+
+            [] tc_V2G_EVCC_Msg_Timer.timeout {
+                setverdict(inconc, "Timeout waiting for SessionSetupRes");
+            }
+        }
+
+        return getverdict;
+    }
+}

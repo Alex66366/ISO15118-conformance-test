@@ -408,4 +408,46 @@ module SECC_Types {
         V2G_MessageUnion            v2g
     }
 
+    // ==========================================
+    // Section 41: V2G_ErrorInfo — Fail-Fast Error Indicator (Sprint 3, 2026-07-11)
+    // ==========================================
+    // The C++ adapter (V2G_TCP_TLS_Port.cc) populates a value of this record
+    // whenever a non-recoverable error occurs on the receive path, instead of
+    // silently dropping the message. TTCN-3 test behaviors include a receive
+    // branch:
+    //
+    //   [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(
+    //         { error_indicator := ? }
+    //      ) -> value v_err {
+    //          tc_V2G_SECC_Msg_Timer.stop;
+    //          setverdict(fail,
+    //              "C++ adapter reported ", v_err.source, ": ", v_err.detail);
+    //      }
+    //
+    // which immediately terminates the per-TC run with a fail verdict instead
+    // of waiting for the per-TC message timeout (~20 min).
+    //
+    // Fields:
+    //   source        — short tag identifying where the failure originated:
+    //                   "exi_decode"           (microservice DECODE ERROR response)
+    //                   "exi_encode"           (microservice ENCODE ERROR response)
+    //                   "exi_service_unavailable"
+    //                                          (TCP connect / recv failed)
+    //                   "v2gtp_framing"        (invalid V2GTP header bytes)
+    //                   "exi_payload_too_large"(declared_len > 65535)
+    //   detail        — raw diagnostic from the EXI microservice or local
+    //                   stderr (e.g. "EOFException: Premature EOS while
+    //                   reading data"). Named `detail` instead of `message`
+    //                   because `message` is a reserved keyword in TTCN-3
+    //                   (used in inter-module communication).
+    //   namespace_uri — optional: the namespace URI attempted when the error
+    //                   occurred (e.g. "urn:iso:15118:2:2013:MsgDef").
+    //                   Useful for narrowing down schema-informed vs framing
+    //                   failures.
+    type record V2G_ErrorInfo {
+        charstring  source,
+        charstring  detail,           // raw diagnostic (microservice response / stderr)
+        charstring  namespace_uri optional
+    }
+
 } // end of module SECC_Types

@@ -1,29 +1,40 @@
 module TC_SECC_CMN_VTB_SDP_001 {
     import from SECC_TestSystem all;
     import from SECC_Constants all;
-    
-    // Direct imports for all called functions
     import from f_SECC_CMN_PR_InitConfiguration_001 all;
     import from f_SECC_CMN_TB_VTB_SDP_001 all;
     import from f_SECC_CMN_PO_InitialState_001 all;
     import from f_SECC_CMN_PO_ShutdownConfiguration_001 all;
 
     /**
-     * @desc    Test case for SDP discovery (ISO 15118-2)
-     *          Verifies SECC SDP response via UDP multicast
-     *          Requirements: [V2G2-123], [V2G2-147], [V2G2-150], [V2G2-154]
-     * @verdict pass if SDP exchange completes successfully
+     * @desc    GoodCase test for SDP (SECC Discovery Protocol) exchange.
+     *          SDP is performed in precondition chain (InitConfiguration_001).
+     *          TB short-circuits to setverdict(pass) since the exchange
+     *          is already covered by the precondition.
+     *
+     * Pattern: 4-phase test execution model
+     *   Phase A: Initialize (map ports in PR function)
+     *   Phase B: Precondition (SDP exchange via UDP multicast)
+     *   Phase C: Test behavior (short-circuit: already covered)
+     *   Phase D: Postcondition (cleanup)
      */
     testcase TC_SECC_CMN_VTB_SDP_001()
         runs on SECCTester system SystemSECC
     {
-        // Phase A+B: Preconditions (SDP discovery + port mapping)
-        f_SECC_CMN_PR_InitConfiguration_001();
+        var verdicttype preConVerdict;
 
-        // Phase C: Test behavior (SDP already covered by precondition)
-        f_SECC_CMN_TB_VTB_SDP_001();
+        // Phase A+B: PreCondition (SIL mode - port mapping + SDP)
+        preConVerdict := f_SECC_CMN_PR_InitConfiguration_001();
 
-        // Phase D: Postconditions (unconditional cleanup)
+        // Phase C: Test behavior
+        if (preConVerdict == pass) {
+            f_SECC_CMN_TB_VTB_SDP_001();
+        } else {
+            log("Precondition verdict is not pass, skipping TB");
+            setverdict(inconc);
+        }
+
+        // Phase D: PostConditions (unconditional cleanup)
         f_SECC_CMN_PO_InitialState_001();
         f_SECC_CMN_PO_ShutdownConfiguration_001();
     }

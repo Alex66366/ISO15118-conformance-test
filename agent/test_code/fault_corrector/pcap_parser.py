@@ -17,10 +17,18 @@ V2GTP message structure (per ISO 15118-2):
 from dataclasses import dataclass
 from typing import List, Optional
 
+from dataclasses import dataclass
+from typing import List, Optional
+
+# `from scapy.all import ...` triggers scapy.arch init which calls
+# `socket.socket()` and crashes with PermissionError in sandboxed envs
+# (Cursor bubblewrap, CI without CAP_NET_RAW). Only offline rdpcap /
+# packet-class access is needed. Falls back gracefully if scapy is missing
+# OR if its arch init fails.
 try:
     from scapy.all import rdpcap, TCP, UDP, IPv6, IPv4, Raw, IP
     SCAPY_AVAILABLE = True
-except ImportError:
+except Exception:
     SCAPY_AVAILABLE = False
 
 
