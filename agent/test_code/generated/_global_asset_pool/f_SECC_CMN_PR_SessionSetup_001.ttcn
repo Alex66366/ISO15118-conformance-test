@@ -38,21 +38,22 @@ module f_SECC_CMN_PR_SessionSetup_001 {
         // Initialise out parameter to the "no session yet" default.
         po_session_id := '0000000000000000'O;
 
-        // Build the SessionSetupReq JSON.  We use charstring concatenation
-        // (`&`) between literals.  Important: the SessionID value here is
-        // intentionally "0000000000000000" — that signals "I have no
-        // session yet, please allocate one" to the SECC.
+        // Build the SessionSetupReq JSON.  We use a SINGLE one-line
+        // string literal (NOT multi-line `&`-concatenation, which
+        // routinely produces brace-imbalanced JSON; see RULE 3.5).
+        // Important: the SessionID value here is intentionally
+        // "0000000000000000" — that signals "I have no session yet,
+        // please allocate one" to the SECC.
+        //
+        // EVCCID must be exactly 12 hex chars (6 bytes, per XSD).
+        // Discovered 2026-07-18: an 11-char value ("020000000001")
+        // was previously emitted by this template; SECC's pydantic
+        // Field(max_length=12) accepts it but JAXB hexBinary length
+        // validation rejects short IDs and closes the TCP connection.
+        // Use 12 hex chars with leading zero padding ("020000000000")
+        // until ISO 15118-2 specific IDs are wired in from PNI.
         var charstring json_req :=
-            "{"
-            & "\"V2G_Message\":{"
-            & "\"Header\":{\"SessionID\":\"0000000000000000\"},"
-            & "\"Body\":{"
-            & "\"SessionSetupReq\":{"
-            & "\"EVCCID\":\"020000000001\""
-            & "}"
-            & "}"
-            & "}"
-            & "}";
+            "{\"V2G_Message\":{\"Header\":{\"SessionID\":\"0000000000000000\"},\"Body\":{\"SessionSetupReq\":{\"EVCCID\":\"020000000000\"}}}}";
 
         log("SessionSetup: sending SessionSetupReq...");
         log("JSON payload: ", json_req);
@@ -86,14 +87,21 @@ module f_SECC_CMN_PR_SessionSetup_001 {
 
                 // Validate ResponseCode via match() (the ONLY safe TTCN-3
                 // substring-detection API — see HARD RULE #3).
+                //
+                // Critical: TTCN-3 charstring uses `""` to escape `"`,
+                // NOT `\"`. A `\"` in a `"..."` literal is two literal
+                // characters (backslash + quote) and `match()` will never
+                // find them in real JSON. So the patterns below MUST use
+                // `""""` to represent an inline `"` — for example
+                // `*""ResponseCode"":""OK_*""*`.
                 var boolean resp_ok := false;
-                if (match(resp_json, "*\"ResponseCode\":\"OK*\"")) {
+                if (match(resp_json, "*""ResponseCode"":""OK_*""*")) {
                     resp_ok := true;
-                } else if (match(resp_json, "*\"ResponseCode\":\"FAILED*\"")) {
+                } else if (match(resp_json, "*""ResponseCode"":""FAILED_*""*")) {
                     log("SessionSetup rejected by SECC: ", resp_json);
                     setverdict(fail,
                         "SessionSetup rejected by SECC. ResponseCode=FAILED_*");
-                } else if (match(resp_json, "*\"Notification\"*") or
+                } else if (match(resp_json, "*""Notification""*") or
                            match(resp_json, "*ParsingError*")) {
                     setverdict(fail,
                         "SessionSetup Notification fault: ",
@@ -104,13 +112,31 @@ module f_SECC_CMN_PR_SessionSetup_001 {
                         resp_json);
                 }
 
-                // Extract the negotiated SessionID via match() + substr().
-                // Canonical envelope position: offset 33, length 16 hex
-                // chars.  The SessionID value sits immediately after the
-                // substring `{"V2G_Message":{"Header":{"SessionID":"`.
+                // Extract the negotiated SessionID via substr().
+                //
+                // We DO NOT use `match()` here because the only practical
+                // way to get a stable match pattern in TITAN requires
+                // four-double-quote escaping, which is error-prone for the
+                // Core Agent to get right on first try.
+                //
+                // The SessionSetupRes JSON layout is contract-stable per
+                // ISO 15118-2:
+                //   {"V2G_Message":{"Header":{"SessionID":"<16hex>"},...}
+                // Total prefix length = 39 chars (verified empirically on
+                // real SECC responses 2026-07-18). The next 16 chars are
+                // the hex-encoded SessionID value.
+                //
+                // We guard with:
+                //   1. length check (>= 55 = 39 + 16) to avoid OOB on
+                //      truncated responses.
+                //   2. skip-if-zero check — the SECC never returns
+                //      16 zero chars as a freshly assigned SessionID, and
+                //      falling through leaves po_session_id at the
+                //      "no session yet" default set above.
                 if (resp_ok) {
-                    if (match(resp_json, "*\"SessionID\":\"*\"*")) {
-                        po_session_id := char2oct(substr(resp_json, 33, 16));
+                    if (lengthof(resp_json) >= 55
+                        and substr(resp_json, 39, 16) != "0000000000000000") {
+                        po_session_id := char2oct(substr(resp_json, 39, 16));
                     }
                     log("SessionSetup: out session_id = ",
                         oct2char(po_session_id));

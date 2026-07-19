@@ -102,5 +102,25 @@
       "f_SECC_PO_ShutdownConfiguration_002"
     ],
     "missing_postconditions": []
+  },
+  "cross_step_state": {
+    "producers": [
+      {
+        "pr": "f_SECC_CMN_PR_SessionSetup_001",
+        "field": "SessionID",
+        "vc_name": "vc_SessionID",
+        "vc_type": "octetstring",
+        "carrier_field": "Header.SessionID"
+      }
+    ],
+    "consumers": [
+      {
+        "consumer_message": "ServiceDiscovery",
+        "vc_names": [
+          "vc_SessionID"
+        ]
+      }
+    ],
+    "summary": "Declare the following component variables on SECCTester (ComponentsAndPorts.ttcn):\n  - var octetstring vc_SessionID := '0000000000000000'O;\nThese are populated by the PR functions listed (Extract+Persist pattern) and consumed by the TB and downstream PRs (Inject pattern via & oct2char(vc_X) & in JSON)."
   }
 }

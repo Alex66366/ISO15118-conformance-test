@@ -115,7 +115,8 @@
       "union_field": "serviceDiscoveryReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -131,7 +132,8 @@
       "alias_names": ["PaymentServiceSelection"],
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -146,7 +148,8 @@
       "union_field": "paymentDetailsReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -161,7 +164,8 @@
       "union_field": "authorizationReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -176,7 +180,8 @@
       "union_field": "certificateInstallationReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -191,7 +196,8 @@
       "union_field": "certificateUpdateReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -206,7 +212,8 @@
       "union_field": "cableCheckReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -221,7 +228,8 @@
       "union_field": "chargeParameterDiscoveryReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -236,7 +244,8 @@
       "union_field": "powerDeliveryReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -251,7 +260,8 @@
       "union_field": "sessionStopReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -266,7 +276,8 @@
       "union_field": "chargingStatusReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -281,7 +292,8 @@
       "union_field": "currentDemandReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -297,7 +309,8 @@
       "alias_names": ["MeteringReceipt"],
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -312,7 +325,8 @@
       "union_field": "preChargeReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -327,7 +341,8 @@
       "union_field": "weldingDetectionReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -342,7 +357,8 @@
       "union_field": "serviceDetailsReq",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
-        "f_{SUT}_CMN_PR_SupportedAppProtocol_001"
+        "f_{SUT}_CMN_PR_SupportedAppProtocol_001",
+        "f_{SUT}_CMN_PR_SessionSetup_001"
       ]
     },
     {
@@ -394,6 +410,7 @@
       "union_field": "sessionSetupReq",
       "wrapper_prefix": "V2GTP",
       "canonical_name": "SessionSetup",
+      "self_precondition": "f_{SUT}_CMN_PR_SessionSetup_001",
       "default_precondition_chain": [
         "f_{SUT}_CMN_PR_InitConfiguration_001",
         "f_{SUT}_CMN_PR_SupportedAppProtocol_001"

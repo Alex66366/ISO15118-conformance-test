@@ -290,6 +290,17 @@ def render_tb_module(plan: Dict[str, Any]) -> str:
             bad_value_description = plan.get("verdict_logic", {}).get("pass_condition",
                 "SECC rejects malformed input")[:200]
 
+    # Sprint-4 fix: determine whether this TB needs vc_SessionID at runtime.
+    # `needs_vc_sessionid` is set when the precond chain includes SessionSetup
+    # but this is NOT a SessionSetup TB itself (SessionSetup must use the
+    # initial zero ID since no session exists yet).
+    needs_vc_sessionid = (
+        _precond_chain_has_session_setup(plan)
+        and message_type not in ("SessionSetup", "V2GTPSessionSetup")
+        and test_type == "GoodCase"
+        and not is_sdp
+    )
+
     context = {
         "plan": plan,
         "module_name": module_name,
@@ -330,12 +341,28 @@ def render_tb_module(plan: Dict[str, Any]) -> str:
         # builder so that downstream PRs/TBs carry the dynamically
         # negotiated SessionID (from SessionSetup) instead of a static
         # zero string.  When None, the plan-derived fallback wins.
-        "json_payload": _build_goodcase_json_payload(
-            plan,
-            session_id=plan.get("vc_SessionID"),
-        )
-            if (test_type == "GoodCase" and not is_sdp)
-            else "",
+        #
+        # Sprint-4 fix: If the precond chain contains PR_SessionSetup_001 AND
+        # this is NOT a SessionSetup TB, the TB MUST use vc_SessionID
+        # (a component variable that PR_SessionSetup set) instead of a static
+        # string literal.  The `needs_vc_sessionid` flag signals this to the
+        # Jinja2 template, which generates a dynamic charstring concatenation
+        # that embeds the negotiated SessionID at runtime.
+        "needs_vc_sessionid": needs_vc_sessionid,
+        # Sprint-3.2 fix: ``session_id`` is forwarded into the payload
+        # builder so that downstream PRs/TBs carry the dynamic SessionID
+        # negotiated by SessionSetup instead of a static zero string.
+        #
+        # Sprint-4 fix: when `needs_vc_sessionid` is True, the template will
+        # split the JSON envelope at runtime and splice in vc_SessionID
+        # (a component variable set by PR_SessionSetup).  We therefore pass
+        # a sentinel so the builder returns the BODY ONLY (no V2G_Message
+        # wrapper), which avoids double-wrapping the envelope.
+        "json_payload": (
+            _build_goodcase_json_payload(plan, session_id=_VC_SESSIONID_SENTINEL)
+            if needs_vc_sessionid
+            else _build_goodcase_json_payload(plan, session_id=None)
+        ) if (test_type == "GoodCase" and not is_sdp) else "",
         # tc_timer_name — derived from port name for uniqueness
         "tc_timer_name": f"tc_{msg_lower}_msg",
         # requirement trace (first one)
@@ -615,6 +642,43 @@ def _evccid_hex(plan: Dict) -> str:
     return _DEFAULT_EVCCID_HEX
 
 
+def _precond_chain_has_session_setup(plan: Dict) -> bool:
+    """Return True if the generation plan's precondition chain includes PR_SessionSetup.
+
+    When True, the TB must NOT hardcode ``"0000000000000000"`` in its
+    V2G_Message header — it must use the ``vc_SessionID`` component variable
+    that PR_SessionSetup persisted after the SessionSetup exchange.
+
+    This function checks BOTH the primary plan and any referenced-TC plan
+    (for covered_by_precondition cases) so that downstream TBs that are
+    "covered" by a precondition still get the right answer.
+    """
+    def _chain_mentions_session_setup(p: Dict) -> bool:
+        chain = p.get("precondition_chain") or []
+        return any(
+            "SessionSetup" in fn or "sessionsetup" in fn.lower()
+            for fn in chain
+        )
+
+    if _chain_mentions_session_setup(plan):
+        return True
+
+    # Also check the referenced-TC plan (covered_by_precondition case).
+    # The plan may carry a nested 'referenced_tc_plan' key when the
+    # TB is covered by a precondition owned by a different TC.
+    ref = plan.get("referenced_tc_plan") or plan.get("covered_by_tc_plan")
+    if ref and isinstance(ref, dict) and _chain_mentions_session_setup(ref):
+        return True
+
+    return False
+
+
+# Sentinel value passed to _wrap_v2g_message to signal "return body JSON only,
+# do NOT wrap in V2G_Message envelope".  Used when the TB template will
+# construct the full envelope at runtime with vc_SessionID spliced in.
+_VC_SESSIONID_SENTINEL = object()
+
+
 def _sessionid_hex(plan: Dict) -> str:
     """Return the SessionID as a 32-char uppercase hex string (16 bytes)."""
     kp = plan.get("key_parameters") or {}
@@ -624,8 +688,11 @@ def _sessionid_hex(plan: Dict) -> str:
     return _DEFAULT_SESSIONID_HEX
 
 
-def _build_app_protocol_req_json() -> str:
-    """Build supportedAppProtocolReq JSON (AppProtocol namespace, NO V2G_Message wrapper)."""
+def _build_app_protocol_req_json(plan: Dict, session_id: Optional[str] = None) -> str:
+    # SupportedAppProtocol is the FIRST message in the ISO 15118-2 sequence,
+    # BEFORE any session exists.  It uses the AppProtocol namespace (not V2G_Message)
+    # and has NO SessionID field.  The session_id parameter is accepted for
+    # API uniformity but ignored here.
     return (
         '{"supportedAppProtocolReq":{'
         '"AppProtocol":[{'
@@ -638,8 +705,7 @@ def _build_app_protocol_req_json() -> str:
     )
 
 
-def _build_app_protocol_res_json() -> str:
-    """Build supportedAppProtocolRes JSON (placeholder for completeness)."""
+def _build_app_protocol_res_json(plan: Dict, session_id: Optional[str] = None) -> str:
     return (
         '{"supportedAppProtocolRes":{'
         '"ResponseCode":"OK_SuccessfulNegotiation",'
@@ -671,11 +737,17 @@ def _wrap_v2g_message(body_json: str, plan: Dict, session_id: Optional[str] = No
     Sprint-3.2 fix: ``session_id`` parameter overrides the plan-derived
     default so downstream builders (ServiceDiscoveryReq, PaymentServiceSelectionReq,
     ...) can receive a dynamically-negotiated SessionID from SessionSetup
-    instead of hardcoding ``"0000000000000000"``.  The TB / PR is responsible
-    for persisting the SessionID into ``vc_SessionID`` and forwarding it; when
-    that variable is not propagated here, the plan-derived fallback wins (which
-    is the previous behaviour, kept for backward compatibility).
+    instead of hardcoding ``"0000000000000000"``.
+
+    Sprint-4 fix: when ``session_id`` is the ``_VC_SESSIONID_SENTINEL`` object,
+    return the body_json ONLY (no V2G_Message wrapper).  The TB template will
+    construct the full envelope at runtime with ``vc_SessionID`` spliced in.
+    This avoids double-wrapping when the template adds the envelope dynamically.
     """
+    # Sentinel path: return body-only for runtime envelope construction.
+    if session_id is _VC_SESSIONID_SENTINEL:
+        return body_json
+
     sid = session_id if session_id else _sessionid_hex(plan)
     # Defensive: ensure sid is exactly 32 uppercase hex chars (the XSD contract
     # for V2G SessionID is 8 bytes = 16 bytes hex string. Old code had
@@ -1043,6 +1115,209 @@ def _derive_bad_hex_from_sequences(plan: dict, message_type: str) -> str:
 
     # Generic fallback
     return "0201FD02000000020000"
+
+
+# ---------------------------------------------------------------------------
+# PR Function SessionID Validator (Sprint 4)
+# ---------------------------------------------------------------------------
+#
+# Background
+# ----------
+# PR functions are generated by the LLM (Core Agent), not by Static Renderer.
+# This means they don't benefit from the TB's `needs_vc_sessionid` logic.
+#
+# Problem: When a PR function (e.g. PR_ServiceDiscovery) sends a message
+# AFTER PR_SessionSetup, it may hardcode SessionID="0000000000000000" instead
+# of using the dynamically-negotiated vc_SessionID. This causes the SECC
+# to reject the message with FAILED_UnknownSession and close the connection.
+#
+# Solution
+# --------
+# This post-render validator scans all PR function files in a generated
+# project directory and:
+#   1. Identifies which PR functions need vc_SessionID (those AFTER SessionSetup)
+#   2. Checks if they use hardcoded "0000000000000000" in their JSON payloads
+#   3. Patches them to use vc_SessionID at runtime
+#
+# This is NOT a patch for a single bug — it's a systematic fix that applies
+# the same SessionID propagation rule to ALL PR functions that need it.
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+
+def validate_and_fix_pr_sessionid(project_dir: "Path | str") -> dict:
+    """
+    Scan and fix SessionID usage in all PR function files.
+
+    For every PR function that sends a V2G message AFTER SessionSetup,
+    this function ensures that:
+      - The SessionID in the JSON payload uses vc_SessionID (dynamic)
+      - NOT the hardcoded "0000000000000000" (static)
+
+    This is the PR-function counterpart to the TB function's
+    `needs_vc_sessionid` logic in render_tb_module().
+
+    Parameters
+    ----------
+    project_dir : Path or str
+        Path to the generated project directory.
+
+    Returns
+    -------
+    dict
+        Summary of changes: {"scanned": N, "fixed": M, "errors": [...]}
+    """
+    project_dir = Path(project_dir)
+    precond_dir = project_dir / "src" / "ttcn3" / "3_Behavior_Steps" / "PreConditions"
+
+    if not precond_dir.exists():
+        return {"scanned": 0, "fixed": 0, "errors": ["PreConditions dir not found"]}
+
+    # Find all PR function files
+    pr_files = list(precond_dir.glob("f_*_PR_*.ttcn"))
+    if not pr_files:
+        return {"scanned": 0, "fixed": 0, "errors": []}
+
+    summary = {"scanned": len(pr_files), "fixed": 0, "errors": []}
+
+    for pr_file in pr_files:
+        func_name = pr_file.stem  # e.g. "f_SECC_CMN_PR_ServiceDiscovery_001"
+        try:
+            fixed = _fix_pr_function_sessionid(pr_file, func_name)
+            if fixed:
+                summary["fixed"] += 1
+        except Exception as e:
+            summary["errors"].append(f"{func_name}: {e}")
+
+    return summary
+
+
+def _fix_pr_function_sessionid(pr_file: "Path", func_name: str) -> bool:
+    """
+    Fix a single PR function's SessionID usage.
+
+    Returns True if the file was modified, False otherwise.
+    """
+    content = pr_file.read_text(encoding="utf-8")
+
+    # Check if this PR function sends a V2G message with SessionID
+    # Note: In TTCN-3 charstring literals, double quotes are escaped as \"
+    # The file contains: \"0000000000000000\"
+    hardcoded_pattern = _re.compile(
+        r'\\"0000000000000000\\"'
+    )
+
+    if not hardcoded_pattern.search(content):
+        # No hardcoded SessionID found — nothing to fix
+        return False
+
+    # Check if this is a SessionSetup PR — if so, it SHOULD use "0000000000000000"
+    # because no session exists yet at that point
+    if "SessionSetup" in func_name:
+        # SessionSetup PRs use zero ID intentionally — don't touch
+        return False
+
+    # Check if this PR actually needs vc_SessionID (sends V2G message after SessionSetup)
+    if not needs_vc_sessionid_for_pr(func_name):
+        return False
+
+    # This PR function is AFTER SessionSetup and uses hardcoded zero ID — FIX IT
+    fixed_content = _patch_pr_sessionid(content, func_name)
+
+    if fixed_content != content:
+        pr_file.write_text(fixed_content, encoding="utf-8")
+        print(f"[PR-SESSIONID-FIX] {func_name}: replaced hardcoded SessionID with vc_SessionID")
+        return True
+
+    return False
+
+
+def _patch_pr_sessionid(content: str, func_name: str) -> str:
+    """
+    Replace hardcoded SessionID in a PR function with vc_SessionID.
+
+    The PR function sends JSON messages like:
+        var charstring json_req := "...\"SessionID\":\"0000000000000000\"...";
+
+    In TTCN-3 charstring literals, double quotes are escaped as \".
+    We replace the value with a concatenation that uses vc_SessionID.
+    """
+    # Pattern to find the SessionID value in TTCN-3 charstring literal
+    # The file contains: \"0000000000000000\"
+    pattern = re.compile(r'\\"0000000000000000\\"')
+
+    fixed = content
+    matches = list(pattern.finditer(content))
+    if matches:
+        for m in reversed(matches):
+            start, end = m.start(), m.end()
+            # Get surrounding context
+            ctx_start = max(0, start - 50)
+            ctx_end = min(len(content), end + 50)
+            ctx = content[ctx_start:ctx_end]
+            if "vc_SessionID" in ctx or "oct2char" in ctx:
+                continue  # already fixed
+            # Replace the value part
+            # Original: \"0000000000000000\"
+            # Result: \"" & oct2char(vc_SessionID) & \"\"
+            # In Python source: we need to escape the backslashes
+            replacement = '\\"" & oct2char(vc_SessionID) & \\"\\""'
+            fixed = fixed[:m.start()] + replacement + fixed[m.end():]
+
+    return fixed
+
+
+
+
+# V2G message types that use SessionID in their JSON payload.
+# These are all messages AFTER SessionSetup in the protocol sequence.
+# Note: SupportedAppProtocol does NOT use SessionID (no session exists yet).
+_V2G_MESSAGES_WITH_SESSIONID = frozenset([
+    "ServiceDiscovery",
+    "PaymentServiceSelection",
+    "PaymentDetails",
+    "Authorization",
+    "CertificateInstallation",
+    "CertificateUpdate",
+    "CableCheck",
+    "ChargeParameterDiscovery",
+    "PowerDelivery",
+    "ChargingStatus",
+    "MeteringReceipt",
+    "CurrentDemand",
+    "PreCharge",
+    "WeldingDetection",
+    "SessionStop",
+    "ServiceDetail",
+    "ServiceDiscovery",
+])
+
+
+def needs_vc_sessionid_for_pr(func_name: str) -> bool:
+    """
+    Determine if a PR function needs to use vc_SessionID.
+
+    Returns True for PR functions that:
+      1. Are NOT SessionSetup PRs (those use "0000000000000000" intentionally)
+      2. Send a V2G message that includes SessionID
+
+    Examples:
+      - f_SECC_CMN_PR_ServiceDiscovery_001 -> True
+      - f_SECC_CMN_PR_SessionSetup_001 -> False (uses zero ID intentionally)
+      - f_SECC_CMN_PR_InitConfiguration_001 -> False (no V2G message)
+      - f_SECC_CMN_PR_SupportedAppProtocol_001 -> False (no SessionID)
+    """
+    # SessionSetup uses zero ID intentionally
+    if "SessionSetup" in func_name:
+        return False
+
+    # Check if this PR sends a V2G message with SessionID
+    for msg_type in _V2G_MESSAGES_WITH_SESSIONID:
+        if msg_type in func_name:
+            return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------

@@ -25,5 +25,19 @@
       "var V2G_PortMessage v_err / v_msg declarations added",
       "send() now emits octetstring JSON (Sprint 3 Dumb Terminal)"
     ]
+  },
+  "f_SECC_CMN_PR_ServiceDiscovery_001": {
+    "file": "f_SECC_CMN_PR_ServiceDiscovery_001.ttcn",
+    "first_promoted_by": "TC_SECC_CMN_VTB_PaymentServiceSelection_001_20260719_005248",
+    "promoted_at": "2026-07-18T17:04:31.146253Z",
+    "compilable": true,
+    "line_count": 54
+  },
+  "f_SECC_CMN_PR_PaymentServiceSelection_001": {
+    "file": "f_SECC_CMN_PR_PaymentServiceSelection_001.ttcn",
+    "first_promoted_by": "TC_SECC_CMN_VTB_Authorization_001_20260719_022324",
+    "promoted_at": "2026-07-18T18:26:52.661203Z",
+    "compilable": true,
+    "line_count": 83
   }
 }

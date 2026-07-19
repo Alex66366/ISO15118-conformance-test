@@ -359,6 +359,7 @@ def run_one_case(
     tc_id = kb_record["tc_id"]
     started_at = datetime.now(timezone.utc).isoformat()
     cold_start = time.time()
+    cold_start_seconds = None  # set immediately; available in both try and except paths
 
     record = {
         "tc_id": tc_id,
@@ -437,11 +438,9 @@ def run_one_case(
         # Find the latest generated project dir
         run_dir = _find_latest_generated_dir(tc_id)
 
-        # Sprint 4 CL4 fix: bind `cold_start_seconds` BEFORE subprocess.run
-        # so the `except subprocess.TimeoutExpired:` handler below can safely
-        # reference it. Previously this variable was only assigned on the
-        # happy-path after subprocess.run returned, which caused
-        # UnboundLocalError and crashed the entire batch runner.
+        # Record elapsed time (available in both try and except paths).
+        # NOTE: this assignment stays in the try-block so the except handler
+        # also reads the same value (already set to None before the try).
         cold_start_seconds = time.time() - cold_start
 
         # Parse metrics.json
@@ -478,11 +477,25 @@ def run_one_case(
             "execution_time_seconds": verdict.get("execution_time_seconds", 0.0),
             "build_status": verdict.get("build_status"),
             "compile_errors_count": verdict.get("compile_errors_count", 0),
-            # FALLBACK: when pipeline crashed before writing metrics.json,
-            # `latency.total_pipeline_seconds` is 0.0 — use wall-clock as the
-            # honest elapsed time so the user sees "PIPELINE_ERROR (933.6s)"
-            # instead of a misleading "0.0s".
-            "total_pipeline_seconds": latency.get("total_pipeline_seconds", 0.0) or round(cold_start_seconds, 1),
+            # === HONEST WALL-CLOCK TIME ===
+            # Sprint 4 fix: `cold_start_seconds` is the AUTHORITATIVE elapsed
+            # time (wall-clock from subprocess.start to subprocess.end).
+            #
+            # `latency.total_pipeline_seconds` is the SUM of *named* subtimings
+            # reported by the pipeline internals (planning + generation +
+            # infrastructure + compilation + ...). Two reasons it's WRONG:
+            #   1. Subtimings don't cover ALL the time the subprocess is alive
+            #      — sleep waits, subprocess.run() of TITAN/external tools, and
+            #      even idle I/O waits are not bucketed into any subtimer.
+            #      In the 2026-07-15 23:08 run, subtimings summed to 556s but
+            #      wall-clock was 1762s — a 3× under-report.
+            #   2. If the pipeline adds a NEW subtimer field without writing
+            #      it to `total_pipeline_seconds`, the sum silently goes stale.
+            #
+            # Therefore: report cold_start_seconds (= wall-clock) as the
+            # canonical `total_pipeline_seconds`. Keep the per-bucket
+            # breakdown in their own fields for diagnostics.
+            "total_pipeline_seconds": round(cold_start_seconds, 1),
             "infrastructure_seconds": latency.get("infrastructure_seconds", 0.0),
             "compilation_seconds": latency.get("compilation_seconds", 0.0),
             "fault_correction_seconds": latency.get("fault_correction_seconds", 0.0),
@@ -549,10 +562,8 @@ def run_one_case(
             # but writing the canonical latency block keeps the metrics
             # JSON consistent with non-salvage cases (dashboard / time
             # series consumers can rely on a uniform schema).
-            _salvage_pipeline_seconds = max(
-                round(cold_start_seconds, 1),
-                float(proc_info.get("wallclock_seconds", 0.0) or 0.0),
-            )
+            # Compute actual elapsed (available in except path via cold_start).
+            _salvage_pipeline_seconds = time.time() - cold_start
             _payload = {
                 "tc_id": tc_id,
                 "timestamp": salvaged_dir.name.rsplit("_", 1)[1] if salvaged_dir else "unknown",

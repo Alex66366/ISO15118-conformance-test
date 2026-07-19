@@ -166,9 +166,19 @@ module {{ module_name }} {
         log("Sending {{ message_type }} via Dumb Terminal (char2oct of PascalCase JSON)...");
         {{ tc_timer_name }}.start(PX_SECC_CMN_Message_Timeout);
 
-        // Hand-built PascalCase JSON payload (hexBinary fields pre-hex-encoded).
-        // The renderer fills this in via plan["goodcase_json_payload"].
+        // Sprint-4 fix: if the precond chain includes PR_SessionSetup_001, this TB
+        // MUST use the dynamically-negotiated vc_SessionID instead of a static
+        // zero string.  We split the JSON envelope so vc_SessionID is embedded
+        // at runtime.  SessionSetup itself (before the session exists) is excluded.
+{% if needs_vc_sessionid %}
+        // Sprint 4 fix: dynamically inject vc_SessionID from SessionSetup response.
+        // vc_SessionID is octetstring; convert to charstring via oct2char().
+        var charstring json_req := "{\"V2G_Message\":{\"Header\":{\"SessionID\":" & oct2char(vc_SessionID) & "},\"Body\":{{ json_payload }}}}";
+{% else %}
+        // Static PascalCase JSON payload (hexBinary fields pre-hex-encoded).
+        // For SessionSetup only: SessionID is "0000000000000000" (no session yet).
         var charstring json_req := "{{ json_payload }}";
+{% endif %}
 
         {{ port_name }}.send(char2oct(json_req));
 

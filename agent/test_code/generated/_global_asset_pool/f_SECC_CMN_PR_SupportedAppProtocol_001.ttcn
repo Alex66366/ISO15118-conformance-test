@@ -14,21 +14,11 @@ module f_SECC_CMN_PR_SupportedAppProtocol_001 {
     {
         timer tc_msg := PX_SECC_CMN_Message_Timeout;
 
-        // Build the SupportedAppProtocolReq as a JSON literal.  This is
-        // the canonical PascalCase envelope expected by the EXI codec
-        // for the AppProtocol namespace.
+        // Build the SupportedAppProtocolReq as a SINGLE-LINE JSON literal.
+        // Multi-line `&`-concatenation routinely produces brace-imbalanced
+        // JSON (see core_agent_prompt.txt RULE 3.5).
         var charstring json_req :=
-            "{"
-            & "\"supportedAppProtocolReq\":{"
-            & "\"AppProtocol\":[{"
-            & "\"ProtocolNamespace\":\"urn:iso:15118:2:2013:MsgDef\","
-            & "\"VersionNumberMajor\":2,"
-            & "\"VersionNumberMinor\":0,"
-            & "\"SchemaID\":1,"
-            & "\"Priority\":1"
-            & "}]"
-            & "}"
-            & "}";
+            "{\"supportedAppProtocolReq\":{\"AppProtocol\":[{\"ProtocolNamespace\":\"urn:iso:15118:2:2013:MsgDef\",\"VersionNumberMajor\":2,\"VersionNumberMinor\":0,\"SchemaID\":1,\"Priority\":1}]}}";
 
         log("Sending SupportedAppProtocolReq...");
         tc_msg.start(PX_SECC_CMN_Message_Timeout);
@@ -56,12 +46,15 @@ module f_SECC_CMN_PR_SupportedAppProtocol_001 {
                 log("SECC SupportedAppProtocol response (raw JSON): ", resp_json);
 
                 var boolean resp_ok := false;
-                if (match(resp_json, "*\"ResponseCode\":\"OK*\"")) {
+                // Critical: TTCN-3 charstring uses `""` to escape `"`,
+                // NOT `\"`. A `\"` here is a literal backslash + quote
+                // and `match()` will never find them in real JSON.
+                if (match(resp_json, "*""ResponseCode"":""OK_*""*")) {
                     resp_ok := true;
-                } else if (match(resp_json, "*\"ResponseCode\":\"FAILED*\"")) {
+                } else if (match(resp_json, "*""ResponseCode"":""FAILED_*""*")) {
                     setverdict(fail,
                         "SupportedAppProtocol rejected by SECC. ResponseCode=FAILED_*.");
-                } else if (match(resp_json, "*\"Notification\"*") or
+                } else if (match(resp_json, "*""Notification""*") or
                            match(resp_json, "*ParsingError*")) {
                     setverdict(fail,
                         "SupportedAppProtocol Notification fault: ", resp_json);

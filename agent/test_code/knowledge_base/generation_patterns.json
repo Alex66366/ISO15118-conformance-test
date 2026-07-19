@@ -1,18 +1,16 @@
 {
   "_comment": "Generation patterns extracted from ttcn3_generation_sop.json for use as referenced rules by Core Agent and Infrastructure Agent. Each pattern includes: pattern_name, preconditions, template_code (TTCN-3 or C++), and example_substitutions.",
-
   "_important_constraint": "V3 (Universal EXI Bridge):\nAll V2G application messages are sent via the structured union: pt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { msgType := md_CMN_MsgReq_001 } }). The C++ V2G_TCP_TLS_Port adapter (v3 Dumb Terminal) forwards the union selection + JSON to the Python EXI microservice at localhost:9000. The microservice encodes JSON to EXI bytes using Siemens EXIficient (py4j + EXICodec.jar). The adapter adds the V2GTP header and sends to SECC. V2GTP Header BadCase tests ONLY (TC_SECC_CMN_VTB_V2GTPHeader_*): send raw octetstrings via pt_V2G_TCP_TLS_ALM_SECC_Port.send({ raw := '0201FD...'O }). MUST NOT use int2oct or raw octetstrings for V2G application messages.\n\nARCHITECTURE v3: ISO 15118 SessionID State Management:\nThe C++ V2G_TCP_TLS_Port adapter (v3) is a DUMB TERMINAL. SessionID management is the TTCN-3 test script's SOLE responsibility:\n  1. After receiving SessionSetupRes, extract SessionID and assign to a component variable.\n  2. Before sending any subsequent request, inject vc_SessionID into the appropriate field via valueof(template).\n  3. set_parameter('session_id', ...) is still used for logging but the adapter does NOT auto-inject SessionID.\n\nV3 REPLACES: OpenV2G C library, ExiCodecAdapter, StaticExiDecoder, exi_payload_library.json.\nAll EXI encoding/decoding now goes through: localhost:9000 (Python microservice with py4j + EXICodec.jar).\nLLM NEVER generates EXI bytes or V2GTP headers.",
-
   "_ironclad_json_payload_rules": "ABSOLUTE RULES for any JSON payload that gets sent to the EXI microservice at localhost:9000. Violating any of these causes silent failure (2-byte empty EXI) or NullPointerException (no Java stack trace). Verified empirically on EXIficient 1.55 + MOXy 2.7.\n\nRULE 1 (NAMESPACE WHITELIST): The 'namespace' parameter (2nd line of ENCODE/DECODE protocol) MUST be one of these EXACT 8 strings. Any other string returns null from getSchema() -> NPE on first unmarshal.\n  - urn:iso:15118:2:2010:AppProtocol                          (supportedAppProtocolReq/Res ONLY)\n  - urn:iso:15118:2:2013:MsgDef                                (ISO 15118-2 V2G_Message)\n  - urn:din:70121:2012:MsgDef                                  (DIN SPEC 70121 V2G_Message)\n  - urn:iso:std:iso:15118:-20:CommonMessages                   (ISO 15118-20 common)\n  - urn:iso:std:iso:15118:-20:AC                              (ISO 15118-20 AC)\n  - urn:iso:std:iso:15118:-20:DC                              (ISO 15118-20 DC)\n  - urn:iso:std:iso:15118:-20:WPT                             (ISO 15118-20 WPT)\n  - urn:iso:std:iso:15118:-20:ACDP                            (ISO 15118-20 ACDP)\n  - urn:iso:15118:2:2010:MsgDef does NOT exist!                (Common LLM hallucination - WRONG)\n\nRULE 2 (PASCALCASE KEYS MANDATORY): MOXy JSON binding uses the XSD element name as the JSON key, NOT the Java field name. Java field 'appProtocol' is exposed as JSON key 'AppProtocol'. Java field 'protocolNamespace' is exposed as JSON key 'ProtocolNamespace'. ALL keys in the payload MUST be PascalCase matching the XSD element names. EXIficient @XmlElement(name=...) annotation wins over the Java field name.\n\nRULE 3 (CASE STUDY -- SupportedAppProtocolReq):\n  Java class field: appProtocol              (camelCase, lowercase)\n  @XmlElement annotation: name='AppProtocol' (PascalCase)\n  -> JSON key MUST be 'AppProtocol'\n  WRONG: {\"supportedAppProtocolReq\":{\"appProtocol\":[...],\"protocolNamespace\":\"...\"}}\n  RIGHT: {\"supportedAppProtocolReq\":{\"AppProtocol\":[{\"ProtocolNamespace\":\"urn:iso:15118:2:2010:MsgDef\",\"VersionNumberMajor\":2,\"VersionNumberMinor\":0,\"SchemaID\":1,\"Priority\":1}]}}\n\nRULE 4 (CASE STUDY -- V2G_Message Body+Inner message):\n  V2G_Message root MUST use the PascalCase outer wrapper.\n  Body sub-element key (e.g. 'SessionSetupReq') MUST match the ObjectFactory @XmlElementDecl name.\n  Inner message field names MUST be PascalCase.\n  WRONG: {\"V2G_Message\":{\"header\":{\"sessionID\":\"0000000000000000\"},\"body\":{\"SessionSetupReq\":{\"evccid\":\"020000000001\"}}}}\n  RIGHT: {\"V2G_Message\":{\"Header\":{\"SessionID\":\"0000000000000000\"},\"Body\":{\"SessionSetupReq\":{\"EVCCID\":\"020000000001\"}}}}\n\nRULE 5 (HEX STRING, NOT BASE64, FOR hexBinary FIELDS): SessionID (8 bytes), EVCCID (6 bytes), GenChallenge (16 bytes), OEMProvisioningCert (var bytes), and all other XSD hexBinary fields MUST be encoded as HEX strings (e.g. '020000000001'), NOT base64. MOXy validates the string against [0-9a-f] charset and rejects base64 with 'contains illegal character for hexBinary'.\n\nRULE 6 (SILENT FAILURE WARNING): The MOXy unmarshal step is SILENT. If a JSON key does not match any XSD element name, MOXy DROPS the field without exception. The result is a Java object with the field set to null, and the encoded EXI stream is the empty/minimal form. Symptom: ENCODE returns EXI 2-4 bytes; DECODE returns '{\"rootMsg\":{}}'. There is no error to catch. The ONLY way to detect this is to verify EXI byte count >= 10 for non-trivial messages.\n\nRULE 7 (NPE WARNING): Sending a namespace NOT in RULE 1's whitelist returns null from EXICodec.getSchema(). EXICodec.encode_json() then calls setJAXBContext(null) which is a NO-OP (no else branch in bytecode). The next unmarshalJSONToMessage() call dereferences a null Unmarshaller and throws NPE. The error surfaces as 'Unknown error: java.lang.NullPointerException' from the microservice. Always verify namespace against RULE 1 BEFORE sending.\n\nCANONICAL CORRECT EXAMPLES (verified 2026-07-06, smoke_test PASS 5/5):\n  AppProtocol REQ:  {\"supportedAppProtocolReq\":{\"AppProtocol\":[{\"ProtocolNamespace\":\"urn:iso:15118:2:2010:MsgDef\",\"VersionNumberMajor\":2,\"VersionNumberMinor\":0,\"SchemaID\":1,\"Priority\":1}]}}\n  AppProtocol RES:  {\"supportedAppProtocolRes\":{\"ResponseCode\":\"OK_SuccessfulNegotiation\",\"SchemaID\":1}}\n  V2G_Message SetupReq: {\"V2G_Message\":{\"Header\":{\"SessionID\":\"0000000000000000\"},\"Body\":{\"SessionSetupReq\":{\"EVCCID\":\"020000000001\"}}}}\n  V2G_Message DiscReq:  {\"V2G_Message\":{\"Header\":{\"SessionID\":\"82DBA3A44ED6E5B9\"},\"Body\":{\"ServiceDiscoveryReq\":{\"ServiceScope\":\"www.example.com\",\"ServiceCategory\":\"EVCharging\"}}}}",
-
   "_ironclad_json_payload_rules_source": "Discovered 2026-07-06 during smoke_test debugging. EXICodec.jar disassembly (javap -p -v) + iso15118-master official pydantic Field(alias=...) reference. See test_code/shared_infrastructure/exi_microservice/smoke_test.sh for the live truth.",
-
   "patterns": [
     {
       "pattern_name": "SDP_Discovery_Block",
       "category": "precondition",
       "description": "SDP discovery via UDP multicast. Always position 1 in precondition_chain for V2GTP/SDP tests.",
-      "preconditions": ["Always position 1 (first) in precondition_chain"],
+      "preconditions": [
+        "Always position 1 (first) in precondition_chain"
+      ],
       "template_code": "function f_{SUT}_CMN_PR_InitConfiguration_001() runs on {SUT}Tester {\n    // Phase A: Map ports\n    map(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\n    map(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);\n\n    // Phase B: SDP Discovery via UDP multicast\n    // V2GTP header: version=01, inv=FE, payloadType=9000(SDP), length=4, body=2100\n    var octetstring sdp_req := '01FE9000000000021000'O;\n    pt_V2G_UDP_SDP_Port.send(sdp_req);\n\n    timer t_sdp;\n    t_sdp.start(5.0);\n\n    alt {\n        [] pt_V2G_UDP_SDP_Port.receive {\n            t_sdp.stop;\n            log(\"SDP discovery: SECC found via UDP multicast\");\n        }\n        [] t_sdp.timeout {\n            log(\"SDP discovery: timeout, proceeding anyway (SIL mode)\");\n        }\n    }\n\n    log(\"InitConfiguration complete, SDP discovery done\");\n    return pass;\n}",
       "example_substitutions": [
         {
@@ -33,7 +31,11 @@
       "pattern_name": "V2G_Message_Send_Via_Structured_Union",
       "category": "protocol",
       "description": "CORRECT way to send V2G application messages via the TCP port (v3 Universal EXI Bridge). The port out type is V2G_PortMessage, a dual union. Use the v2g variant to send structured V2G messages -- the C++ V2G_TCP_TLS_Port adapter (v3 Dumb Terminal) forwards the union selection + JSON to localhost:9000 (Python microservice with EXIficient), which returns EXI bytes. The adapter adds the V2GTP header and sends to SECC.",
-      "preconditions": ["Port V2G_TCP_TLS_ALM_{SUT}_Port must be mapped", "V2G_MessageUnion type must be defined in Types_SECC_15118_2.ttcn", "Template md_CMN_{Msg}Req_001 must be defined in SECC_CmnTemplates.ttcn"],
+      "preconditions": [
+        "Port V2G_TCP_TLS_ALM_{SUT}_Port must be mapped",
+        "V2G_MessageUnion type must be defined in Types_SECC_15118_2.ttcn",
+        "Template md_CMN_{Msg}Req_001 must be defined in SECC_CmnTemplates.ttcn"
+      ],
       "template_code": "// STEP 1: Lookup exi_payload_library.json for wire_hex, is_dynamic, json_payload\n// STEP 2: Locate md_CMN_{Msg}Req_001 in SECC_CmnTemplates.ttcn\n// STEP 3: Send via V2G_PortMessage v2g variant -- ExiCodecAdapter handles V2GTP header + EXI encoding\npt_V2G_TCP_TLS_ALM_{SUT}_Port.send(\n    { v2g := { supportedAppProtocolReq := md_CMN_SupportedAppProtocolReq_001 } }\n);",
       "example_substitutions": [
         {
@@ -65,7 +67,10 @@
       "pattern_name": "TCP_Connect_Block",
       "category": "precondition",
       "description": "TCP/TLS connection establishment. Used after SDP discovery to connect to discovered SECC.",
-      "preconditions": ["SDP discovery must have completed (position 1)", "V2G_TCP_TLS_ALM_Port must be mapped"],
+      "preconditions": [
+        "SDP discovery must have completed (position 1)",
+        "V2G_TCP_TLS_ALM_Port must be mapped"
+      ],
       "template_code": "// TCP connect block (handled by port adapter based on set_parameter ip_address/port)\n// The C++ port adapter reads V2G__UDP__SDP__Port__last_secc_ip_ and V2G__UDP__SDP__Port__last_secc_port_\n// to determine the TCP destination after SDP response is received.\n// In TTCN-3: just ensure the port is mapped -- TCP connection is established on first send() using shared SDP state.\nmap(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\nmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);",
       "example_substitutions": [
         {
@@ -90,7 +95,11 @@
       "pattern_name": "V2GTP_Header_BadCase_Raw_Send",
       "category": "test_behavior",
       "description": "V2GTP layer BadCase tests (TC_SECC_CMN_VTB_V2GTPHeader_*) MUST send raw V2GTP bytes via the TCP port's raw variant. This is the ONLY exception to the structured union rule. The { raw := ... } variant of V2G_PortMessage bypasses EXI encoding and V2GTP patching entirely -- the C++ adapter sends the exact bytes as-is. Use this for testing invalid ProtocolVersion, invalid InverseProtocolVersion, invalid PayloadType, or mismatched PayloadLength.",
-      "preconditions": ["Only for V2GTP layer tests (protocol_layer=V2GTP, tc_id contains V2GTPHeader)", "TCP connection must already be established by InitConfiguration", "For all other V2G application messages, use structured union { v2g := ... } instead"],
+      "preconditions": [
+        "Only for V2GTP layer tests (protocol_layer=V2GTP, tc_id contains V2GTPHeader)",
+        "TCP connection must already be established by InitConfiguration",
+        "For all other V2G application messages, use structured union { v2g := ... } instead"
+      ],
       "template_code": "// ================================================================\n// V2GTP Header BadCase: send malformed V2GTP header as raw octetstring\n//\n// V2GTP header format (8 bytes):\n//   byte 0: ProtocolVersion        -- must be 0x01 (BadCase: send 0x02)\n//   byte 1: InverseProtocolVersion -- must be 0xFE = 0x01 xor 0xFF (BadCase: 0xFD)\n//   byte 2-3: PayloadType          -- 0x8001=EXI, 0x9000=SDP (BadCase: any other)\n//   byte 4-7: PayloadLength        -- big-endian 32-bit\n//\n// The C++ adapter sends this bytes-as-is (no EXI encoding, no V2GTP patching).\n// ================================================================\ntimer tc_msg := PX_SECC_CMN_Message_Timeout;\ntc_msg.start(PX_SECC_CMN_Message_Timeout);\n\n// Example TC_SECC_CMN_VTB_V2GTPHeader_002: ProtocolVersion=0x02 (invalid)\nvar octetstring v2gtp_malformed := '0201FD0200000002'O;  // Ver=02,Inv=FD,Type=8001,Len=2,payload=0000\npt_V2G_TCP_TLS_ALM_SECC_Port.send({ raw := v2gtp_malformed });\n\nalt {\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"SECC accepted invalid ProtocolVersion -- V2G2-082 violation\");\n    }\n    [] tc_msg.timeout {\n        setverdict(pass, \"SECC correctly rejected invalid ProtocolVersion (timeout/close)\");\n    }\n}\nreturn getverdict;",
       "example_substitutions": [
         {
@@ -121,7 +130,10 @@
       "pattern_name": "Alt_With_Timer_Pattern",
       "category": "test_behavior",
       "description": "Standard alt block with timer. Each non-timeout branch MUST stop the timer before setverdict.",
-      "preconditions": ["Timer must be started before the alt block", "All port receive operations must be covered"],
+      "preconditions": [
+        "Timer must be started before the alt block",
+        "All port receive operations must be covered"
+      ],
       "template_code": "timer tc_msg := {timer_value};\ntc_msg.start;\npt_V2G_TCP_TLS_ALM_{SUT}_Port.send({ v2g := { msgType := md_CMN_MsgReq_001 } });\nalt {\n    [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive({ resType := mdw_{SUT}_MsgRes_001 }) {\n        tc_msg.stop;\n        setverdict(pass, \"{success_message}\");\n    }\n    [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"{failure_message}\");\n    }\n    [] tc_msg.timeout {\n        setverdict(inconc, \"Timeout waiting for response\");\n    }\n}\nreturn getverdict;",
       "example_substitutions": [
         {
@@ -153,7 +165,10 @@
       "pattern_name": "Port_Mapping_Unmapping_Pattern",
       "category": "infrastructure",
       "description": "Standard port map/unmap pattern for test case phases A and D.",
-      "preconditions": ["Ports must be defined in ComponentsAndPorts.ttcn", "Port instance names must match generation_plan"],
+      "preconditions": [
+        "Ports must be defined in ComponentsAndPorts.ttcn",
+        "Port instance names must match generation_plan"
+      ],
       "template_code": "// Phase A: Map ports (at beginning of testcase)\nmap(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\nmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);\n\n// Phase D: Unmap ports (at end of testcase, unconditional)\nf_{SUT}_CMN_PO_InitialState_001();\nf_{SUT}_CMN_PO_ShutdownConfiguration_001();\nunmap(mtc:pt_V2G_TCP_TLS_ALM_{SUT}_Port, system:pt_V2G_TCP_TLS_ALM_{SUT}_Port);\nunmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);",
       "example_substitutions": [
         {
@@ -180,7 +195,10 @@
       "pattern_name": "GoodCase_Verdict_Logic",
       "category": "verdict",
       "description": "Verdict logic for GoodCase tests (valid input, expect success).",
-      "preconditions": ["test_type = GoodCase in generation_plan", "SeqNo = 001"],
+      "preconditions": [
+        "test_type = GoodCase in generation_plan",
+        "SeqNo = 001"
+      ],
       "template_code": "// GoodCase: expect valid response\nvar verdicttype v_result;\ntimer tc_msg := PX_SECC_CMN_Message_Timeout;\ntc_msg.start;\npt_V2G_TCP_TLS_ALM_SECC_Port.send({ v2g := { msgType := md_CMN_MsgReq_001 } });\nalt {\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive({ resType := ? }) {\n        tc_msg.stop;\n        setverdict(pass, \"Response matches expected\");\n        v_result := pass;\n    }\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"Unexpected response received\");\n        v_result := fail;\n    }\n    [] tc_msg.timeout {\n        setverdict(inconc, \"Timeout waiting for response\");\n        v_result := inconc;\n    }\n}\nreturn getverdict;",
       "common_errors": [
         {
@@ -193,7 +211,10 @@
       "pattern_name": "BadCase_Verdict_Logic",
       "category": "verdict",
       "description": "Verdict logic for BadCase tests (invalid input, expect rejection/timeout/close).",
-      "preconditions": ["test_type = BadCase in generation_plan", "SeqNo >= 002"],
+      "preconditions": [
+        "test_type = BadCase in generation_plan",
+        "SeqNo >= 002"
+      ],
       "template_code": "// BadCase: expect SUT to reject/ignore/close\nvar verdicttype v_result;\ntimer tc_msg := PX_SECC_CMN_Message_Timeout;\ntc_msg.start;\n// Send malformed message via raw variant (V2GTP header BadCase)\npt_V2G_TCP_TLS_ALM_SECC_Port.send({ raw := '0201FD0200000002'O });\nalt {\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(?) {\n        tc_msg.stop;\n        setverdict(fail, \"SUT should reject this invalid input\");\n        v_result := fail;\n    }\n    [] tc_msg.timeout {\n        setverdict(pass, \"SUT correctly ignored invalid input (timeout)\");\n        v_result := pass;\n    }\n}\nreturn getverdict;",
       "common_errors": [
         {
@@ -206,7 +227,9 @@
       "pattern_name": "Precondition_Chain_Position_Semantics",
       "category": "precondition",
       "description": "How precondition chain position determines behavior. Position in the chain maps to protocol phase.",
-      "preconditions": ["None"],
+      "preconditions": [
+        "None"
+      ],
       "position_semantics": {
         "position_1": {
           "description": "First precondition in chain",
@@ -235,7 +258,10 @@
       "pattern_name": "Test_Behavior_Function_Structured_Union",
       "category": "test_behavior",
       "description": "CORRECT test behavior function using structured union templates. MUST end with 'return getverdict;' regardless of verdict outcome.",
-      "preconditions": ["Function must have return type verdicttype", "For V2G application messages: use structured union templates"],
+      "preconditions": [
+        "Function must have return type verdicttype",
+        "For V2G application messages: use structured union templates"
+      ],
       "template_code": "function f_{SUT}_{Category}_TB_VTB_{MessageType}_{SeqNo}()\n    runs on {SUT}Tester\n    return verdicttype\n{\n    timer tc_msg := PX_SECC_CMN_Message_Timeout;\n\n    // Send via V2G_PortMessage v2g variant -- ExiCodecAdapter handles V2GTP header + EXI encoding\n    tc_msg.start(PX_SECC_CMN_Message_Timeout);\n    pt_V2G_TCP_TLS_ALM_{SUT}_Port.send(\n        { v2g := { msgType := md_CMN_{MessageType}Req_001 } }\n    );\n\n    // Receive and set verdict\n    alt {\n        [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive(\n            { resType := ? }\n        ) {\n            tc_msg.stop;\n            log(\"{MessageType}Res received and matched\");\n            log(\"SessionID captured (C++ adapter stores it for subsequent messages)\");\n            setverdict(pass, \"{MessageType} exchange successful\");\n        }\n        [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive {\n            tc_msg.stop;\n            setverdict(fail, \"Unexpected message received during {MessageType}\");\n        }\n        [] tc_msg.timeout {\n            setverdict(inconc, \"Timeout waiting for {MessageType}Res\");\n        }\n    }\n\n    return getverdict;\n}",
       "common_errors": [
         {
@@ -252,7 +278,10 @@
       "pattern_name": "Precondition_V2G_Application_Message",
       "category": "precondition",
       "description": "Generic precondition function for V2G application messages (position 2+ in the precondition chain). Use structured union templates for send/receive.",
-      "preconditions": ["Position >= 2 in precondition_chain", "Message-specific implementation required"],
+      "preconditions": [
+        "Position >= 2 in precondition_chain",
+        "Message-specific implementation required"
+      ],
       "template_code": "function f_{SUT}_CMN_PR_{MessageName}_{SeqNo}()\n    runs on {SUT}Tester\n    return verdicttype\n{\n    timer tc_msg := PX_SECC_CMN_Message_Timeout;\n\n    log(\"Sending {MessageName}Req via V2G_PortMessage v2g variant...\");\n    tc_msg.start(PX_SECC_CMN_Message_Timeout);\n\n    // STEP 3: Send via V2G_PortMessage v2g variant -- ExiCodecAdapter encodes\n    pt_V2G_TCP_TLS_ALM_{SUT}_Port.send(\n        { v2g := { {msgName}Req := md_CMN_{MessageName}Req_001 } }\n    );\n\n    // STEP 4: Receive and set verdict\n    alt {\n        [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive(\n            { {msgName}Res := md_CMN_{MessageName}Res_001 }\n        ) {\n            tc_msg.stop;\n            log(\"{MessageName}Res received: exchange complete\");\n            setverdict(pass, \"{MessageName} exchange successful\");\n        }\n        [] pt_V2G_TCP_TLS_ALM_{SUT}_Port.receive(\n            { {msgName}Res := md_CMN_{MessageName}Res_002 }\n        ) {\n            tc_msg.stop;\n            setverdict(fail, \"SECC rejected the {MessageName} negotiation\");\n        }\n        [] tc_msg.timeout {\n            setverdict(inconc, \"Timeout waiting for {MessageName}Res\");\n        }\n    }\n\n    return getverdict;\n}",
       "example_substitutions": [
         {
@@ -273,7 +302,9 @@
       "pattern_name": "PrePostCondition_Unconditional_Run",
       "category": "postcondition",
       "description": "PostConditions MUST run regardless of preConVerdict value. Phase D is unconditional.",
-      "preconditions": ["Phase D runs after Phase C verdict is set"],
+      "preconditions": [
+        "Phase D runs after Phase C verdict is set"
+      ],
       "template_code": "// Phase A+B: PreConditions\nvar verdicttype preConVerdict;\nif (f_SECC_CMN_PR_InitConfiguration_001() != pass) {\n    preConVerdict := fail;\n} else {\n    preConVerdict := f_SECC_CMN_PR_SupportedAppProtocol_001();\n}\nif (preConVerdict != pass) {\n    setverdict(inconc);\n    f_SECC_CMN_PO_InitialState_001();\n    f_SECC_CMN_PO_ShutdownConfiguration_001();\n    return;\n}\n\n// Phase C: Test behavior (only if preconditions passed)\nf_SECC_CMN_TB_VTB_{MsgType}_{SeqNo}();\n\n// Phase D: Postconditions (ALWAYS runs, regardless of preConVerdict or v_result)\nf_SECC_CMN_PO_InitialState_001();\nf_SECC_CMN_PO_ShutdownConfiguration_001();\nunmap(mtc:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);\nunmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);\nstop;",
       "common_errors": [
         {
@@ -286,7 +317,9 @@
       "pattern_name": "Direct_Import_Rule",
       "category": "infrastructure",
       "description": "TTCN-3 does NOT re-export symbols imported through intermediate modules. The main testcase module MUST directly import from EVERY individual function module it calls. Do NOT rely solely on the aggregator module for imports.",
-      "preconditions": ["None"],
+      "preconditions": [
+        "None"
+      ],
       "template_code": "module TC_SECC_CMN_VTB_{Msg}_{Seq} {\n    import from SECC_TestSystem all;\n    import from PreConditions_SECC_15118_2 all;   // aggregator -- transitive ONLY\n    import from PostConditions_SECC_15118_2 all;  // aggregator -- transitive ONLY\n    // CORRECT: Direct imports for ALL function modules called\n    import from f_SECC_CMN_PR_InitConfiguration_001 all;   // direct!\n    import from f_SECC_CMN_PR_SupportedAppProtocol_001 all; // direct!\n    import from f_SECC_CMN_TB_VTB_{Msg}_{Seq} all; // direct!\n    import from f_SECC_CMN_PO_InitialState_001 all;          // direct!\n    import from f_SECC_CMN_PO_ShutdownConfiguration_001 all; // direct!\n\n    testcase TC_SECC_CMN_VTB_{Msg}_{Seq}()\n        runs on SECCTester system SystemSECC\n    {\n        var verdicttype preConVerdict;\n        // ... test body ...\n    }\n}",
       "common_errors": [
         {
@@ -346,108 +379,49 @@
       ]
     },
     {
-      "pattern_name": "ISO15118_SessionID_State_Management",
-      "category": "mandatory_state_management",
-      "severity": "mandatory",
-      "description": "[MANDATORY] All protocol state (SessionID, EVSEID, SAScheduleTupleID, etc.) MUST be managed exclusively in TTCN-3 component variables (vc_ prefix) declared in ComponentsAndPorts.ttcn. The C++ V2G_TCP_TLS_Port adapter is a STATELESS TRANSLATOR. set_parameter() for state storage is FORBIDDEN. The Extract to Persist to Inject three-step pattern is the ONLY permitted mechanism.",
-      "iso15118_reference": "ISO 15118-2 Part 2, Section 6.4.3: SessionID is assigned by the SECC in SessionSetupRes and MUST be used in all subsequent messages from the EVCC.",
-      "trigger_keywords": [
-        "SessionID", "SessionSetup", "ServiceDiscovery", "SessionSetupRes",
-        "setparameter", "set_parameter", "precondition_chain",
-        "service_discovery", "session_id", "vc_SessionID"
-      ],
-      "preconditions": [
-        "vc_SessionID is declared as 'var octetstring vc_SessionID := '0000000000000000'O' in ComponentsAndPorts.ttcn SECCTester component",
-        "Any request message after SessionSetupRes: ServiceDiscoveryReq, PaymentDetailsReq, AuthorizationReq, ChargeParameterDiscoveryReq, PowerDeliveryReq, etc."
-      ],
-      "template_code": "// ==============================================================\n// ISO15118 SessionID State Machine -- MANDATORY PATTERN\n// ==============================================================\n// C++ adapter: STATELESS translator (zero SessionID memory)\n// TTCN-3: SOLE owner of SessionID state\n// Flow: receive -> Extract -> Persist (vc_) -> Inject -> send\n// ==============================================================\n\n// --- STEP 1: Extract + Persist (inside alt branch of PR function) ---\nalt {\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(\n        { sessionSetupRes := md_CMN_SessionSetupRes_001 }  // explicit union branch match\n    ) -> value v_res {\n        tc_msg.stop;\n        // Persist: assign to component variable immediately\n        if (ispresent(v_res.sessionID.content)) {\n            vc_SessionID := v_res.sessionID.content;\n        }\n        setverdict(pass, \"SessionSetup OK, SessionID stored in vc_SessionID\");\n    }\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(\n        { sessionSetupRes := md_CMN_SessionSetupRes_002 }   // FAILED_NewSessionStarted\n    ) {\n        tc_msg.stop;\n        if (ispresent(v_res.sessionID.content)) {\n            vc_SessionID := v_res.sessionID.content;\n        }\n        setverdict(fail, \"SECC rejected SessionSetup\");\n    }\n    [] tc_msg.timeout {\n        setverdict(inconc, \"SessionSetup timeout\");\n    }\n}\n\n// --- STEP 2: Inject + Send (inside TB function) ---\n// Use valueof(template) as intermediate record, inject vc_, wrap in Union\nvar ServiceDiscoveryReq v_sd_req := valueof(md_CMN_ServiceDiscoveryReq_001);\nv_sd_req.sessionID.content := vc_SessionID;  // inject persisted value\npt_V2G_TCP_TLS_ALM_SECC_Port.send({ serviceDiscoveryReq := v_sd_req });",
-      "ttcn3_component_variable_declaration": "// In ComponentsAndPorts.ttcn -- SECCTester component:\ntype component SECCTester {\n    port V2G_TCP_TLS_Port pt_V2G_TCP_TLS_ALM_SECC_Port;\n    port V2G_UDP_SDP_Port pt_V2G_UDP_SDP_Port;\n    var octetstring vc_SessionID := '0000000000000000'O;  // MUST survive across PR/TB boundaries\n}",
-      "negative_constraints": [
-        "MUST NOT use set_parameter('session_id', ...) to store SessionID in C++ adapter -- the adapter is stateless",
-        "MUST NOT use f_extract_hex_from_log() or log-parsing as the SessionID extraction mechanism -- extract directly from decoded Union value",
-        "MUST NOT hardcode SessionID in template -- must inject vc_SessionID at runtime",
-        "MUST NOT inject vc_ directly in send() argument -- use intermediate record variable",
-        "MUST NOT declare SessionID as a local function variable -- it would be lost after function return",
-        "MUST NOT add { v2g := ... } wrapper to receive() -- C++ adapter delivers flat V2G_MessageUnion"
-      ],
-      "c_adapter_contracts": {
-        "role": "STATELESS TRANSLATOR -- encodes EXI from union, decodes wire bytes to union, logs decoded fields, zero session memory",
-        "send_path": "TTCN-3 send({ v2g := { msgType := ... } }) -> C++ encode_union_to_wire() -> ExiCodecAdapter JSON encode -> TCP wire",
-        "receive_path": "TCP wire -> ExiCodecAdapter JSON decode -> C++ builds V2G_MessageUnion -> TTCN-3 receive() [FLAT union, no v2g wrapper]",
-        "forbidden": [
-          "set_parameter('session_id', ...) -- adapter ignores this and has no current_session_id_",
-          "current_session_id_ auto-cache in C++ adapter -- FORBIDDEN",
-          "Any automatic SessionID injection from C++ adapter without TTCN-3 passing it in the Union value"
-        ]
-      },
-      "bug_reference": {
-        "root_cause": "Previous architecture delegated SessionID state to C++ adapter via set_parameter() + current_session_id_ variable. This caused anytype parsing bugs and core dumps because the C++ adapter's static Fallback mechanism could not reliably reconstruct EXI with the correct SessionID. The TTCN-3 component variable approach is 100 percent data-flow verified.",
-        "fix": "Pure TTCN-3 Component Variable pattern: vc_SessionID declared in SECCTester, populated in PR (Extract+Persist), consumed in TB (Inject+Send). No C++ state involvement whatsoever."
-      }
-    },
-    {
       "pattern_name": "TTCN3_Stateless_EPI_Pattern",
       "category": "architecture_mandatory",
       "severity": "mandatory",
       "pattern_version": "1.0",
       "extracted_from": "ISO 15118-2 ServiceDiscovery integration test -- 2026-06-26 -- verdict: pass",
-
       "description": "MANDATORY protocol-agnostic architecture pattern: the C++ test adapter (V2G_TCP_TLS_Port and any future port) is a STATELESS TRANSLATOR (octetstring-in / V2G_MessageUnion-out and vice versa). Zero protocol state may be cached, remembered, or injected by the adapter. Any value that must survive across a PreCondition/TestBehavior/PostCondition boundary (e.g. SessionID, EVSEID, SAScheduleTupleID, ContractSignatureCert chain, Challenge, MeterID) MUST be persisted exclusively in a TTCN-3 component variable (vc_ prefix) declared on the tester Component type, and MUST flow through the canonical Extract / Persist / Inject three-step lifecycle. This pattern is the single source of truth for cross-step state propagation and supersedes all ad-hoc approaches (set_parameter, log-parsing, hardcoded literals, port-level globals).",
-
       "iso15118_alignment": "ISO 15118-2 requires the EVCC to preserve SessionID, EVSEID, SAScheduleTupleID across the entire charging session. ISO 15118-20 extends this with ContractSignatureCertChain, EMAID, SAScheduleTupleID. The persistence semantics are protocol-mandated; only the storage location (TTCN-3 component variable) is a framework-level architectural decision.",
-
       "architectural_principle": "Stateless adapter + stateful test script = testable, debuggable, reproducible tests. Stateful adapter = hidden side channels, order-dependent bugs, and protocol leakage into the test infrastructure.",
-
       "trigger_keywords": [
-        "set_parameter", "get_parameter", "current_session_id_", "vc_",
-        "component variable", "stateless", "state across",
-        "SessionID", "EVSEID", "SAScheduleTupleID",
-        "ContractSignatureCertChain", "EMAID", "Challenge", "MeterID",
-        "vc_SessionID", "vc_EVSEID", "vc_SAScheduleTupleID"
+        "set_parameter",
+        "get_parameter",
+        "current_session_id_",
+        "vc_",
+        "component variable",
+        "stateless",
+        "state across",
+        "SessionID",
+        "EVSEID",
+        "SAScheduleTupleID",
+        "ContractSignatureCertChain",
+        "EMAID",
+        "Challenge",
+        "MeterID",
+        "vc_SessionID",
+        "vc_EVSEID",
+        "vc_SAScheduleTupleID"
       ],
-
       "preconditions": [
         "A tester Component type is declared in ComponentsAndPorts.ttcn (e.g. type component SECCTester { ... })",
         "All cross-step state variables are declared as component variables inside that Component type using the vc_ prefix",
         "The C++ port adapter is implemented strictly as a stateless translator: it never reads a port parameter to recover state, never caches a field from a previous decode, and never auto-injects a field on encode"
       ],
-
       "lifecycle": {
         "step_1_Extract": "Inside a receive alt-branch, bind the decoded V2G_MessageUnion to a value-parameter (receive(...) -> value v_msg). Explicitly select the union alternative that carries the field of interest.",
         "step_2_Persist": "Immediately after the union match, gate the read with ispresent() / ischosen() and assign the field to the corresponding vc_ component variable. The assignment must happen inside the alt-branch so that the receive and the persist are atomic w.r.t. timeout.",
         "step_3_Inject": "Before any subsequent send, materialize a template into a runtime record with valueof(template), assign vc_ into the target field, then wrap the record into the V2G_MessageUnion and send via the v2g variant of V2G_PortMessage."
       },
-
-      "template_code": "// ==============================================================\n// TTCN3_Stateless_EPI_Pattern -- MANDATORY (protocol-agnostic)\n// Extract -> Persist -> Inject\n// ==============================================================\n\n// ---- A. Component variable declaration (ComponentsAndPorts.ttcn) ----\ntype component SECCTester {\n    port V2G_TCP_TLS_Port pt_V2G_TCP_TLS_ALM_SECC_Port;\n    port V2G_UDP_SDP_Port pt_V2G_UDP_SDP_Port;\n\n    // vc_ prefix is mandatory; names match the union field they mirror\n    var octetstring  vc_SessionID         := '0000000000000000'O;\n    var octetstring  vc_EVSEID            := ''O;\n    var integer      vc_SAScheduleTupleID := 0;\n}\n\n// ---- B. Extract + Persist (inside PreCondition alt-branch) ----\nalt {\n    [] pt_V2G_TCP_TLS_ALM_SECC_Port.receive(\n        { sessionSetupRes := md_CMN_SessionSetupRes_001 }\n    ) -> value v_res {\n        tc_msg.stop;\n        // Persist: gate with ispresent, then assign to vc_\n        if (ispresent(v_res.sessionID.content)) {\n            vc_SessionID := v_res.sessionID.content;\n        }\n        if (ispresent(v_res.EVSEID)) {\n            vc_EVSEID := v_res.EVSEID;\n        }\n        setverdict(pass, \"SessionSetup OK; state persisted to vc_ variables\");\n    }\n    [] tc_msg.timeout {\n        setverdict(inconc, \"SessionSetup timeout\");\n    }\n}\n\n// ---- C. Inject + Send (inside TestBehavior) ----\nvar ServiceDiscoveryReq v_sd_req := valueof(md_CMN_ServiceDiscoveryReq_001);\nv_sd_req.sessionID.content := vc_SessionID;  // inject persisted value\npt_V2G_TCP_TLS_ALM_SECC_Port.send(\n    { v2g := { serviceDiscoveryReq := v_sd_req } }\n);",
-
+      "template_code": "Extract/Persist/Inject: PR receives raw JSON, extracts SessionID with match() and substr(), assigns to vc_SessionID. TB embeds it via char2oct(json with & oct2char(vc_SessionID) &). NEVER declare vc_SessionID as a local var (shadows component var). NEVER match the literal zero-string SessionID.",
       "rules": {
-        "rule_1_Stateless_Infrastructure_Assumption": "The C++ adapter is a stateless translator. It MUST NOT call any state-keeping API (set_parameter, get_parameter, static cache, log-parse). TTCN-3 is the SOLE legal holder of protocol state. Any code path that would route protocol state through the adapter is a bug, not an optimization.",
-        "rule_2_Component_Level_Declaration": "Every cross-step state variable MUST be declared as a component variable inside the tester Component type in ComponentsAndPorts.ttcn, using the vc_ prefix (vc_SessionID, vc_EVSEID, vc_SAScheduleTupleID, vc_EMAID, ...). Local function variables die at function return and CANNOT be used for cross-step persistence.",
-        "rule_3_EPI_Lifecycle": "Persistence always flows Extract -> Persist -> Inject. Extract uses receive(...) -> value v_msg to bind the union. Persist uses ispresent()/ischosen() to gate and assigns to vc_. Inject uses valueof(template) as an intermediate record, assigns vc_ into the field, then sends.",
-        "rule_4_Protocol_Agnostic": "The pattern is identical for SessionID, EVSEID, SAScheduleTupleID, ContractSignatureCertChain, EMAID, Challenge, MeterID, or any future field that must survive a function boundary. The mechanism does not depend on the field's type, the message it appears in, or the protocol layer it belongs to."
+        "rule_1_Stateless_Adapter": "C++ adapter MUST NOT cache protocol state. TTCN-3 is the sole state holder.",
+        "rule_2_Component_Var_Declaration": "Every cross-step var (vc_SessionID, vc_EVSEID, ...) MUST be declared in SECCTester's component type in ComponentsAndPorts.ttcn. Local vars die on function return.",
+        "rule_3_Extract_Persist_Inject": "Extract via receive({ raw := ? }) -> value; Persist via match() + substr() + char2oct(); Inject via char2oct(json with & oct2char(vc_X) &)."
       },
-
-      "negative_constraints": [
-        "MUST NOT call set_parameter('SessionID', ...) or any variant -- the C++ adapter reads nothing from set_parameter",
-        "MUST NOT cache decoded fields in static or member variables of the C++ adapter (current_session_id_, last_evseid_, etc.)",
-        "MUST NOT parse the test log to recover a previously-sent value -- extract directly from the decoded V2G_MessageUnion value",
-        "MUST NOT hardcode a value into a template literal when the value must come from runtime state -- use valueof() + vc_ injection",
-        "MUST NOT inject vc_ directly into a send() argument without an intermediate record -- the assignment into a Union alternative field requires a materialised record",
-        "MUST NOT declare cross-step state as a local variable inside a function -- local scope dies on return and the value is lost",
-        "MUST NOT introduce message-length-, field-offset-, or magic-byte-based heuristics in the C++ adapter (e.g. 'if exi_len == 36 then ServiceDiscoveryRes'). Such heuristics are protocol leakage and bind the test framework to a single wire trace.",
-        "MUST NOT alter agent/document/iso15118_4_ttcn_knowledge_base.json -- that file is the Ground Truth evaluation corpus; modifying it constitutes data leakage"
-      ],
-
-      "rationale_universality_and_no_cheating": "The pattern is universal because it states only the SHAPE of the data flow (component variable + Extract+Persist+Inject) and never references a specific byte value, field offset, message length, or C++ symbol. It is anti-cheating because (a) every instruction is enforced at the TTCN-3 source level, which is the layer the Ground Truth evaluator inspects; (b) the C++ adapter is forbidden from holding ANY state, so there is no hidden side channel; (c) all state is observable in the TTCN-3 source (component variable declarations + assignment statements), so the test's behaviour is fully reproducible from source alone, without reference to any prior run, log, or specific wire trace. A future ISO 15118-20 test case applies the same four rules to ContractSignatureCertChain or EMAID without changing a single line of the pattern.",
-
-      "example_substitutions_protocol_agnostic": [
-        {"state_field": "SessionID",          "vc_name": "vc_SessionID",         "carried_in": "SessionSetupRes.sessionID",        "consumed_by": "ServiceDiscoveryReq, PaymentServiceSelectionReq, ..."},
-        {"state_field": "EVSEID",             "vc_name": "vc_EVSEID",            "carried_in": "SessionSetupRes.EVSEID",           "consumed_by": "ServiceDetailReq"},
-        {"state_field": "SAScheduleTupleID",  "vc_name": "vc_SAScheduleTupleID", "carried_in": "ChargeParameterDiscoveryRes",     "consumed_by": "PowerDeliveryReq"},
-        {"state_field": "EMAID",              "vc_name": "vc_EMAID",             "carried_in": "PaymentDetailsRes",               "consumed_by": "AuthorizationReq"},
-        {"state_field": "ContractCertChain",  "vc_name": "vc_ContractCertChain", "carried_in": "CertificateInstallationRes",      "consumed_by": "PaymentDetailsReq"}
-      ],
-
       "evaluation_checklist": [
         "Does the test declare every cross-step field as a vc_ component variable in ComponentsAndPorts.ttcn?",
         "Does every receive of a response carrying such a field use -> value v_msg and assign to vc_ inside the alt-branch?",
@@ -455,14 +429,91 @@
         "Does the C++ adapter source contain any static cache, set_parameter read, or magic-byte heuristic? (If yes, fail.)",
         "Does the TTCN-3 source contain any hardcoded value where vc_ injection should occur? (If yes, fail.)"
       ],
-
       "bug_reference": {
         "root_cause": "Earlier designs delegated SessionID state to the C++ adapter via set_parameter() and a current_session_id_ member variable. This created a hidden side channel, broke reproducibility across runs, and forced message-length-based routing heuristics (e.g. 'exi_len == 36 -> ServiceDiscoveryRes') that bind the framework to a single wire trace.",
         "fix": "Adopt TTCN3_Stateless_EPI_Pattern as the single mandatory pattern. All cross-step state lives in vc_ component variables. The C++ adapter is reduced to a stateless translator."
       }
+    },
+    {
+      "pattern_name": "Protocol_Spec_Reasoning_Test_For_New_VC_Variables",
+      "pattern_version": "1.0",
+      "category": "architecture_mandatory",
+      "severity": "mandatory",
+      "extracted_from": "Sprint 4 (2026-07-15) — multi-agent framework design philosophy",
+      "description": "When the LLM Core Agent or Infrastructure Agent discovers a need for a new cross-step state variable (vc_*), it MUST apply this five-step reasoning test derived from the ISO 15118 protocol specification, instead of blindly copying from existing templates or applying post-hoc patches. This pattern is the multi-agent framework's answer to the question 'how does the LLM know what state to persist without us hardcoding every case?'.",
+      "iso15118_alignment": "ISO 15118-2 § 8 (SessionSetupRes.sessionID), § 9.4.2 (ChargeParameterDiscoveryRes.SAScheduleTupleID), ISO 15118-20 § 7.4 (EMAID, ContractSignatureCertChain) all define cross-step state that MUST be persisted by the EVCC and echoed in subsequent messages. The persistence semantics are protocol-mandated; only the storage location (vc_ component variable) is a framework decision. LLM agents reason from the protocol spec to identify what state needs persisting — not from a static list.",
+      "trigger_keywords": [
+        "new cross-step state",
+        "vc_",
+        "component variable needed",
+        "SessionID",
+        "EVCCID",
+        "EVSEID",
+        "EMAID",
+        "ContractID",
+        "SAScheduleTupleID",
+        "ContractSignatureCertChain",
+        "GenChallenge",
+        "new protocol field must be persisted"
+      ],
+      "reasoning_test": {
+        "step_1_what_is_the_state": "Identify the protocol field that the SECC returns in one message and a subsequent message needs. This is derived by reading the protocol specification, NOT by looking at the existing test corpus.",
+        "step_2_where_does_it_live": "It MUST live on the tester component (type component SECCTester { ... } in ComponentsAndPorts.ttcn). TTCN-3 has no global variables — module-scope vars are illegal. Name it with the vc_ prefix; type it as octetstring for IDs/SessionIDs and charstring for human-readable fields.",
+        "step_3_who_declares_it": "The Infrastructure Agent declares it in ComponentsAndPorts.ttcn. The Core Agent NEVER writes ComponentsAndPorts.ttcn (that is out of scope for the CA). When the CA needs a new vc_* variable, it signals it in its Summary so the IA picks it up.",
+        "step_4_how_is_it_set": "Inside the PR function that receives the relevant response from the SECC. Parse with match() (regex/indexof are illegal in TITAN) + substr(), assign with vc_X := char2oct(substr(...)) (for octetstring variables) or vc_X := substr(...) (for charstring variables).",
+        "step_5_how_is_it_read": "In downstream TBs: embed in JSON via & oct2char(vc_X) & for octetstring variables (which become PascalCase-stringified hex in JSON) or via oct2unichar(...) for charstring variables."
+      },
+      "worked_example_sessionid": {
+        "spec_finding": "ISO 15118-2 § 8.4.2 SessionSetupRes carries SessionID (8 bytes hexBinary). This ID MUST appear in every subsequent V2G_Message.Header.SessionID — see § 9.1 (general V2G message structure) and the per-message requirements in § 9.3 ServiceDiscovery, § 9.4 PaymentServiceSelection, etc.",
+        "step_1": "State = SessionID (8 bytes hexBinary).",
+        "step_2": "vc_SessionID on SECCTester, var octetstring.",
+        "step_3": "IA declares it in ComponentsAndPorts.ttcn. CA never touches ComponentsAndPorts.ttcn.",
+        "step_4": "In f_SECC_CMN_PR_SessionSetup_001: after receiving the raw response, use substr() (NOT match with backslash escapes): `if (lengthof(resp_json) >= 55 and substr(resp_json, 39, 16) != '0000000000000000') { vc_SessionID := char2oct(substr(resp_json, 39, 16)); }`. Verified empirically with SECC response JSON layout (2026-07-18).",
+        "step_5": "In every downstream TB: a single-line literal like {\"V2G_Message\":{\"Header\":{\"SessionID\":\"<16hex>\",...}} where <16hex> is replaced via & oct2char(vc_SessionID) & inside the JSON literal. Note: TTCN-3 charstring uses doubled quotes (two consecutive double-quote characters) to embed a literal double-quote - never use a backslash, which TITAN treats as a literal character."
+      },
+      "worked_example_sascheduletupleid": {
+        "spec_finding": "ISO 15118-2 § 9.4.4.3 ChargeParameterDiscoveryRes carries SAScheduleTupleID. The EVCC then MUST use the same SAScheduleTupleID in its PowerDeliveryReq (§ 9.6.3).",
+        "step_1": "State = SAScheduleTupleID (1..16 integer).",
+        "step_2": "vc_SAScheduleTupleID on SECCTester, var integer.",
+        "step_3": "IA declares it.",
+        "step_4": "In f_SECC_CMN_PR_ChargeParameterDiscovery_001: receive ChargeParameterDiscoveryRes, assign vc_SAScheduleTupleID := v_res.SAScheduleTupleID.",
+        "step_5": "In TC_SECC_*_PowerDelivery_001: v_pd_req.SAScheduleTupleID := vc_SAScheduleTupleID; then send."
+      },
+      "worked_example_emaid_contractchain": {
+        "spec_finding": "ISO 15118-20 § 7.4 PaymentDetailsRes carries EMAID and ContractSignatureCertChain. The EVCC MUST echo both in its AuthorizationReq (§ 7.5).",
+        "step_1": "State = EMAID (charstring) + ContractSignatureCertChain (octetstring).",
+        "step_2": "Two new vc_ variables: vc_EMAID (var charstring) and vc_ContractCertChain (var octetstring).",
+        "step_3": "IA declares both in ComponentsAndPorts.ttcn — one new component variable per piece of cross-step state.",
+        "step_4": "In f_SECC_CMN_PR_PaymentDetails_001: receive PaymentDetailsRes, parse EMAID and ContractSignatureCertChain, assign to vc_EMAID and vc_ContractCertChain.",
+        "step_5": "In TC_SECC_*_Authorization_001: inject both into the AuthorizationReq before send."
+      },
+      "evaluation_checklist": [
+        "Did the LLM derive the need for this vc_ variable from the protocol specification, not from copying a previous test case?",
+        "Is the new vc_ variable declared by the Infrastructure Agent in ComponentsAndPorts.ttcn (and not by the Core Agent)?",
+        "Does the PR that produces this state use match() (not regexp/indexof) for parsing, and char2oct + substr() for extraction?",
+        "Does the downstream TB embed the variable via & oct2char(vc_X) & (for octetstring → JSON string) or direct assignment (for typed fields)?",
+        "If we needed to support a NEW test case that has never been seen, would this reasoning still apply?"
+      ],
+      "framework_role_split": {
+        "core_agent_responsibility": [
+          "Emit the read/embed pattern in PR/TB code (match() + substr() + char2oct())",
+          "Reference vc_* in the JSON envelope when generating downstream TB code",
+          "Signal in its Summary if a new vc_* variable is needed"
+        ],
+        "infrastructure_agent_responsibility": [
+          "Declare the vc_* component variable in ComponentsAndPorts.ttcn's SECCTester component",
+          "When re-emitting ComponentsAndPorts.ttcn, KEEP existing vc_* declarations — do NOT drop them",
+          "When introducing new vc_* in response to a Core Agent signal, ensure the regex match is robust to whitespace differences"
+        ],
+        "framework_safety_net": [
+          "The pipeline installs ComponentsAndPorts.ttcn from the demo scaffold (which has vc_SessionID since Sprint 4)",
+          "A safety-net post-install patch (_patch_vcsessionid_into_components) declares vc_SessionID IF the demo scaffold missed it",
+          "This safety net is for legacy or pre-Sprint-4 demo versions; the primary mechanism is the demo scaffold + IA HARD RULE"
+        ]
+      },
+      "design_philosophy": "The multi-agent framework's value lies in autonomous protocol-spec reasoning, not in static template execution. Every sprint we should reduce our reliance on hardcoded per-test-case logic and increase the LLM's ability to read a new protocol spec and correctly identify what state needs persisting, where it lives, who declares it, and how it flows. Post-hoc patches are a temporary safety net, not the architecture."
     }
   ],
-
   "_metadata": {
     "created_from": "Plan: 改进_core_agent_prompt_设计 (Phase 4) -- REVISED",
     "source_sop": "ttcn3_generation_sop.json",
@@ -486,5 +537,319 @@
       "Test_Behavior_Function_Return (REMOVED -- same reason, teaches raw V2GTP header)",
       "Generic_Precondition_Stub (REMOVED -- same reason, teaches raw octetstrings on TCP)"
     ]
+  },
+
+  "_extension_v1_0": {
+    "name": "Protocol State Machine & Cross-Step State (Minimal-Invasive Fusion)",
+    "added": "2026-07-19",
+    "purpose": "Replace hardcoded offset-based extraction (substr(..., 39, 16)) with semantic state-machine reasoning. Read by the upgraded Summarizer as reasoning context; passed to Core Agent as reasoning.json.",
+    "consumed_by": [
+      "agent/test_code/prompts/summarizer_prompt.txt (Protocol Reasoning Module)",
+      "agent/test_code/prompts/core_agent_prompt.txt (Protocol Context header)"
+    ]
+  },
+
+  "state_machine": {
+    "_description": "ISO 15118-2 SECC-side state machine. Replaces per-message ad-hoc precondition chains with a topological state graph. The Summarizer uses this to locate where a given tc_id lives in the protocol flow.",
+    "name": "ISO_15118_2_SECC_State_Machine",
+    "version": "1.0",
+
+    "states": {
+      "S_INIT": {
+        "description": "Initial state before SDP discovery",
+        "produced_state": [],
+        "consumed_state": []
+      },
+      "S_SDP_COMPLETE": {
+        "description": "SDP discovery completed; SECC IPv6+port known to TTCN-3",
+        "produced_state": [],
+        "consumed_state": [],
+        "note": "SDP itself does NOT produce any cross-step state variables; it only sets inter-port C++ state."
+      },
+      "S_SUPPORTED_APP_PROTOCOL": {
+        "description": "Protocol version negotiation",
+        "transitions": [
+          {
+            "event": "supportedAppProtocolRes.OK_SuccessfulNegotiation",
+            "target": "S_SESSION_SETUP",
+            "effects": []
+          },
+          {
+            "event": "supportedAppProtocolRes.FAILED",
+            "target": "S_SESSION_TERMINATED",
+            "effects": []
+          }
+        ],
+        "produced_state": [],
+        "consumed_state": []
+      },
+      "S_SESSION_SETUP": {
+        "description": "Session establishment -- SECC assigns a fresh SessionID in SessionSetupRes.Header.SessionID",
+        "transitions": [
+          {
+            "event": "sessionSetupRes.OK_NewSessionEstablished",
+            "target": "S_SERVICE_DISCOVERY",
+            "effects": [
+              {
+                "type": "EXTRACT_STATE_VARIABLE",
+                "variable": "vc_SessionID",
+                "from_json_path": "$.V2G_Message.Header.SessionID",
+                "validation": {
+                  "type": "hexBinary_string",
+                  "length": 16,
+                  "pattern": "^[0-9A-Fa-f]{16}$"
+                }
+              }
+            ]
+          },
+          {
+            "event": "sessionSetupRes.OK_ReusedSession",
+            "target": "S_SERVICE_DISCOVERY",
+            "effects": [
+              {
+                "type": "EXTRACT_STATE_VARIABLE",
+                "variable": "vc_SessionID",
+                "from_json_path": "$.V2G_Message.Header.SessionID"
+              }
+            ]
+          },
+          {
+            "event": "sessionSetupRes.FAILED_*",
+            "target": "S_SESSION_TERMINATED",
+            "effects": []
+          }
+        ],
+        "produced_state": ["vc_SessionID"],
+        "consumed_state": []
+      },
+      "S_SERVICE_DISCOVERY": {
+        "description": "EVCC discovers available services",
+        "transitions": [
+          {
+            "event": "serviceDiscoveryRes.OK",
+            "target": "S_SERVICE_PAYMENT_SELECTION",
+            "effects": []
+          }
+        ],
+        "produced_state": [],
+        "consumed_state": ["vc_SessionID"]
+      },
+      "S_SERVICE_PAYMENT_SELECTION": {
+        "description": "EVCC selects payment option",
+        "transitions": [
+          {
+            "event": "paymentServiceSelectionRes.OK",
+            "target": "S_CHARGE_PARAMETER_DISCOVERY",
+            "effects": []
+          }
+        ],
+        "produced_state": [],
+        "consumed_state": ["vc_SessionID"]
+      },
+      "S_AUTHORIZATION": {
+        "description": "Optional: certificate installation / update / payment details",
+        "transitions": [
+          {
+            "event": "authorizationRes.OK | certificateInstallationRes.OK | paymentDetailsRes.OK",
+            "target": "S_CHARGE_PARAMETER_DISCOVERY",
+            "effects": []
+          }
+        ],
+        "produced_state": [],
+        "consumed_state": ["vc_SessionID"]
+      },
+      "S_CHARGE_PARAMETER_DISCOVERY": {
+        "description": "EVCC requests EVSE charge parameters; SECC returns SA schedules",
+        "transitions": [
+          {
+            "event": "chargeParameterDiscoveryRes.OK",
+            "target": "S_POWER_DELIVERY",
+            "effects": [
+              {
+                "type": "EXTRACT_STATE_VARIABLE",
+                "variable": "vc_SAScheduleTupleID",
+                "from_json_path": "$.V2G_Message.Body.ChargeParameterDiscoveryRes.SAScheduleTuple[0].SAScheduleTupleID"
+              }
+            ]
+          }
+        ],
+        "produced_state": ["vc_SAScheduleTupleID"],
+        "consumed_state": ["vc_SessionID"]
+      },
+      "S_POWER_DELIVERY": {
+        "description": "EVCC requests power delivery",
+        "transitions": [
+          {
+            "event": "powerDeliveryRes.OK",
+            "target": "S_CHARGING_LOOP",
+            "effects": []
+          }
+        ],
+        "produced_state": [],
+        "consumed_state": ["vc_SessionID", "vc_SAScheduleTupleID"]
+      },
+      "S_CHARGING_LOOP": {
+        "description": "CurrentDemand / ChargingStatus / MeteringReceipt cycle",
+        "produced_state": [],
+        "consumed_state": ["vc_SessionID"]
+      },
+      "S_SESSION_TERMINATED": {
+        "description": "SessionStop or session ended due to failure"
+      }
+    },
+
+    "message_to_state_mapping": {
+      "_description": "Maps message_type (from tc_id) to the state it operates in, plus what state variables it produces / consumes. The Summarizer uses this to construct the precondition_chain and decide which vc_* the downstream TB must inject.",
+
+      "SessionSetup": {
+        "produces_state": ["vc_SessionID"],
+        "consumes_state": []
+      },
+      "ServiceDiscovery": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID"]
+      },
+      "ServicePaymentSelection": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID"]
+      },
+      "PaymentServiceSelection": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID"],
+        "_note": "Alias of ServicePaymentSelection for backward compatibility with older tc_ids."
+      },
+      "Authorization": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID"]
+      },
+      "CertificateInstallation": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID"]
+      },
+      "ChargeParameterDiscovery": {
+        "produces_state": ["vc_SAScheduleTupleID"],
+        "consumes_state": ["vc_SessionID"]
+      },
+      "PowerDelivery": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID", "vc_SAScheduleTupleID"]
+      },
+      "CableCheck": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID"]
+      },
+      "PreCharge": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID"]
+      },
+      "CurrentDemand": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID"]
+      },
+      "WeldingDetection": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID"]
+      },
+      "SessionStop": {
+        "produces_state": [],
+        "consumes_state": ["vc_SessionID"]
+      }
+    }
+  },
+
+  "cross_step_state": {
+    "_description": "State variables that persist across test case steps. Each vc_* entry lists what message produces it, what condition triggers extraction, and what downstream messages consume it. The Summarizer reads this to populate the injection_rules block of reasoning.json.",
+
+    "vc_SessionID": {
+      "type": "octetstring",
+      "length_bytes": 8,
+      "json_repr": "16 hex chars",
+      "declared_in": "ComponentsAndPorts.ttcn (SECCTester component)",
+      "produced_by": [
+        {
+          "message_type": "SessionSetup",
+          "trigger_condition": "ResponseCode in ['OK_NewSessionEstablished', 'OK_ReusedSession']",
+          "extraction": {
+            "method": "JSON_PATH",
+            "path": "$.V2G_Message.Header.SessionID",
+            "rationale": "SessionSetupRes JSON layout is stable across ISO 15118-2 SECC implementations. Locate by JSON key, NOT by hardcoded byte offset."
+          }
+        }
+      ],
+      "consumed_by": [
+        {"message_type": "ServiceDiscovery", "injected_into": "$.V2G_Message.Header.SessionID"},
+        {"message_type": "ServicePaymentSelection", "injected_into": "$.V2G_Message.Header.SessionID"},
+        {"message_type": "PaymentServiceSelection", "injected_into": "$.V2G_Message.Header.SessionID"},
+        {"message_type": "Authorization", "injected_into": "$.V2G_Message.Header.SessionID"},
+        {"message_type": "ChargeParameterDiscovery", "injected_into": "$.V2G_Message.Header.SessionID"},
+        {"message_type": "PowerDelivery", "injected_into": "$.V2G_Message.Header.SessionID"},
+        {"message_type": "CableCheck", "injected_into": "$.V2G_Message.Header.SessionID"},
+        {"message_type": "PreCharge", "injected_into": "$.V2G_Message.Header.SessionID"},
+        {"message_type": "CurrentDemand", "injected_into": "$.V2G_Message.Header.SessionID"},
+        {"message_type": "WeldingDetection", "injected_into": "$.V2G_Message.Header.SessionID"},
+        {"message_type": "SessionStop", "injected_into": "$.V2G_Message.Header.SessionID"}
+      ],
+      "ttcn3_handling": {
+        "type": "octetstring",
+        "to_charstring": "oct2char(vc_SessionID)",
+        "to_octetstring": "char2oct(<hex_string>)",
+        "literal_default": "'0000000000000000'O (16 zeros for SessionSetup BEFORE a real session exists)",
+        "assignment_rule": "NEVER declare a local 'var ... vc_SessionID' in a function -- that shadows the component variable and downstream TBs will see zero. Always reference the component-scoped vc_SessionID directly."
+      }
+    },
+
+    "vc_SAScheduleTupleID": {
+      "type": "integer",
+      "declared_in": "ComponentsAndPorts.ttcn (SECCTester component)",
+      "produced_by": [
+        {
+          "message_type": "ChargeParameterDiscovery",
+          "trigger_condition": "ResponseCode == 'OK' AND SAScheduleTuple array is non-empty",
+          "extraction": {
+            "method": "JSON_PATH",
+            "path": "$.V2G_Message.Body.ChargeParameterDiscoveryRes.SAScheduleTuple[0].SAScheduleTupleID"
+          }
+        }
+      ],
+      "consumed_by": [
+        {"message_type": "PowerDelivery", "injected_into": "$.V2G_Message.Body.PowerDeliveryReq.SAScheduleTupleID"}
+      ]
+    }
+  },
+
+  "semantic_extraction_rules": {
+    "_description": "TTCN-3-level extraction patterns for state variables. The Summarizer cites these in reasoning.json so the Core Agent uses semantic key-matching rather than substr offsets.",
+
+    "SessionID_extraction": {
+      "_replace_old_hardcoded_offset": "substr(resp_json, 39, 16) -- DEPRECATED, brittle if SECC adds whitespace or reorders keys",
+      "json_path": "$.V2G_Message.Header.SessionID",
+      "validation": {
+        "type": "string",
+        "pattern": "^[0-9A-Fa-f]{16}$",
+        "length": 16
+      },
+      "ttcn3_pattern_code": [
+        "// Step 1: After receiving raw response, decode to charstring",
+        "var charstring resp_json := oct2char(v_msg.raw);",
+        "// Step 2: Validate the response shape (must contain SessionID key)",
+        "// Step 3: Locate the SessionID value by key (NOT by offset)",
+        "// Recommended TTCN-3 helper (declared in SECC_CommonFunctions.ttcn):",
+        "//   function f_extract_session_id(charstring json) return octetstring {",
+        "//     // use match() + substr() to find the key and extract the next 16 hex chars",
+        "//     ... see canonical f_SECC_CMN_PR_SessionSetup_001 in _global_asset_pool",
+        "//   }",
+        "// Step 4: Assign to component variable",
+        "vc_SessionID := f_extract_session_id(resp_json);"
+      ],
+      "skip_when_zero": "If extracted value == '0000000000000000', skip assignment (SECC did not assign a session)."
+    },
+
+    "ResponseCode_extraction": {
+      "json_path": "$.V2G_Message.Body.*.ResponseCode",
+      "wildcard_note": "The * matches any response message type (SessionSetupRes, ServiceDiscoveryRes, etc.)",
+      "ttcn3_match_pattern": "@nocase @\"*\"\"ResponseCode\"\":\"\"OK*\"\"\"",
+      "success_prefixes": ["OK_NewSessionEstablished", "OK_ReusedSession", "OK"],
+      "failure_prefixes": ["FAILED", "FAILED_"]
+    }
   }
 }

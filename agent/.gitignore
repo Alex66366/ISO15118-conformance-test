@@ -1,27 +1,39 @@
-# Python
+# Generated test artifacts (rebuilt every run)
+test_code/generated/
+test_code/logs/
+test_code/batch_results/
+batch_results/
+experiment/results/
+experiment/batch_results.json
+experiment/standard_references/
+experiment/comparison_results/
+experiment/reports/
+test_case/output/
+test_case/generated_test_cases.json
+
+# Python bytecode
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
+*.egg-info/
 
-# Backups
-*.bak
-*.backup
+# OS
+.DS_Store
+*.swp
 *~
 
-# Pipeline run artifacts
-test_code/logs/
-test_code/generated/TC_*_2[0-9]*/
+# Titan build
+*.o
+*.lo
+.libs/
 
-# Old batch run logs (keep batch_results.jsonl as the canonical)
-batch_results/batch_run_*.jsonl
-batch_results/batch_run_*.log
-batch_results/case3_run_*.jsonl
-batch_results/batch_results.backup_*.jsonl
-batch_results/batch_results_with_llm.jsonl
+# Claude Code
+.claude/
 
-# Baseline snapshots
-test_code/.baseline_snapshot/
+# IDE
+.vscode/
+.idea/
 
-# Empty placeholder
-!*.gitkeep
+# Temp
+*.tmp
+*.log

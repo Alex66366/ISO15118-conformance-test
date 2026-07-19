@@ -1,7 +1,9 @@
 module TC_SECC_CMN_VTB_Authorization_001 {
+
     import from SECC_TestSystem all;
     import from SECC_Constants all;
-    import from SECC_CmnTemplates all;
+    import from PreConditions_SECC_15118_2 all;
+    import from PostConditions_SECC_15118_2 all;
     import from f_SECC_CMN_PR_InitConfiguration_001 all;
     import from f_SECC_CMN_PR_SupportedAppProtocol_001 all;
     import from f_SECC_CMN_PR_SessionSetup_001 all;
@@ -16,8 +18,7 @@ module TC_SECC_CMN_VTB_Authorization_001 {
     {
         var verdicttype preConVerdict;
 
-        // Phase A: Map ports (done in InitConfiguration)
-        // Phase B: Preconditions
+        // Phase A+B: Initialize and establish session state
         f_SECC_CMN_PR_InitConfiguration_001();
         preConVerdict := f_SECC_CMN_PR_SupportedAppProtocol_001();
         if (preConVerdict != pass) {
@@ -52,16 +53,16 @@ module TC_SECC_CMN_VTB_Authorization_001 {
             return;
         }
 
-        // Phase C: Test behavior — Authorization exchange
-        if (preConVerdict == pass) {
-            f_SECC_CMN_TB_VTB_Authorization_001();
-        } else {
-            log("Precondition verdict is not pass");
-            setverdict(inconc);
-        }
+        // Phase C: Test Authorization exchange
+        f_SECC_CMN_TB_VTB_Authorization_001();
 
-        // Phase D: Postconditions (unconditional cleanup)
+        // Phase D: PostConditions (unconditional)
         f_SECC_CMN_PO_InitialState_001();
         f_SECC_CMN_PO_ShutdownConfiguration_001();
+
+        // Cleanup
+        unmap(mtc:pt_V2G_TCP_TLS_ALM_SECC_Port, system:pt_V2G_TCP_TLS_ALM_SECC_Port);
+        unmap(mtc:pt_V2G_UDP_SDP_Port, system:pt_V2G_UDP_SDP_Port);
+        stop;
     }
 }

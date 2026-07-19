@@ -1,8 +1,0 @@
-module TestCases_SECC {
-    import from SECC_TestSystem all;
-    import from TC_SECC_CMN_VTB_Authorization_001.ttcn all;
-
-    control {
-        execute(TC_SECC_CMN_VTB_Authorization_001.ttcn());
-    }
-} // end module

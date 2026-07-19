@@ -91,9 +91,10 @@ _RAW_ASSIGN_RE = re.compile(
 
 # Anything that asserts an `OK` ResponseCode via substring match.
 # The TTCN-3-compatible substring-detection API is `match(<str>, <pattern>)`
-# with `*` wildcards.  We accept the canonical pattern:
-#   match(<str>, "*\"ResponseCode\":\"OK*\"*")
-# Anything containing `ResponseCode` and `OK` together in a match() call.
+# with `*` wildcards.  ISO 15118-2 ResponseCode format: OK_* or FAILED_*.
+# The canonical pattern:
+#   match(<str>, "*\"ResponseCode\":\"OK_*\"*")  // underscore is MANDATORY
+#   match(<str>, "*\"ResponseCode\":\"FAILED_*\"*")
 _MATCH_OK_RESPONSECODE_RE = re.compile(
     r"match\s*\(\s*\w+\s*,\s*\"[^\"]*\\?\"ResponseCode\\?\"[^\"]*\\?\"OK[^\"]*\"",
     re.MULTILINE,
@@ -123,6 +124,16 @@ _ILLEGAL_INDEXOF_RE = re.compile(
     r"\bindexof\s*\(", re.MULTILINE,
 )
 
+# Sprint 4 / Sprint 4.1: guard against re-injecting the linter block.
+# Without this guard, calling auto_patch_tb_response_code_validation()
+# multiple times produces triple-nested [LINT] blocks, each with
+# `var boolean __tb_resp_ok` declarations that cause TITAN
+# "duplicate local identifier" errors (Sprint 4.1: replaced __tb_resp_ok with vTbRespOk.
+_LINT_BLOCK_ALREADY_INJECTED_RE = re.compile(
+    r"//\s*===\s*\[LINT\]\s*Injected\s+ResponseCode\s+validation",
+    re.MULTILINE,
+)
+
 # `setverdict(pass,` — raw or as a substring inside an `if (...)`.
 _SETVERDICT_PASS_RE = re.compile(
     r"\bsetverdict\s*\(\s*pass\b", re.MULTILINE,
@@ -131,6 +142,56 @@ _SETVERDICT_PASS_RE = re.compile(
 # `setverdict(fail,` — required by rule #4 to be present at least once.
 _SETVERDICT_FAIL_RE = re.compile(
     r"\bsetverdict\s*\(\s*fail\b", re.MULTILINE,
+)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 4.2 (2026-07-19) — AST-level guards for required local variables.
+#
+# Background: The Core Agent sometimes generates TB code that uses
+# `resp_json` (or `v_msg`) inside the receive branch WITHOUT declaring it
+# beforehand.  TITAN's `-> value v_msg` clause does NOT implicitly declare
+# `v_msg`; the variable must be pre-declared with `var <Type> v_msg;` before
+# the alt-block.  Similarly, the LLM is told to declare
+# `var charstring resp_json := oct2char(v_msg.raw);` after receiving, but it
+# sometimes writes `match(resp_json, ...)` without ever assigning it.
+#
+# Without these guards, the linter would INJECT a ResponseCode-validation
+# block that references `resp_json`, producing TITAN
+# "There is no local or imported definition with name 'resp_json'" errors.
+#
+# The fix is a two-pronged defense:
+#   (1) DETECT the missing declaration (so the IA fix-loop can rewrite).
+#   (2) SKIP injection if the declaration is missing (no half-broken file).
+# ---------------------------------------------------------------------------
+
+# Detect any prior declaration of `var charstring resp_json` (with `:=` or
+# without; either is acceptable in TITAN).  Allow whitespace and various
+# type spellings (e.g. `charstring`, `default charstring`).
+_DECL_RESP_JSON_RE = re.compile(
+    r"\bvar\s+charstring\s+resp_json\b",
+    re.MULTILINE,
+)
+
+# Detect any prior declaration of `var V2G_PortMessage v_msg` (or
+# `var default V2G_PortMessage v_msg`).  TITAN requires this before
+# `-> value v_msg` can bind the receive.
+_DECL_V_MSG_RE = re.compile(
+    r"\bvar\s+(?:default\s+)?V2G_PortMessage\s+v_msg\b",
+    re.MULTILINE,
+)
+
+# Detect any reference to `resp_json` (read OR write) — used to decide
+# whether the ResponseCode lint block would even compile.
+_REF_RESP_JSON_RE = re.compile(
+    r"\bresp_json\b",
+    re.MULTILINE,
+)
+
+# Detect `-> value v_msg` — the receive binding that requires v_msg declared.
+_VALUE_V_MSG_RE = re.compile(
+    r"->\s*value\s+v_msg\b",
+    re.MULTILINE,
 )
 
 
@@ -197,13 +258,21 @@ def lint_tb_for_response_code_validation(source: str) -> List[TbLintViolation]:
     # alt-block slice) — variables may be declared before the receive.
     response_block = body
 
-    # Rule 1: oct2char(<var>) must exist somewhere — proves the TB
-    # pulled the SECC response into a parseable string. Also accept the
-    # common idiom where `var octetstring X := v_msg.raw;` precedes
-    # `oct2char(X)`.
+    # Rule 1: the LLM must have pulled `v_msg.raw` into a parseable string.
+    # Accept either of two equivalent patterns:
+    #   (a) `var charstring resp_json := oct2char(v_msg.raw);`  (one-step)
+    #   (b) `var octetstring X := v_msg.raw; ... oct2char(X);`  (two-step)
+    #   (c) `resp_json := oct2char(v_msg.raw);` inside the receive branch
+    #       (assumes `resp_json` was pre-declared — verified separately by TB-VAL-4)
     has_oct2char = bool(_OCT2CHAR_RAW_RE.search(response_block))
     has_raw_assign = bool(_RAW_ASSIGN_RE.search(response_block))
-    if not (has_oct2char and has_raw_assign):
+    # Pattern (c): direct assignment `resp_json := oct2char(<...>.raw)`
+    # is OK as long as `oct2char` is present AND a `.raw` reference is present.
+    has_resp_json_assign = bool(re.search(
+        r"resp_json\s*:=\s*oct2char\s*\([^)]*\.raw",
+        response_block,
+    ))
+    if not ((has_oct2char and has_raw_assign) or has_resp_json_assign):
         violations.append(TbLintViolation(
             rule_id="TB-VAL-1",
             line=_find_line(body, _RECV_RAW_RE.search(body)),
@@ -288,6 +357,54 @@ def lint_tb_for_response_code_validation(source: str) -> List[TbLintViolation]:
             ),
         ))
 
+    # ----------------------------------------------------------------------
+    # Sprint 4.2 (2026-07-19) — AST-level guards for required locals.
+    #
+    # Both rules are HARD ERRORS: if either is violated, the file will
+    # fail to compile in TITAN with "There is no local or imported
+    # definition with name ..." — which is exactly the bug observed on
+    # 2026-07-19's run for PaymentServiceSelection_001 (TB compiled but
+    # had references to `resp_json` that were never assigned).
+    # ----------------------------------------------------------------------
+
+    # Rule 5: if `resp_json` is referenced ANYWHERE (read or write), it
+    # MUST have been declared beforehand.  We only flag if it's
+    # referenced but NOT declared — that's the failure mode.
+    if _REF_RESP_JSON_RE.search(response_block) and not _DECL_RESP_JSON_RE.search(response_block):
+        violations.append(TbLintViolation(
+            rule_id="TB-VAL-4",
+            line=_find_line(body, _REF_RESP_JSON_RE.search(response_block)),
+            message=(
+                "TB references `resp_json` but never declares it. "
+                "The linter's ResponseCode-validation block (and any "
+                "match() the LLM wrote) requires "
+                "`var charstring resp_json := oct2char(v_msg.raw);` "
+                "to appear in the SUCCESS receive branch BEFORE the "
+                "match() call.  TITAN will fail with "
+                "'There is no local or imported definition with name "
+                "'resp_json'' if this is missing."
+            ),
+        ))
+
+    # Rule 6: if `-> value v_msg` is used (the canonical Sprint 3
+    # success-branch binding), `v_msg` MUST be pre-declared as
+    # `var V2G_PortMessage v_msg;` before the alt-block.  TITAN does
+    # NOT implicitly declare variables via the `value` clause.
+    if _VALUE_V_MSG_RE.search(response_block) and not _DECL_V_MSG_RE.search(response_block):
+        violations.append(TbLintViolation(
+            rule_id="TB-VAL-5",
+            line=_find_line(body, _VALUE_V_MSG_RE.search(response_block)),
+            message=(
+                "TB uses `-> value v_msg` (the canonical Sprint 3 receive "
+                "binding) but never pre-declares `var V2G_PortMessage "
+                "v_msg;` before the alt-block.  TITAN's `value` clause "
+                "does NOT implicitly declare the variable.  Add "
+                "`var V2G_PortMessage v_msg;` (and a sibling "
+                "`var V2G_PortMessage v_err;` for the error branch) "
+                "before the alt statement."
+            ),
+        ))
+
     return violations
 
 
@@ -305,10 +422,10 @@ def _find_line(body: str, m: re.Match | None) -> int:
 # with `*` wildcards.  Use double quotes in TTCN-3 charstring literals
 # (escaped via outer triple-quoted f-string).
 _INJECTED_RESPONSE_CODE_LINT_BLOCK = '''\
-        // === [LINT] Injected ResponseCode validation (Sprint 3.3) ===
+        // === [LINT] Injected ResponseCode validation (Sprint 3.3 / Sprint 4.1 fix) ===
         if (match(resp_json, "*\\"ResponseCode\\":\\"OK*\\"*")) {
             // OK path: real TITAN pass is allowed below.
-            var boolean __tb_resp_ok := true;
+            var boolean vTbRespOk := true;
         } else if (match(resp_json, "*\\"ResponseCode\\":\\"FAILED*\\"*")) {
             setverdict(fail,
                 "<msg_type> rejected by SECC. ResponseCode is FAILED_*. See SECC log.");
@@ -344,6 +461,17 @@ def auto_patch_tb_response_code_validation(
     # Already-compliant: don't patch (match form).
     if _MATCH_RESPONSECODE_RE.search(body):
         return source
+    # Sprint 4: If the [LINT] sentinel marker is already present, the block
+    # was already injected. Do NOT inject again — that creates triple-nested
+    # blocks with duplicate `__tb_resp_ok` declarations (TITAN errors).
+    if _LINT_BLOCK_ALREADY_INJECTED_RE.search(body):
+        return source
+    # Sprint 4.1: If the TB is a stub (contains log("STUB:)), do NOT
+    # inject the ResponseCode lint block — stubs have no real message exchange
+    # and therefore no `resp_json` variable. Injecting it would cause TITAN
+    # "resp_json: no definition found" compile errors.
+    if re.search(r'log\s*\(\s*"STUB:', body) or re.search(r"log\s*\(\s*'STUB:", body):
+        return source
     # If the file uses regexp(...) or indexof(...), the auto-patcher's
     # match()-based injection is harmless to ADD but won't fix the
     # illegal tokens that already exist.  We still skip the patch in that
@@ -351,6 +479,17 @@ def auto_patch_tb_response_code_validation(
     # TB-VAL-2-ILLEGAL violation and the IA fix-loop will rewrite the TB
     # from scratch in the next iteration.
     if _ILLEGAL_REGEXP_NE1_RE.search(body) or _ILLEGAL_INDEXOF_RE.search(body):
+        return source
+
+    # Sprint 4.2 (2026-07-19) — REFUSE to inject if the surrounding
+    # function would not compile anyway.  Injecting a ResponseCode
+    # validation block that references `resp_json` when `resp_json`
+    # was never declared would just give TITAN a more verbose error
+    # on the same broken file.  Better to surface the underlying
+    # TB-VAL-4 / TB-VAL-5 violations and let IA / FC fix them first.
+    if _REF_RESP_JSON_RE.search(body) and not _DECL_RESP_JSON_RE.search(body):
+        return source
+    if _VALUE_V_MSG_RE.search(body) and not _DECL_V_MSG_RE.search(body):
         return source
 
     # Find the first setverdict(pass, ...) and inject just before it.
